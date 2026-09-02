@@ -1,0 +1,43 @@
+services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cinemind}
+      POSTGRES_USER: ${POSTGRES_USER:-cinemind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cinemind_dev}
+    volumes:
+      - cinemind-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cinemind} -d ${POSTGRES_DB:-cinemind}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cinemind}:${POSTGRES_PASSWORD:-cinemind_dev}@database:5432/${POSTGRES_DB:-cinemind}
+      CATALOG_SEED_PATH: /app/data/catalog.json
+      MIGRATIONS_PATH: /app/migrations
+    volumes:
+      - ./frontend/public/data/catalog.json:/app/data/catalog.json:ro
+    depends_on:
+      database:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    restart: unless-stopped
+
+volumes:
+  cinemind-postgres-data:

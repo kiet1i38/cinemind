@@ -1,0 +1,37 @@
+{
+  "name": "cinemind-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CineMind frontend prototype",
+  "scripts": {
+    "dev": "webpack serve --mode development",
+    "build": "webpack --mode production",
+    "data:prepare": "node scripts/prepare-catalog.mjs",
+    "data:check-posters": "node scripts/check-posters.mjs",
+    "lint:syntax": "node scripts/check-syntax.mjs",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "check": "npm run lint:syntax && npm run check:architecture && npm run build"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.9",
+    "@babel/preset-env": "^7.26.9",
+    "@babel/preset-react": "^7.26.3",
+    "autoprefixer": "^10.4.20",
+    "babel-loader": "^9.2.1",
+    "css-loader": "^7.1.2",
+    "html-webpack-plugin": "^5.6.3",
+    "lodash": "4.17.21",
+    "postcss": "^8.5.3",
+    "postcss-loader": "^8.1.1",
+    "style-loader": "^4.0.0",
+    "tailwindcss": "^3.4.17",
+    "webpack": "^5.98.0",
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^5.2.0"
+  }
+}

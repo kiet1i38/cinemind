@@ -1,0 +1,30 @@
+node_modules/
+frontend/dist/
+# Local project context and handoff documents
+flag.md
+hướng dẫn.html
+# Local secrets and environment files
+**/.env
+**/.env.*
+!**/.env.example
+frontend/public/data/netflix-shows.zip
+frontend/public/data/raw/
+frontend/public/data/poster-cache.json
+backend/data/*
+!backend/data/.gitkeep
+output/
+.playwright-cli/
+*.log
+.cache/
+**/.cache/
+**/.venv/
+**/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+.coverage
+.DS_Store
+Thumbs.db

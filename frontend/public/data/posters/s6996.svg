@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900" viewBox="0 0 600 900" role="img" aria-label="Hope: One in a Billion">
+  <defs>
+    <linearGradient id="poster-gradient-s6996" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#12131a" />
+      <stop offset="100%" stop-color="#e50914" stop-opacity="0.48" />
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#poster-gradient-s6996)" />
+  <circle cx="520" cy="178" r="180" fill="#e50914" opacity="0.14" />
+  <circle cx="92" cy="770" r="220" fill="#f7f7f8" opacity="0.05" />
+  <path d="M54 112H546" stroke="#f7f7f8" opacity="0.28" />
+  <text x="54" y="78" fill="#f7f7f8" font-family="Arial, sans-serif" font-size="20" font-weight="700" letter-spacing="3">CineMind</text>
+  <text x="54" y="160" fill="#a7abb8" font-family="Arial, sans-serif" font-size="16" letter-spacing="2">Movie</text>
+  <text x="54" y="194" fill="#a7abb8" font-family="Arial, sans-serif" font-size="16">2017</text>
+  <text x="54" y="520" fill="#f7f7f8" font-size="42" font-weight="700">Hope: One in a Billion</text>
+  <rect x="54" y="790" width="86" height="5" rx="2.5" fill="#e50914" />
+  <text x="54" y="842" fill="#a7abb8" font-family="Arial, sans-serif" font-size="14">Documentaries / International Movies</text>
+  <text x="546" y="842" text-anchor="end" fill="#a7abb8" font-family="Arial, sans-serif" font-size="14">s6996</text>
+</svg>

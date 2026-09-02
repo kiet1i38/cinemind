@@ -1,0 +1,127 @@
+{
+  "brand": {
+    "name": "CineMind",
+    "wordmarkPrefix": "cine",
+    "wordmarkSuffix": "mind",
+    "profileInitials": "CM"
+  },
+  "data": {
+    "catalogName": "Netflix",
+    "catalogProvider": "Kaggle",
+    "posterProvider": "TMDB API with IMDb and TVmaze fallback",
+    "posterAttribution": "This product uses the TMDB API but is not endorsed or certified by TMDB."
+  },
+  "languages": {
+    "default": "en",
+    "storageKey": "cinemind-language",
+    "options": [
+      { "value": "en", "labelKey": "english" },
+      { "value": "vi", "labelKey": "vietnamese" }
+    ]
+  },
+  "navigation": [
+    { "target": "home", "labelKey": "home" },
+    { "target": "movies", "labelKey": "movies" },
+    { "target": "tv", "labelKey": "tvShows" },
+    { "target": "signals", "labelKey": "mySignals" }
+  ],
+  "catalog": {
+    "sourcePath": "public/data/raw/netflix_titles.csv",
+    "outputPath": "public/data/catalog.json",
+    "sourceUrl": "data/catalog.json",
+    "allValue": "all",
+    "types": [
+      { "key": "movie", "value": "Movie", "labelKey": "movie", "filterLabelKey": "moviesOnly", "navigationTarget": "movies" },
+      { "key": "tvShow", "value": "TV Show", "labelKey": "tvShow", "filterLabelKey": "tvOnly", "navigationTarget": "tv" }
+    ],
+    "yearBuckets": [
+      { "value": "2020s", "labelKey": "year2020s", "min": 2020 },
+      { "value": "2010s", "labelKey": "year2010s", "min": 2010, "maxExclusive": 2020 },
+      { "value": "before2010", "labelKey": "before2010", "maxExclusive": 2010 }
+    ],
+    "displayLimits": {
+      "featured": 1,
+      "rail": 12,
+      "related": 12
+    },
+    "pagination": {
+      "defaultPageSize": 20,
+      "pageSizeOptions": [5, 10, 20, 50],
+      "storageKey": "cinemind-catalog-page-size"
+    },
+    "tvEpisodeRuntimeMinutes": 45,
+    "normalization": {
+      "castLimit": 6,
+      "countryLimit": 4
+    },
+    "posterPreparation": {
+      "provider": "TMDB API with IMDb and TVmaze fallback",
+      "candidateLimit": null,
+      "cachePath": "public/data/poster-cache.json",
+      "cacheVersion": 3,
+      "batchSize": 64,
+      "maxAttempts": 2,
+      "retryDelayMs": 300,
+      "batchDelayMs": 50,
+      "validationBatchSize": 64,
+      "requestTimeoutMs": 5000,
+      "yearTolerance": 3,
+      "fuzzyMatchThreshold": 0.58,
+      "cacheWriteIntervalBatches": 10,
+      "progressLogIntervalBatches": 10,
+      "tmdb": {
+        "apiBaseUrl": "https://api.themoviedb.org/3",
+        "imageBaseUrl": "https://image.tmdb.org/t/p/w500",
+        "language": "en-US",
+        "region": "US",
+        "includeAdult": false,
+        "batchSize": 32,
+        "batchDelayMs": 100
+      },
+      "imdb": {
+        "endpoint": "https://v3.sg.media-imdb.com/suggestion/x/{title}.json"
+      },
+      "tvmaze": {
+        "endpoint": "https://api.tvmaze.com/search/shows?q={title}",
+        "imageKey": "medium"
+      }
+    }
+  },
+  "signals": {
+    "storageKey": "cinemind-ratings",
+    "rating": {
+      "min": 0,
+      "max": 10,
+      "step": 0.5
+    },
+    "watchMinutes": {
+      "min": 0,
+      "step": 1
+    }
+  },
+  "routes": {
+    "titlePrefix": "/title/"
+  },
+  "poster": {
+    "fallbackTones": [
+      "poster-tone-a",
+      "poster-tone-b",
+      "poster-tone-c",
+      "poster-tone-d"
+    ],
+    "generatedFallback": {
+      "directory": "public/data/posters",
+      "publicPath": "data/posters",
+      "width": 600,
+      "height": 900,
+      "titleMaxChars": 24,
+      "titleMaxLines": 4,
+      "palette": [
+        { "background": "#12131a", "foreground": "#f7f7f8", "muted": "#a7abb8", "accent": "#e50914" },
+        { "background": "#141b22", "foreground": "#f7f7f8", "muted": "#a6b7c2", "accent": "#39b8d4" },
+        { "background": "#211c2c", "foreground": "#f7f7f8", "muted": "#b9aecb", "accent": "#c084fc" },
+        { "background": "#29271a", "foreground": "#f7f7f8", "muted": "#c5c09e", "accent": "#f5c518" }
+      ]
+    }
+  }
+}

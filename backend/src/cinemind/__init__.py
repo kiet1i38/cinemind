@@ -1,0 +1,1 @@
+"""CineMind backend application package."""

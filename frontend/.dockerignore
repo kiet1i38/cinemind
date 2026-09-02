@@ -1,0 +1,17 @@
+node_modules
+.cache
+*.log
+.env
+.env.*
+!.env.example
+public/data/netflix-shows.zip
+public/data/raw
+src
+scripts
+package.json
+package-lock.json
+babel.config.json
+postcss.config.js
+tailwind.config.js
+webpack.config.js
+README.md
