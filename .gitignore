@@ -3,6 +3,7 @@ frontend/dist/
 # Local project context and handoff documents
 flag.md
 hướng dẫn.html
+now.html
 # Local secrets and environment files
 **/.env
 **/.env.*
