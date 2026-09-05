@@ -1,9 +1,9 @@
-import { ArrowUpRight, Clock, Star } from "@phosphor-icons/react";
+import { ArrowUpRight, BookmarkSimple, Check, Clock, Heart, Star } from "@phosphor-icons/react";
 import { getRuntimeLabel, getTypeLabel } from "../lib/catalog";
 import { translate } from "../lib/i18n";
 import { PosterImage } from "./PosterImage";
 
-export function CatalogCard({ record, language, onSelect }) {
+export function CatalogCard({ record, language, onSelect, onToggleFavorite, onToggleWatchlist, isFavorite = false, isInWatchlist = false }) {
   return (
     <article className="catalog-card" data-testid="catalog-card">
       <button
@@ -32,6 +32,28 @@ export function CatalogCard({ record, language, onSelect }) {
           </div>
         </div>
       </button>
+      <div className="catalog-card-actions">
+        <button
+          type="button"
+          className={`catalog-card-action${isFavorite ? " active" : ""}`}
+          onClick={() => onToggleFavorite?.(record, !isFavorite)}
+          aria-pressed={isFavorite}
+          aria-label={translate(language, isFavorite ? "removeFavorite" : "addFavorite", { title: record.title })}
+        >
+          {isFavorite ? <Check size={13} weight="bold" aria-hidden="true" /> : <Heart size={13} weight="bold" aria-hidden="true" />}
+          <span>{translate(language, isFavorite ? "removeFavoriteShort" : "addFavoriteShort")}</span>
+        </button>
+        <button
+          type="button"
+          className={`catalog-card-action${isInWatchlist ? " active" : ""}`}
+          onClick={() => onToggleWatchlist?.(record, !isInWatchlist)}
+          aria-pressed={isInWatchlist}
+          aria-label={translate(language, isInWatchlist ? "removeFromWatchlist" : "addToWatchlist", { title: record.title })}
+        >
+          {isInWatchlist ? <Check size={13} weight="bold" aria-hidden="true" /> : <BookmarkSimple size={13} weight="bold" aria-hidden="true" />}
+          <span>{translate(language, isInWatchlist ? "removeFromWatchlistShort" : "addToWatchlistShort")}</span>
+        </button>
+      </div>
     </article>
   );
 }

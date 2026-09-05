@@ -2,7 +2,7 @@ import { CaretLeft, CaretRight } from "@phosphor-icons/react";
 import { translate } from "../lib/i18n";
 import { CatalogCard } from "./CatalogCard";
 
-export function TitleRail({ id, title, description, items, language, onSelect }) {
+export function TitleRail({ id, title, description, items, language, onSelect, onToggleFavorite, onToggleWatchlist, favoriteIds = [], watchlistIds = [] }) {
   const scrollRail = (direction) => {
     const rail = document.querySelector(`[data-rail="${id}"]`);
     rail?.scrollBy({ left: direction * Math.min(window.innerWidth * 0.82, 720), behavior: "smooth" });
@@ -27,7 +27,7 @@ export function TitleRail({ id, title, description, items, language, onSelect })
         </div>
       </div>
       <div className="title-rail" data-rail={id} data-testid={`rail-${id}`}>
-        {items.map((record) => <CatalogCard key={record.id} record={record} language={language} onSelect={onSelect} />)}
+        {items.map((record) => <CatalogCard key={record.id} record={record} language={language} onSelect={onSelect} onToggleFavorite={onToggleFavorite} onToggleWatchlist={onToggleWatchlist} isFavorite={favoriteIds.includes(String(record.id))} isInWatchlist={watchlistIds.includes(String(record.id))} />)}
       </div>
     </section>
   );

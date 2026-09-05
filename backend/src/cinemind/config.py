@@ -20,6 +20,15 @@ def _int_from_environment(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from error
 
 
+def _list_from_environment(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    values = tuple(item.strip() for item in value.split(",") if item.strip())
+    return values or default
+
+
 @dataclass(frozen=True)
 class Settings:
     """Runtime settings with safe local-development defaults."""
@@ -34,6 +43,8 @@ class Settings:
     db_connect_retries: int
     db_connect_retry_delay_seconds: int
     db_connect_timeout_seconds: int
+    max_watch_minutes: int
+    cors_allowed_origins: tuple[str, ...]
 
 
 @lru_cache(maxsize=1)
@@ -71,5 +82,10 @@ def get_settings() -> Settings:
         ),
         db_connect_timeout_seconds=_int_from_environment(
             "DB_CONNECT_TIMEOUT_SECONDS", 5
+        ),
+        max_watch_minutes=_int_from_environment("MAX_WATCH_MINUTES", 10080),
+        cors_allowed_origins=_list_from_environment(
+            "CORS_ALLOWED_ORIGINS",
+            ("http://localhost:5173", "http://127.0.0.1:5173"),
         ),
     )

@@ -22,6 +22,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cinemind}:${POSTGRES_PASSWORD:-cinemind_dev}@database:5432/${POSTGRES_DB:-cinemind}
       CATALOG_SEED_PATH: /app/data/catalog.json
       MIGRATIONS_PATH: /app/migrations
+      MAX_WATCH_MINUTES: ${MAX_WATCH_MINUTES:-10080}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     volumes:
       - ./frontend/public/data/catalog.json:/app/data/catalog.json:ro
     depends_on:

@@ -99,6 +99,14 @@
       "step": 1
     }
   },
+  "interaction": {
+    "apiBaseUrl": "/api/interaction",
+    "sessionStorageKey": "cinemind-interaction-session-id",
+    "favoritesStorageKey": "cinemind-favorites",
+    "watchlistStorageKey": "cinemind-watchlist",
+    "maxWatchMinutes": 10080,
+    "searchDebounceMs": 700
+  },
   "routes": {
     "titlePrefix": "/title/"
   },

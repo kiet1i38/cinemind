@@ -4,18 +4,29 @@ from datetime import datetime, timezone
 
 import psycopg
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from cinemind.catalog.routes import router as catalog_router
 from cinemind.catalog.schemas import ReadinessResponse
 from cinemind.config import get_settings
 from cinemind.db.connection import connection_scope
+from cinemind.interaction.routes import router as interaction_router
 
 
 def create_app() -> FastAPI:
     """Create the application without performing database work at import time."""
 
     application = FastAPI(title="CineMind API", version="0.1.0")
+    settings = get_settings()
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_allowed_origins),
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     application.include_router(catalog_router)
+    application.include_router(interaction_router)
 
     @application.get("/healthz")
     def healthcheck() -> dict[str, str]:
