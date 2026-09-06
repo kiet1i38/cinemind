@@ -62,6 +62,6 @@ The original CSV is kept in `frontend/public/data/raw/netflix_titles.csv`. The a
 
 - `interaction`: clears the current browser session's interaction rows and keeps the catalog.
 - `demo`: clears all current interaction data and keeps the catalog and operational history.
-- `full`: clears application data, reapplies migrations, and reseeds the catalog from the normalized dataset.
+- `full`: deletes all users, auth sessions, and interaction data while preserving the catalog, migration history, and operational audit tables.
 
 The reset endpoint is intentionally not listed in Swagger. Never place real admin credentials in the repository or in the frontend bundle.

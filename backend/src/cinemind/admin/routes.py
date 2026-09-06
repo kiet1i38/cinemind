@@ -10,7 +10,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from cinemind.admin.repository import ResetRepository
 from cinemind.admin.schemas import ResetRequest, ResetResponse
-from cinemind.admin.service import ResetExecutionError, ResetService, ResetValidationError
+from cinemind.admin.service import ResetService, ResetValidationError
 from cinemind.config import Settings, get_settings
 from cinemind.db.connection import connection_scope
 from cinemind.auth.routes import _request_is_secure
@@ -57,12 +57,6 @@ def reset_database(
         return ResetResponse(**service.reset(payload))
     except ResetValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    except ResetExecutionError:
-        logger.exception("CineMind full database reset failed during catalog reseed")
-        raise HTTPException(
-            status_code=500,
-            detail="Database reset could not reseed the catalog",
-        ) from None
     except psycopg.Error:
         logger.exception("CineMind database reset failed")
         raise HTTPException(status_code=503, detail="Database reset is unavailable") from None

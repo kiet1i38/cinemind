@@ -2,7 +2,6 @@
 
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -52,13 +51,18 @@ class FakeResetRepository:
         self.calls.append(("interaction",))
         return {"interaction.sessions": 3, "interaction.ratings": 4}
 
-    def delete_all_application_data(self):
-        self.calls.append(("full",))
-        return {"interaction.sessions": 3, "catalog.titles": 8}
+    def delete_all_user_data(self):
+        self.calls.append(("user_data",))
+        return {
+            "auth.sessions": 2,
+            "auth.users": 3,
+            "interaction.sessions": 4,
+            "interaction.ratings": 5,
+        }
 
 
 class ResetServiceTests(TestCase):
-    """Protect confirmation, scope mapping, and full reseed behavior."""
+    """Protect confirmation and verify each reset scope's data boundary."""
 
     def setUp(self):
         self.repository = FakeResetRepository()
@@ -88,27 +92,24 @@ class ResetServiceTests(TestCase):
         self.assertEqual(result["scope"], ResetScope.DEMO)
         self.assertIsNone(result["catalog_summary"])
 
-    def test_full_scope_reseeds_the_catalog_after_clearing_data(self):
-        bootstrap_result = {
-            "rows_loaded": 8807,
-            "catalog_summary": {"total": 8807, "movies": 6131},
-        }
-        with patch("cinemind.admin.service.bootstrap_catalog", return_value=bootstrap_result):
-            result = self.service.reset(ResetRequest(
-                scope=ResetScope.FULL,
-                confirmation="RESET FULL DATABASE",
-            ))
+    def test_full_scope_clears_all_user_data_but_preserves_catalog_and_ops(self):
+        result = self.service.reset(ResetRequest(
+            scope=ResetScope.FULL,
+            confirmation="RESET ALL USER DATA",
+        ))
 
-        self.assertEqual(self.repository.calls, [("full",)])
-        self.assertTrue(result["catalog_reseeded"])
-        self.assertEqual(result["seeded_catalog_rows"], 8807)
-        self.assertEqual(result["catalog_summary"]["total"], 8807)
+        self.assertEqual(self.repository.calls, [("user_data",)])
+        self.assertFalse(result["catalog_reseeded"])
+        self.assertEqual(result["seeded_catalog_rows"], 0)
+        self.assertIsNone(result["catalog_summary"])
+        self.assertNotIn("catalog.titles", result["deleted_rows"])
+        self.assertNotIn("ops.ingestion_runs", result["deleted_rows"])
 
     def test_wrong_confirmation_is_rejected_before_a_transaction(self):
         with self.assertRaises(ResetValidationError):
             self.service.reset(ResetRequest(
                 scope=ResetScope.DEMO,
-                confirmation="RESET FULL DATABASE",
+                confirmation="RESET ALL USER DATA",
             ))
         self.assertEqual(self.repository.transactions_started, 0)
 

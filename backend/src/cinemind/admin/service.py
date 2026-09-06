@@ -5,13 +5,12 @@ from datetime import datetime, timezone
 from cinemind.config import Settings
 from cinemind.admin.repository import ResetRepository
 from cinemind.admin.schemas import ResetRequest, ResetScope
-from cinemind.scripts.bootstrap_catalog import bootstrap_catalog
 
 
 _CONFIRMATION_PHRASES = {
     ResetScope.INTERACTION: "RESET CURRENT SESSION",
     ResetScope.DEMO: "RESET DEMO DATA",
-    ResetScope.FULL: "RESET FULL DATABASE",
+    ResetScope.FULL: "RESET ALL USER DATA",
 }
 
 
@@ -19,12 +18,8 @@ class ResetValidationError(ValueError):
     """Raised when the reset request does not match its safety contract."""
 
 
-class ResetExecutionError(RuntimeError):
-    """Raised when a full reset cannot rebuild the catalog."""
-
-
 class ResetService:
-    """Coordinate reset scope, transaction boundaries, and catalog reseeding."""
+    """Coordinate reset scope, transaction boundaries, and data preservation."""
 
     def __init__(self, repository: ResetRepository, settings: Settings):
         self.repository = repository
@@ -53,23 +48,12 @@ class ResetService:
         return self._response(request.scope, deleted)
 
     def _reset_full_database(self, request: ResetRequest) -> dict:
+        """Clear all user-owned data without rebuilding catalog or ops history."""
+
         with self.repository.transaction():
-            deleted = self.repository.delete_all_application_data()
+            deleted = self.repository.delete_all_user_data()
 
-        try:
-            bootstrap_result = bootstrap_catalog(self.settings)
-        except Exception as error:
-            raise ResetExecutionError(
-                "The database was cleared but the catalog could not be reseeded"
-            ) from error
-
-        return self._response(
-            request.scope,
-            deleted,
-            catalog_reseeded=True,
-            seeded_catalog_rows=int(bootstrap_result["rows_loaded"]),
-            catalog_summary=bootstrap_result["catalog_summary"],
-        )
+        return self._response(request.scope, deleted)
 
     @staticmethod
     def confirmation_phrase(scope: ResetScope) -> str:

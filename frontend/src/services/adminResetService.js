@@ -1,6 +1,7 @@
 // Client for the protected maintenance endpoint. Credentials stay in memory only.
 
 import { appConfig, resolveApiBaseUrl } from "../config/appConfig";
+import { interactionSessionStore } from "./interactionStore";
 
 const resetConfig = appConfig.adminReset;
 
@@ -46,12 +47,12 @@ export async function resetDatabase({ username, password, scope, confirmation, s
 }
 
 export function readCurrentInteractionSession() {
-  try {
-    const value = window.localStorage.getItem(appConfig.interaction.sessionStorageKey);
-    return value?.trim() || null;
-  } catch {
-    return null;
-  }
+  const value = interactionSessionStore.read();
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)
+    ? normalized
+    : null;
 }
 
 export function clearLocalInteractionState() {

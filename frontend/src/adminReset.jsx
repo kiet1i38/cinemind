@@ -1,6 +1,6 @@
 import { ArrowLeft, CheckCircle, ShieldCheck, Warning, XCircle } from "@phosphor-icons/react";
 import { createRoot } from "react-dom/client";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { appConfig } from "./config/appConfig";
 import {
   clearLocalInteractionState,
@@ -28,9 +28,9 @@ const scopeCards = [
   {
     value: "full",
     eyebrow: "Mức 3",
-    title: "Toàn bộ database",
-    description: "Xóa dữ liệu interaction, catalog và ops, sau đó chạy migration và seed lại catalog.",
-    warning: "Chỉ dùng khi thật sự cần môi trường database mới hoàn toàn."
+    title: "Toàn bộ dữ liệu user",
+    description: "Xóa toàn bộ user, auth session và interaction data của ứng dụng.",
+    warning: "Giữ nguyên catalog phim, migration history và ops audit."
   }
 ];
 
@@ -48,7 +48,7 @@ export default function AdminResetPage() {
   const [requestState, setRequestState] = useState("idle");
   const [message, setMessage] = useState("");
   const [result, setResult] = useState(null);
-  const sessionId = useMemo(() => readCurrentInteractionSession(), []);
+  const [sessionId, setSessionId] = useState(() => readCurrentInteractionSession());
   const selectedScope = scopeCards.find((card) => card.value === scope) || scopeCards[0];
   const expectedPhrase = resetConfig.confirmationPhrases[scope];
   const hasCurrentSession = Boolean(sessionId);
@@ -70,6 +70,7 @@ export default function AdminResetPage() {
         sessionId
       });
       clearLocalInteractionState();
+      setSessionId(null);
       setPassword("");
       setConfirmation("");
       setResult(response);
@@ -155,7 +156,7 @@ export default function AdminResetPage() {
             </div>
           </div>
 
-          {scope === "full" ? <div className="reset-danger-note"><Warning size={18} weight="fill" aria-hidden="true" /><span>Mức này sẽ seed lại toàn bộ catalog từ nguồn đã cấu hình sau khi xóa dữ liệu database.</span></div> : null}
+          {scope === "full" ? <div className="reset-danger-note"><Warning size={18} weight="fill" aria-hidden="true" /><span>Mức này xóa toàn bộ user và dữ liệu tương tác nhưng giữ nguyên catalog phim, migration history và ops audit.</span></div> : null}
           {message ? <div className={`reset-feedback ${requestState}`} role={requestState === "error" ? "alert" : "status"}>{requestState === "error" ? <XCircle size={18} weight="fill" aria-hidden="true" /> : <CheckCircle size={18} weight="fill" aria-hidden="true" />}<span>{message}</span></div> : null}
 
           <div className="reset-actions">
@@ -172,7 +173,7 @@ export default function AdminResetPage() {
           <p className="reset-result-meta">{result.scope} / {formatResetTime(result.reset_at)}</p>
           <div className="reset-result-grid">
             {Object.entries(result.deleted_rows || {}).map(([table, count]) => <div key={table}><span>{table}</span><strong>{count}</strong></div>)}
-            <div><span>Catalog reseeded</span><strong>{result.catalog_reseeded ? `${result.seeded_catalog_rows} rows` : "No"}</strong></div>
+            <div><span>Catalog</span><strong>{result.catalog_reseeded ? `${result.seeded_catalog_rows} rows reseeded` : "Preserved"}</strong></div>
           </div>
         </section> : null}
 

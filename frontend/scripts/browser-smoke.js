@@ -233,5 +233,19 @@ async (page) => {
   await waitForHome();
   report.catalogRecovery = true;
 
+  const resetSessionStorageKey = "cinemind-interaction-session-id";
+  const resetProbeSessionId = "00000000-0000-4000-8000-000000000001";
+  const resetPageUrl = await page.evaluate(() => new URL("reset.html", window.location.href).href);
+  await page.goto(resetPageUrl);
+  await page.evaluate(({ key, value }) => window.localStorage.setItem(key, JSON.stringify(value)), {
+    key: resetSessionStorageKey,
+    value: resetProbeSessionId
+  });
+  await page.reload();
+  report.resetSessionIdParsed = (await page.locator(".reset-session-label").textContent()) === "Current session found"
+    && (await page.locator(".reset-selected-summary small").textContent()).includes(resetProbeSessionId.slice(0, 8))
+    && !(await page.locator(".reset-selected-summary small").textContent()).includes('"');
+  await page.evaluate((key) => window.localStorage.removeItem(key), resetSessionStorageKey);
+
   return { ...report, consoleErrors, pageErrors };
 }

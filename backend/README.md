@@ -73,7 +73,7 @@ python -m uvicorn cinemind.main:app --reload --port 8000
 
 Use `backend/.env.example` as the configuration reference. Never commit a real `.env` file or database credential.
 
-Set `ADMIN_RESET_USERNAME` and `ADMIN_RESET_PASSWORD` before using the reset console. The endpoint requires HTTP Basic Auth and an exact scope-specific confirmation phrase. `interaction` resets the current session, `demo` resets all interaction data, and `full` clears application data before running the catalog bootstrap again.
+Set `ADMIN_RESET_USERNAME` and `ADMIN_RESET_PASSWORD` before using the reset console. The endpoint requires HTTP Basic Auth and an exact scope-specific confirmation phrase. `interaction` resets the current session, `demo` resets all interaction data, and `full` deletes every user, auth session, and interaction row while preserving the catalog and operational audit history.
 
 ## Tests
 

@@ -137,7 +137,7 @@
     "confirmationPhrases": {
       "interaction": "RESET CURRENT SESSION",
       "demo": "RESET DEMO DATA",
-      "full": "RESET FULL DATABASE"
+      "full": "RESET ALL USER DATA"
     }
   },
   "routes": {

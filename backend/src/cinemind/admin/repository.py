@@ -12,21 +12,6 @@ _SESSION_TABLES = (
     "interaction.sessions",
 )
 
-_CATALOG_TABLES = (
-    "catalog.title_genres",
-    "catalog.title_cast",
-    "catalog.title_countries",
-    "catalog.title_directors",
-    "catalog.titles",
-)
-
-_OPS_TABLES = (
-    "ops.data_quality_issues",
-    "ops.ingestion_runs",
-    "ops.dataset_sources",
-    "ops.schema_migrations",
-)
-
 _AUTH_TABLES = (
     "auth.sessions",
     "auth.users",
@@ -54,13 +39,11 @@ class ResetRepository:
 
         return self._delete_tables(_SESSION_TABLES)
 
-    def delete_all_application_data(self) -> dict[str, int]:
-        """Delete all rows that can be rebuilt by the catalog bootstrap."""
+    def delete_all_user_data(self) -> dict[str, int]:
+        """Delete every account and interaction row while preserving catalog and ops."""
 
         deleted = self._delete_tables(_AUTH_TABLES)
         deleted.update(self.delete_all_interactions())
-        deleted.update(self._delete_tables(_CATALOG_TABLES))
-        deleted.update(self._delete_tables(_OPS_TABLES))
         return deleted
 
     def _delete_tables(
