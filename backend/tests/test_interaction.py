@@ -14,6 +14,7 @@ from cinemind.interaction.service import (
     InteractionNotFoundError,
     InteractionService,
     InteractionValidationError,
+    InteractionUnauthorizedError,
 )
 
 
@@ -158,7 +159,7 @@ class FakeInteractionRepository:
             "changed_at": datetime.now(timezone.utc),
         }
 
-    def interaction_state(self, _session_id):
+    def interaction_state(self, _session_id, _user_id=None):
         return {"ratings": tuple(), "favorites": tuple(), "watchlist_items": tuple()}
 
 
@@ -232,6 +233,19 @@ class InteractionServiceTests(unittest.TestCase):
             self.service.record_watch_session(self.session_id, "missing", 10)
         with self.assertRaises(InteractionValidationError):
             self.service.record_search_event(self.session_id, "   ", 0, {})
+
+    def test_account_owned_session_rejects_anonymous_and_other_account_access(self):
+        account_id = uuid4()
+        other_account_id = uuid4()
+        self.repository.sessions[self.session_id]["user_id"] = account_id
+
+        with self.assertRaises(InteractionUnauthorizedError):
+            self.service.get_state(self.session_id)
+        with self.assertRaises(InteractionUnauthorizedError):
+            self.service.get_state(self.session_id, other_account_id)
+
+        state = self.service.get_state(self.session_id, account_id)
+        self.assertEqual(state["session_id"], self.session_id)
 
     def test_rating_must_use_half_point_steps(self):
         with self.assertRaises(InteractionValidationError):

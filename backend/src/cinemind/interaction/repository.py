@@ -25,14 +25,17 @@ class InteractionRepository:
         started_at: datetime,
         locale: str | None,
         platform: str | None,
+        user_id: UUID | None = None,
     ) -> dict:
         row = self.connection.execute(
             """
-            INSERT INTO interaction.sessions (session_id, started_at, last_seen_at, locale, platform)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO interaction.sessions (
+                session_id, started_at, last_seen_at, locale, platform, user_id
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING session_id, started_at, last_seen_at
             """,
-            (session_id, started_at, started_at, locale, platform),
+            (session_id, started_at, started_at, locale, platform, user_id),
         ).fetchone()
         if row is None:
             raise RuntimeError("Could not create interaction session")
@@ -41,7 +44,7 @@ class InteractionRepository:
     def get_session(self, session_id: UUID) -> dict | None:
         row = self.connection.execute(
             """
-            SELECT session_id, started_at, last_seen_at, ended_at, locale, platform
+            SELECT session_id, started_at, last_seen_at, ended_at, locale, platform, user_id
             FROM interaction.sessions
             WHERE session_id = %s
             """,
@@ -194,41 +197,56 @@ class InteractionRepository:
         ).fetchone()
         return dict(row) if row else None
 
-    def interaction_state(self, session_id: UUID) -> dict[str, tuple[dict, ...]]:
+    def interaction_state(
+        self,
+        session_id: UUID,
+        user_id: UUID | None = None,
+    ) -> dict[str, tuple[dict, ...]]:
+        session_clause = "s.user_id = %s" if user_id is not None else "s.session_id = %s"
+        session_parameter = user_id if user_id is not None else session_id
         ratings = self.connection.execute(
-            """
+            f"""
             SELECT DISTINCT ON (r.title_id)
                    t.show_id,
                    r.rating_value AS rating,
                    ws.watch_seconds,
                    r.rated_at
             FROM interaction.ratings r
+            JOIN interaction.sessions s ON s.session_id = r.session_id
             JOIN catalog.titles t ON t.title_id = r.title_id
             LEFT JOIN interaction.watch_sessions ws ON ws.watch_session_id = r.watch_session_id
-            WHERE r.session_id = %s
+            WHERE {session_clause}
             ORDER BY r.title_id, r.rated_at DESC, r.rating_id DESC
             """,
-            (session_id,),
+            (session_parameter,),
         ).fetchall()
-        favorites = self._active_preferences("favorites", session_id)
-        watchlist_items = self._active_preferences("watchlist_items", session_id)
+        favorites = self._active_preferences("favorites", session_id, user_id)
+        watchlist_items = self._active_preferences("watchlist_items", session_id, user_id)
         return {
             "ratings": tuple(dict(row) for row in ratings),
             "favorites": favorites,
             "watchlist_items": watchlist_items,
         }
 
-    def _active_preferences(self, table_name: str, session_id: UUID) -> tuple[dict, ...]:
+    def _active_preferences(
+        self,
+        table_name: str,
+        session_id: UUID,
+        user_id: UUID | None = None,
+    ) -> tuple[dict, ...]:
         table = self._preference_table(table_name)
+        session_clause = "s.user_id = %s" if user_id is not None else "s.session_id = %s"
+        session_parameter = user_id if user_id is not None else session_id
         rows = self.connection.execute(
             f"""
             SELECT t.show_id, p.added_at AS changed_at
             FROM interaction.{table} p
+            JOIN interaction.sessions s ON s.session_id = p.session_id
             JOIN catalog.titles t ON t.title_id = p.title_id
-            WHERE p.session_id = %s AND p.removed_at IS NULL
+            WHERE {session_clause} AND p.removed_at IS NULL
             ORDER BY p.added_at DESC, t.show_id
             """,
-            (session_id,),
+            (session_parameter,),
         ).fetchall()
         return tuple(dict(row) for row in rows)
 

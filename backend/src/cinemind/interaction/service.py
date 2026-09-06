@@ -6,6 +6,7 @@ import re
 from uuid import UUID, uuid4
 
 from cinemind.config import Settings
+from cinemind.interaction.limits import MAX_SEARCH_QUERY_LENGTH, normalize_filters
 from cinemind.interaction.models import WatchMetrics
 from cinemind.interaction.repository import InteractionRepository
 
@@ -18,6 +19,10 @@ class InteractionNotFoundError(LookupError):
     """Raised when a session or catalog title cannot be found."""
 
 
+class InteractionUnauthorizedError(PermissionError):
+    """Raised when an account attempts to use another session."""
+
+
 class InteractionService:
     """Coordinate interaction use cases and keep database writes atomic."""
 
@@ -25,11 +30,18 @@ class InteractionService:
         self.repository = repository
         self.settings = settings
 
-    def create_session(self, locale: str | None, platform: str | None) -> dict:
+    def create_session(
+        self,
+        locale: str | None,
+        platform: str | None,
+        user_id: UUID | None = None,
+    ) -> dict:
         now = datetime.now(timezone.utc)
         session_id = uuid4()
         with self.repository.transaction():
-            return self.repository.create_session(session_id, now, locale, platform)
+            if user_id is None:
+                return self.repository.create_session(session_id, now, locale, platform)
+            return self.repository.create_session(session_id, now, locale, platform, user_id)
 
     def record_search_event(
         self,
@@ -37,20 +49,29 @@ class InteractionService:
         query: str,
         result_count: int,
         filters: dict[str, str],
+        user_id: UUID | None = None,
     ) -> dict:
         query_text = self._normalize_text(query, "query")
+        if len(query_text) > MAX_SEARCH_QUERY_LENGTH:
+            raise InteractionValidationError(
+                f"query must be at most {MAX_SEARCH_QUERY_LENGTH} characters"
+            )
         normalized_query = self.normalize_query(query_text)
         if result_count < 0:
             raise InteractionValidationError("result_count must be greater than or equal to zero")
+        try:
+            normalized_filters = normalize_filters(filters)
+        except ValueError as error:
+            raise InteractionValidationError(str(error)) from error
         with self.repository.transaction():
-            self._require_session(session_id)
+            self._require_session(session_id, user_id)
             self.repository.touch_session(session_id)
             return self.repository.create_search_event(
                 session_id,
                 query_text,
                 normalized_query,
                 result_count,
-                filters,
+                normalized_filters,
             )
 
     def record_watch_session(
@@ -58,10 +79,11 @@ class InteractionService:
         session_id: UUID,
         show_id: str,
         watch_minutes: int,
+        user_id: UUID | None = None,
     ) -> dict:
         watch_session_id = uuid4()
         with self.repository.transaction():
-            title, metrics = self._prepare_watch(session_id, show_id, watch_minutes)
+            title, metrics = self._prepare_watch(session_id, show_id, watch_minutes, user_id)
             watch_session = self.repository.create_watch_session(
                 watch_session_id,
                 session_id,
@@ -80,10 +102,11 @@ class InteractionService:
         show_id: str,
         rating: Decimal,
         watch_session_id: UUID | None = None,
+        user_id: UUID | None = None,
     ) -> dict:
         rating_value = self._normalize_rating(rating)
         with self.repository.transaction():
-            self._require_session(session_id)
+            self._require_session(session_id, user_id)
             title = self._require_title(show_id)
             if watch_session_id is not None:
                 linked_watch = self.repository.get_watch_session(watch_session_id)
@@ -108,11 +131,12 @@ class InteractionService:
         show_id: str,
         rating: Decimal,
         watch_minutes: int,
+        user_id: UUID | None = None,
     ) -> dict:
         rating_value = self._normalize_rating(rating)
         watch_session_id = uuid4()
         with self.repository.transaction():
-            title, metrics = self._prepare_watch(session_id, show_id, watch_minutes)
+            title, metrics = self._prepare_watch(session_id, show_id, watch_minutes, user_id)
             watch_session = self.repository.create_watch_session(
                 watch_session_id,
                 session_id,
@@ -134,17 +158,29 @@ class InteractionService:
             "rating": rating_row | {"show_id": title["show_id"], "rating": rating_value},
         }
 
-    def add_preference(self, table_name: str, session_id: UUID, show_id: str) -> dict:
+    def add_preference(
+        self,
+        table_name: str,
+        session_id: UUID,
+        show_id: str,
+        user_id: UUID | None = None,
+    ) -> dict:
         with self.repository.transaction():
-            self._require_session(session_id)
+            self._require_session(session_id, user_id)
             title = self._require_title(show_id)
             self.repository.touch_session(session_id)
             row = self.repository.add_preference(table_name, session_id, title["title_id"])
         return row | {"show_id": title["show_id"], "active": True}
 
-    def remove_preference(self, table_name: str, session_id: UUID, show_id: str) -> dict:
+    def remove_preference(
+        self,
+        table_name: str,
+        session_id: UUID,
+        show_id: str,
+        user_id: UUID | None = None,
+    ) -> dict:
         with self.repository.transaction():
-            self._require_session(session_id)
+            self._require_session(session_id, user_id)
             title = self._require_title(show_id)
             self.repository.touch_session(session_id)
             row = self.repository.remove_preference(table_name, session_id, title["title_id"])
@@ -156,9 +192,9 @@ class InteractionService:
             "changed_at": changed_at,
         }
 
-    def get_state(self, session_id: UUID) -> dict:
-        self._require_session(session_id)
-        state = self.repository.interaction_state(session_id)
+    def get_state(self, session_id: UUID, user_id: UUID | None = None) -> dict:
+        self._require_session(session_id, user_id)
+        state = self.repository.interaction_state(session_id, user_id)
         return {
             "session_id": session_id,
             "ratings": tuple(
@@ -178,7 +214,13 @@ class InteractionService:
             "watchlist_items": state["watchlist_items"],
         }
 
-    def _prepare_watch(self, session_id: UUID, show_id: str, watch_minutes: int) -> tuple[dict, WatchMetrics]:
+    def _prepare_watch(
+        self,
+        session_id: UUID,
+        show_id: str,
+        watch_minutes: int,
+        user_id: UUID | None = None,
+    ) -> tuple[dict, WatchMetrics]:
         if watch_minutes < 0:
             raise InteractionValidationError("watch_minutes must be greater than or equal to zero")
         if watch_minutes > self.settings.max_watch_minutes:
@@ -186,7 +228,7 @@ class InteractionService:
                 f"watch_minutes must be less than or equal to {self.settings.max_watch_minutes}"
             )
         title = self._require_title(show_id)
-        self._require_session(session_id)
+        self._require_session(session_id, user_id)
         runtime_seconds = None
         completion_rate = None
         if title["content_type"] == "Movie" and title["movie_duration_min"]:
@@ -207,10 +249,15 @@ class InteractionService:
             duration_basis=duration_basis,
         )
 
-    def _require_session(self, session_id: UUID) -> dict:
+    def _require_session(self, session_id: UUID, user_id: UUID | None = None) -> dict:
         session = self.repository.get_session(session_id)
         if session is None or session.get("ended_at") is not None:
             raise InteractionNotFoundError(f"Interaction session not found: {session_id}")
+        session_user_id = session.get("user_id")
+        if session_user_id is not None and user_id is None:
+            raise InteractionUnauthorizedError("Authentication required")
+        if user_id is not None and session_user_id != user_id:
+            raise InteractionUnauthorizedError("Interaction session does not belong to this account")
         return session
 
     def _require_title(self, show_id: str) -> dict:

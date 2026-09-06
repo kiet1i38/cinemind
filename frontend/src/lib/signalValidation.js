@@ -22,7 +22,7 @@ export function validateSignalInput({ rating, watchMinutes }) {
   else if (!isValidNumber(ratingValue, signalConfig.rating, { max: true })) errors.rating = "ratingError";
 
   if (!durationValue.trim()) errors.watchMinutes = "requiredField";
-  else if (!isValidNumber(durationValue, signalConfig.watchMinutes)) errors.watchMinutes = "durationError";
+  else if (!isValidNumber(durationValue, signalConfig.watchMinutes, { max: true })) errors.watchMinutes = "durationError";
 
   return errors;
 }

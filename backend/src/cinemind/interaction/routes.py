@@ -3,8 +3,9 @@
 from collections.abc import Iterator
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from cinemind.auth.dependencies import AuthContext, get_optional_auth_context, require_auth_context
 from cinemind.config import get_settings
 from cinemind.db.connection import connection_scope
 from cinemind.interaction.repository import InteractionRepository
@@ -26,11 +27,37 @@ from cinemind.interaction.schemas import (
 from cinemind.interaction.service import (
     InteractionNotFoundError,
     InteractionService,
+    InteractionUnauthorizedError,
     InteractionValidationError,
+)
+from cinemind.security import SlidingWindowRateLimiter
+
+
+interaction_rate_limiter = SlidingWindowRateLimiter(
+    max_attempts=get_settings().interaction_rate_limit_max_attempts,
+    window_seconds=get_settings().interaction_rate_limit_window_seconds,
 )
 
 
-router = APIRouter(prefix="/api/interaction", tags=["interaction"])
+def enforce_interaction_rate_limit(request: Request) -> None:
+    """Bound interaction traffic before a database dependency is opened."""
+
+    client_host = request.client.host if request.client else "unknown"
+    decision = interaction_rate_limiter.check(f"interaction:{client_host}")
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many interaction requests. Please try again later.",
+            headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
+    interaction_rate_limiter.record_failure(f"interaction:{client_host}")
+
+
+router = APIRouter(
+    prefix="/api/interaction",
+    tags=["interaction"],
+    dependencies=[Depends(enforce_interaction_rate_limit)],
+)
 
 
 def get_interaction_service() -> Iterator[InteractionService]:
@@ -44,16 +71,22 @@ def get_interaction_service() -> Iterator[InteractionService]:
 @router.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 def create_session(
     payload: SessionCreateRequest,
+    auth: AuthContext | None = Depends(get_optional_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> SessionResponse:
-    """Create an anonymous persistence session."""
+    """Create a browser session, linked to the account when signed in."""
 
-    return SessionResponse(**service.create_session(payload.locale, payload.platform))
+    return SessionResponse(**service.create_session(
+        payload.locale,
+        payload.platform,
+        auth.user_id if auth else None,
+    ))
 
 
 @router.post("/search-events", response_model=SearchEventResponse, status_code=status.HTTP_201_CREATED)
 def create_search_event(
     payload: SearchEventCreateRequest,
+    auth: AuthContext | None = Depends(get_optional_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> SearchEventResponse:
     """Store a debounced search event."""
@@ -64,9 +97,12 @@ def create_search_event(
             payload.query,
             payload.result_count,
             payload.filters,
+            auth.user_id if auth else None,
         ))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except InteractionUnauthorizedError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -74,6 +110,7 @@ def create_search_event(
 @router.post("/watch-sessions", response_model=WatchSessionResponse, status_code=status.HTTP_201_CREATED)
 def create_watch_session(
     payload: WatchSessionCreateRequest,
+    auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> WatchSessionResponse:
     """Store a normalized watch-duration event."""
@@ -83,9 +120,12 @@ def create_watch_session(
             payload.session_id,
             payload.show_id,
             payload.watch_minutes,
+            auth.user_id,
         ))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except InteractionUnauthorizedError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -93,6 +133,7 @@ def create_watch_session(
 @router.post("/ratings", response_model=RatingResponse, status_code=status.HTTP_201_CREATED)
 def create_rating(
     payload: RatingCreateRequest,
+    auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> RatingResponse:
     """Store a rating event."""
@@ -103,9 +144,12 @@ def create_rating(
             payload.show_id,
             payload.rating,
             payload.watch_session_id,
+            auth.user_id,
         ))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except InteractionUnauthorizedError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -113,6 +157,7 @@ def create_rating(
 @router.post("/signals", response_model=SignalResponse, status_code=status.HTTP_201_CREATED)
 def create_signal(
     payload: SignalCreateRequest,
+    auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> SignalResponse:
     """Persist watch duration and rating in one transaction."""
@@ -123,9 +168,12 @@ def create_signal(
             payload.show_id,
             payload.rating,
             payload.watch_minutes,
+            auth.user_id,
         ))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except InteractionUnauthorizedError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -133,104 +181,124 @@ def create_signal(
 @router.post("/favorites", response_model=PreferenceResponse, status_code=status.HTTP_201_CREATED)
 def add_favorite(
     payload: PreferenceCreateRequest,
+    auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
     """Add or restore a favorite title."""
 
-    return _preference_response(service, "favorites", payload)
+    return _preference_response(service, "favorites", payload, auth.user_id)
 
 
 @router.delete("/favorites/{show_id}", response_model=PreferenceResponse)
 def remove_favorite(
     show_id: str,
     session_id: UUID = Query(...),
+    auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
     """Soft-remove a favorite title; repeated removal is safe."""
 
-    return _remove_preference_response(service, "favorites", session_id, show_id)
+    return _remove_preference_response(service, "favorites", session_id, show_id, auth.user_id)
 
 
 @router.delete("/favorites/{show_id}/{session_id}", response_model=PreferenceResponse)
 def remove_favorite_by_path(
     show_id: str,
     session_id: UUID,
+    auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
     """Path-based favorite removal for hosts that filter session query keys."""
 
-    return _remove_preference_response(service, "favorites", session_id, show_id)
+    return _remove_preference_response(service, "favorites", session_id, show_id, auth.user_id)
 
 
 @router.post("/watchlist-items", response_model=PreferenceResponse, status_code=status.HTTP_201_CREATED)
 def add_watchlist_item(
     payload: PreferenceCreateRequest,
+    auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
     """Add or restore a watchlist title."""
 
-    return _preference_response(service, "watchlist_items", payload)
+    return _preference_response(service, "watchlist_items", payload, auth.user_id)
 
 
 @router.delete("/watchlist-items/{show_id}", response_model=PreferenceResponse)
 def remove_watchlist_item(
     show_id: str,
     session_id: UUID = Query(...),
+    auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
     """Soft-remove a watchlist title; repeated removal is safe."""
 
-    return _remove_preference_response(service, "watchlist_items", session_id, show_id)
+    return _remove_preference_response(service, "watchlist_items", session_id, show_id, auth.user_id)
 
 
 @router.delete("/watchlist-items/{show_id}/{session_id}", response_model=PreferenceResponse)
 def remove_watchlist_item_by_path(
     show_id: str,
     session_id: UUID,
+    auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
     """Path-based watchlist removal for hosts that filter session query keys."""
 
-    return _remove_preference_response(service, "watchlist_items", session_id, show_id)
+    return _remove_preference_response(service, "watchlist_items", session_id, show_id, auth.user_id)
 
 
 @router.get("/state", response_model=InteractionStateResponse)
 def get_interaction_state(
     session_id: UUID = Query(...),
+    auth: AuthContext | None = Depends(get_optional_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> InteractionStateResponse:
     """Restore latest ratings and active preference state for a session."""
 
     try:
-        return InteractionStateResponse(**service.get_state(session_id))
+        return InteractionStateResponse(**service.get_state(session_id, auth.user_id if auth else None))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except InteractionUnauthorizedError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
 
 
 @router.get("/state/{session_id}", response_model=InteractionStateResponse)
 def get_interaction_state_by_path(
     session_id: UUID,
+    auth: AuthContext | None = Depends(get_optional_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> InteractionStateResponse:
     """Path-based state restore for hosts that filter session query keys."""
 
     try:
-        return InteractionStateResponse(**service.get_state(session_id))
+        return InteractionStateResponse(**service.get_state(session_id, auth.user_id if auth else None))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except InteractionUnauthorizedError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
 
 
 def _preference_response(
     service: InteractionService,
     table_name: str,
     payload: PreferenceCreateRequest,
+    user_id,
 ) -> PreferenceResponse:
     try:
-        return PreferenceResponse(**service.add_preference(table_name, payload.session_id, payload.show_id))
+        return PreferenceResponse(**service.add_preference(
+            table_name,
+            payload.session_id,
+            payload.show_id,
+            user_id,
+        ))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except InteractionUnauthorizedError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
 
 
 def _remove_preference_response(
@@ -238,10 +306,18 @@ def _remove_preference_response(
     table_name: str,
     session_id: UUID,
     show_id: str,
+    user_id,
 ) -> PreferenceResponse:
     try:
-        return PreferenceResponse(**service.remove_preference(table_name, session_id, show_id))
+        return PreferenceResponse(**service.remove_preference(
+            table_name,
+            session_id,
+            show_id,
+            user_id,
+        ))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except InteractionUnauthorizedError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error

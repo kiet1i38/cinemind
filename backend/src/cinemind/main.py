@@ -1,32 +1,76 @@
 """FastAPI application entry point."""
 
 from datetime import datetime, timezone
+import logging
 
 import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from cinemind.admin.routes import router as admin_router
+from cinemind.auth.routes import router as auth_router
 from cinemind.catalog.routes import router as catalog_router
 from cinemind.catalog.schemas import ReadinessResponse
 from cinemind.config import get_settings
-from cinemind.db.connection import connection_scope
+from cinemind.db.connection import close_pool, connection_scope
 from cinemind.interaction.routes import router as interaction_router
+from cinemind.middleware import RequestBodyLimitMiddleware
+
+
+logger = logging.getLogger(__name__)
+
+REQUIRED_TABLES = (
+    ("ops", "schema_migrations"),
+    ("ops", "dataset_sources"),
+    ("ops", "ingestion_runs"),
+    ("ops", "data_quality_issues"),
+    ("catalog", "titles"),
+    ("catalog", "title_genres"),
+    ("catalog", "title_cast"),
+    ("catalog", "title_countries"),
+    ("catalog", "title_directors"),
+    ("interaction", "sessions"),
+    ("interaction", "search_events"),
+    ("interaction", "watch_sessions"),
+    ("interaction", "ratings"),
+    ("interaction", "favorites"),
+    ("interaction", "watchlist_items"),
+    ("auth", "users"),
+    ("auth", "sessions"),
+)
 
 
 def create_app() -> FastAPI:
     """Create the application without performing database work at import time."""
 
-    application = FastAPI(title="CineMind API", version="0.1.0")
+    application = FastAPI(
+        title="CineMind API",
+        version="0.2.0",
+        description=(
+            "Catalog and anonymous interaction APIs for the CineMind data-mining prototype. "
+            "Administrative reset operations are protected and intentionally excluded from OpenAPI."
+        ),
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+    )
     settings = get_settings()
+    application.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_body_bytes=settings.max_request_body_bytes,
+    )
     application.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_allowed_origins),
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
     application.include_router(catalog_router)
     application.include_router(interaction_router)
+    application.include_router(auth_router)
+    application.include_router(admin_router)
+    application.add_event_handler("shutdown", close_pool)
 
     @application.get("/healthz")
     def healthcheck() -> dict[str, str]:
@@ -36,21 +80,37 @@ def create_app() -> FastAPI:
 
     @application.get("/readyz", response_model=ReadinessResponse)
     def readiness() -> ReadinessResponse:
-        """Verify that PostgreSQL and the catalog table are available."""
+        """Verify that PostgreSQL and every runtime schema are available."""
 
         try:
             with connection_scope(get_settings()) as connection:
-                row = connection.execute(
-                    "SELECT to_regclass('catalog.titles') AS table_name"
-                ).fetchone()
+                required_values = ", ".join(
+                    f"('{schema_name}', '{table_name}')"
+                    for schema_name, table_name in REQUIRED_TABLES
+                )
+                rows = connection.execute(
+                    f"""
+                    SELECT required.schema_name,
+                           required.table_name,
+                           to_regclass(required.schema_name || '.' || required.table_name)
+                               AS qualified_name
+                    FROM (VALUES {required_values}) AS required(schema_name, table_name)
+                    """
+                ).fetchall()
         except psycopg.Error as error:
             raise HTTPException(status_code=503, detail="Database is unavailable") from error
 
-        if row is None or row["table_name"] is None:
-            raise HTTPException(status_code=503, detail="Catalog schema is not ready")
+        missing = [
+            f"{row['schema_name']}.{row['table_name']}"
+            for row in rows
+            if row["qualified_name"] is None
+        ]
+        if missing:
+            logger.warning("CineMind readiness is missing required database objects: %s", missing)
+            raise HTTPException(status_code=503, detail="Database schema is not ready")
         return ReadinessResponse(
             status="ready",
-            catalog_table=str(row["table_name"]),
+            catalog_table="catalog.titles",
             checked_at=datetime.now(timezone.utc),
         )
 

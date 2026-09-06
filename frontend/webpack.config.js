@@ -2,7 +2,12 @@ const path = require("path");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 
 module.exports = {
-  entry: path.resolve(__dirname, "src/index.jsx"),
+  entry: {
+    app: path.resolve(__dirname, "src/index.jsx"),
+    reset: path.resolve(__dirname, "src/adminReset.jsx"),
+    auth: path.resolve(__dirname, "src/auth.jsx"),
+    profile: path.resolve(__dirname, "src/profile.jsx")
+  },
   output: {
     path: path.resolve(__dirname, "dist"),
     filename: "assets/[name].[contenthash:8].js",
@@ -28,7 +33,31 @@ module.exports = {
   plugins: [
     new HtmlWebpackPlugin({
       template: path.resolve(__dirname, "public/index.html"),
+      filename: "index.html",
+      chunks: ["app"],
+      favicon: path.resolve(__dirname, "public/favicon.svg"),
       title: "CineMind"
+    }),
+    new HtmlWebpackPlugin({
+      template: path.resolve(__dirname, "public/reset.html"),
+      filename: "reset.html",
+      chunks: ["reset"],
+      favicon: path.resolve(__dirname, "public/favicon.svg"),
+      title: "CineMind Admin Reset"
+    }),
+    new HtmlWebpackPlugin({
+      template: path.resolve(__dirname, "public/auth.html"),
+      filename: "auth.html",
+      chunks: ["auth"],
+      favicon: path.resolve(__dirname, "public/favicon.svg"),
+      title: "CineMind Account"
+    }),
+    new HtmlWebpackPlugin({
+      template: path.resolve(__dirname, "public/profile.html"),
+      filename: "profile.html",
+      chunks: ["profile"],
+      favicon: path.resolve(__dirname, "public/favicon.svg"),
+      title: "CineMind Profile"
     })
   ],
   devServer: {

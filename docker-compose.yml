@@ -4,7 +4,11 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-cinemind}
       POSTGRES_USER: ${POSTGRES_USER:-cinemind}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cinemind_dev}
+      # Local Compose uses the private, unpublished database network. A fresh
+      # clone can start without a tracked or predictable database password.
+      # Set POSTGRES_HOST_AUTH_METHOD and DATABASE_URL explicitly when using a
+      # different environment or a shared database.
+      POSTGRES_HOST_AUTH_METHOD: ${POSTGRES_HOST_AUTH_METHOD:-trust}
     volumes:
       - cinemind-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -19,11 +23,29 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cinemind}:${POSTGRES_PASSWORD:-cinemind_dev}@database:5432/${POSTGRES_DB:-cinemind}
+      CINEMIND_ENVIRONMENT: ${CINEMIND_ENVIRONMENT:-development}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-cinemind}@database:5432/${POSTGRES_DB:-cinemind}}
       CATALOG_SEED_PATH: /app/data/catalog.json
       MIGRATIONS_PATH: /app/migrations
       MAX_WATCH_MINUTES: ${MAX_WATCH_MINUTES:-10080}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-cinemind_auth}
+      AUTH_SESSION_TTL_DAYS: ${AUTH_SESSION_TTL_DAYS:-30}
+      AUTH_PASSWORD_ITERATIONS: ${AUTH_PASSWORD_ITERATIONS:-600000}
+      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE:-1}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-5}
+      DB_POOL_TIMEOUT_SECONDS: ${DB_POOL_TIMEOUT_SECONDS:-5}
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-32768}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      REQUIRE_HTTPS: ${REQUIRE_HTTPS:-false}
+      AUTH_RATE_LIMIT_WINDOW_SECONDS: ${AUTH_RATE_LIMIT_WINDOW_SECONDS:-300}
+      AUTH_RATE_LIMIT_MAX_ATTEMPTS: ${AUTH_RATE_LIMIT_MAX_ATTEMPTS:-10}
+      INTERACTION_RATE_LIMIT_WINDOW_SECONDS: ${INTERACTION_RATE_LIMIT_WINDOW_SECONDS:-60}
+      INTERACTION_RATE_LIMIT_MAX_ATTEMPTS: ${INTERACTION_RATE_LIMIT_MAX_ATTEMPTS:-120}
+      ADMIN_RESET_USERNAME: ${ADMIN_RESET_USERNAME:-}
+      ADMIN_RESET_PASSWORD: ${ADMIN_RESET_PASSWORD:-}
+      RESET_ENABLED: ${RESET_ENABLED:-true}
+      FULL_RESET_ENABLED: ${FULL_RESET_ENABLED:-true}
     volumes:
       - ./frontend/public/data/catalog.json:/app/data/catalog.json:ro
     depends_on:

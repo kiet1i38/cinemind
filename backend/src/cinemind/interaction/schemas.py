@@ -4,7 +4,9 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr, field_validator
+
+from cinemind.interaction.limits import normalize_filters
 
 
 class SessionCreateRequest(BaseModel):
@@ -27,8 +29,15 @@ class SearchEventCreateRequest(BaseModel):
 
     session_id: UUID
     query: str = Field(..., min_length=1, max_length=200)
-    result_count: int = Field(default=0, ge=0)
-    filters: dict[str, str] = Field(default_factory=dict)
+    result_count: int = Field(default=0, ge=0, le=2_147_483_647)
+    filters: dict[StrictStr, StrictStr] = Field(default_factory=dict)
+
+    @field_validator("filters")
+    @classmethod
+    def validate_filters(cls, value: dict[str, str]) -> dict[str, str]:
+        """Reject oversized or malformed filter payloads before persistence."""
+
+        return normalize_filters(value)
 
 
 class SearchEventResponse(BaseModel):

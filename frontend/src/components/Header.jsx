@@ -3,7 +3,12 @@ import { Fragment, useState } from "react";
 import { appConfig, languageOptions } from "../config/appConfig";
 import { translate } from "../lib/i18n";
 
-export function Header({ language, setLanguage, query, setQuery, onNavigate }) {
+function userInitials(user) {
+  const words = String(user?.display_name || user?.username || "CM").trim().split(/\s+/).filter(Boolean);
+  return words.slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "CM";
+}
+
+export function Header({ language, setLanguage, query, setQuery, onNavigate, activeTarget, authUser, onAuthAction }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   const navigate = (target) => {
@@ -20,7 +25,10 @@ export function Header({ language, setLanguage, query, setQuery, onNavigate }) {
         </button>
 
         <nav className="desktop-nav" aria-label={translate(language, "primaryNavigation")}>
-          {appConfig.navigation.map((item, index) => <button key={item.target} type="button" className={`nav-link${index === 0 ? " active" : ""}`} onClick={() => navigate(item.target)}>{translate(language, item.labelKey)}</button>)}
+          {appConfig.navigation.map((item) => {
+            const isActive = item.target === activeTarget;
+            return <button key={item.target} type="button" className={`nav-link${isActive ? " active" : ""}`} onClick={() => navigate(item.target)} aria-current={isActive ? "page" : undefined}>{translate(language, item.labelKey)}</button>;
+          })}
         </nav>
 
         <div className="header-actions">
@@ -45,12 +53,24 @@ export function Header({ language, setLanguage, query, setQuery, onNavigate }) {
           <button type="button" className="mobile-menu-button" onClick={() => setMenuOpen((open) => !open)} aria-label={menuOpen ? translate(language, "close") : translate(language, "openMenu")} aria-expanded={menuOpen}>
             {menuOpen ? <X size={22} aria-hidden="true" /> : <List size={22} aria-hidden="true" />}
           </button>
-          <span className="profile-mark" aria-label={translate(language, "profileLabel", { brand: appConfig.brand.name })}>{appConfig.brand.profileInitials}</span>
+          {authUser ? (
+            <a className="profile-link" href={`./${appConfig.auth.profilePage}`} aria-label={translate(language, "viewProfile")}>
+              <span className="profile-mark" aria-hidden="true">{userInitials(authUser)}</span>
+              <span className="profile-name">{authUser.display_name}</span>
+            </a>
+          ) : (
+            <button type="button" className="header-auth-button" onClick={() => onAuthAction?.("login")}>
+              {translate(language, "signIn")}
+            </button>
+          )}
         </div>
       </div>
       {menuOpen ? (
         <nav className="mobile-nav" aria-label={translate(language, "mobileNavigation")}>
-          {appConfig.navigation.map((item) => <button key={item.target} type="button" onClick={() => navigate(item.target)}>{translate(language, item.labelKey)}</button>)}
+          {appConfig.navigation.map((item) => {
+            const isActive = item.target === activeTarget;
+            return <button key={item.target} type="button" className={isActive ? "active" : ""} onClick={() => navigate(item.target)} aria-current={isActive ? "page" : undefined}>{translate(language, item.labelKey)}</button>;
+          })}
         </nav>
       ) : null}
     </header>

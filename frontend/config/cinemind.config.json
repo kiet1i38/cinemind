@@ -9,6 +9,14 @@
     "catalogName": "Netflix",
     "catalogProvider": "Kaggle",
     "posterProvider": "TMDB API with IMDb and TVmaze fallback",
+    "posterProviderLabels": {
+      "en": "TMDB API, IMDb, and TVmaze",
+      "vi": "TMDB API, IMDb và TVmaze"
+    },
+    "posterAttributionLabels": {
+      "en": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
+      "vi": "Sản phẩm này sử dụng TMDB API nhưng không được TMDB chứng nhận hoặc bảo trợ."
+    },
     "posterAttribution": "This product uses the TMDB API but is not endorsed or certified by TMDB."
   },
   "languages": {
@@ -102,10 +110,35 @@
   "interaction": {
     "apiBaseUrl": "/api/interaction",
     "sessionStorageKey": "cinemind-interaction-session-id",
+    "ownerStorageKey": "cinemind-interaction-owner",
     "favoritesStorageKey": "cinemind-favorites",
     "watchlistStorageKey": "cinemind-watchlist",
+    "outboxStorageKey": "cinemind-interaction-outbox",
     "maxWatchMinutes": 10080,
     "searchDebounceMs": 700
+  },
+  "runtime": {
+    "frontendPathPrefix": "/cinemind/",
+    "apiPathPrefix": "/cinemind-api"
+  },
+  "auth": {
+    "apiBaseUrl": "/api/auth",
+    "authPage": "auth.html",
+    "profilePage": "profile.html",
+    "usernameMinLength": 3,
+    "usernameMaxLength": 32,
+    "displayNameMaxLength": 80,
+    "passwordMinLength": 8,
+    "passwordMaxLength": 128
+  },
+  "adminReset": {
+    "apiBaseUrl": "/api/admin",
+    "resetPath": "/reset",
+    "confirmationPhrases": {
+      "interaction": "RESET CURRENT SESSION",
+      "demo": "RESET DEMO DATA",
+      "full": "RESET FULL DATABASE"
+    }
   },
   "routes": {
     "titlePrefix": "/title/"

@@ -11,23 +11,32 @@ import { Header } from "./components/Header";
 import { Hero } from "./components/Hero";
 import { LoadingState } from "./components/LoadingState";
 import { RatingModal } from "./components/RatingModal";
+import { AuthRequiredModal } from "./components/AuthRequiredModal";
 import { TitleRail } from "./components/TitleRail";
 import { closeTitleRoute, filterCatalog, getGenres, getRouteTitleId, openTitleRoute } from "./lib/catalog";
-import { translate } from "./lib/i18n";
+import { syncDocumentLanguage, translate } from "./lib/i18n";
 import { loadCatalog } from "./services/catalogService";
 import {
-  addFavorite,
-  addWatchlistItem,
   getInteractionState,
+  isRetryableInteractionError,
   recordSearchEvent,
-  removeFavorite,
-  removeWatchlistItem,
-  submitSignal
+  setFavoritePreference,
+  setWatchlistPreference,
+  submitSignal,
+  syncPendingInteractions
 } from "./services/interactionService";
 import { getDiscoverableTitles, getRecentTitles, getRelatedTitles, getTitlesByType } from "./services/recommendationService";
 import { catalogPageSizeStore } from "./services/catalogPreferencesStore";
-import { favoriteStore, watchlistStore } from "./services/interactionStore";
+import { getAuthPageUrl, getCurrentUser } from "./services/authService";
+import {
+  clearInteractionState,
+  favoriteStore,
+  mergeInteractionState,
+  setInteractionOwner,
+  watchlistStore
+} from "./services/interactionStore";
 import { languageStore, signalStore } from "./services/signalStore";
+import "./authGate.css";
 
 export default function App() {
   const [language, setLanguage] = useState(() => languageStore.read());
@@ -44,9 +53,14 @@ export default function App() {
   const [ratings, setRatings] = useState(() => signalStore.read());
   const [favorites, setFavorites] = useState(() => favoriteStore.read());
   const [watchlist, setWatchlist] = useState(() => watchlistStore.read());
-  const [interactionStatus, setInteractionStatus] = useState("local");
+  const [authUser, setAuthUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authPrompt, setAuthPrompt] = useState(null);
   const [toast, setToast] = useState("");
+  const [activeNavigationTarget, setActiveNavigationTarget] = useState(navigationTargets.home);
   const searchEventSignature = useRef("");
+  const languageRef = useRef(language);
+  const preferenceIntentRef = useRef({ favorites: new Map(), watchlist: new Map() });
 
   const loadData = useCallback((signal) => {
     setLoadState("loading");
@@ -75,7 +89,40 @@ export default function App() {
 
   useEffect(() => {
     languageStore.write(language);
+    syncDocumentLanguage(language);
+    languageRef.current = language;
   }, [language]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getCurrentUser()
+      .then((user) => {
+        if (cancelled) return;
+        const ownership = setInteractionOwner(user?.user_id);
+        if (ownership.changed) {
+          clearInteractionState({ preserveSession: true });
+          setInteractionOwner(user?.user_id);
+        }
+        setAuthUser(user);
+        setRatings(signalStore.read());
+        setFavorites(favoriteStore.read());
+        setWatchlist(watchlistStore.read());
+        setAuthReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        clearInteractionState({ preserveSession: true });
+        setInteractionOwner(null);
+        setAuthUser(null);
+        setRatings({});
+        setFavorites([]);
+        setWatchlist([]);
+        setAuthReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     signalStore.write(ratings);
@@ -90,35 +137,40 @@ export default function App() {
   }, [watchlist]);
 
   const interactionMetadata = useCallback(() => ({
-    locale: language,
+    locale: languageRef.current,
     platform: typeof navigator !== "undefined" ? String(navigator.platform || "web").slice(0, 32) : "web"
-  }), [language]);
+  }), []);
 
   useEffect(() => {
+    if (!authReady || !catalog.length) return undefined;
     let cancelled = false;
     getInteractionState(interactionMetadata())
       .then((state) => {
         if (cancelled) return;
-        const remoteRatings = Object.fromEntries((state?.ratings || []).map((item) => [
-          String(item.show_id),
-          {
-            rating: Number(item.rating),
-            watchMinutes: item.watch_minutes === null ? 0 : Number(item.watch_minutes),
-            savedAt: item.rated_at
-          }
-        ]));
-        setRatings(remoteRatings);
-        setFavorites((state?.favorites || []).map((item) => String(item.show_id)));
-        setWatchlist((state?.watchlist_items || []).map((item) => String(item.show_id)));
-        setInteractionStatus("synced");
+        const merged = mergeInteractionState(state, {
+          ratings: signalStore.read(),
+          favorites: favoriteStore.read(),
+          watchlist: watchlistStore.read()
+        });
+        setRatings(merged.ratings);
+        setFavorites(merged.favorites);
+        setWatchlist(merged.watchlist_items);
+        syncPendingInteractions(catalog, interactionMetadata()).catch(() => undefined);
       })
-      .catch(() => {
-        if (!cancelled) setInteractionStatus("local");
-      });
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [interactionMetadata]);
+  }, [authReady, catalog, interactionMetadata]);
+
+  useEffect(() => {
+    if (!authReady || !catalog.length) return undefined;
+    const retryPending = () => {
+      syncPendingInteractions(catalog, interactionMetadata()).catch(() => undefined);
+    };
+    window.addEventListener("online", retryPending);
+    return () => window.removeEventListener("online", retryPending);
+  }, [authReady, catalog, interactionMetadata]);
 
   useEffect(() => {
     catalogPageSizeStore.write(pageSize);
@@ -168,8 +220,7 @@ export default function App() {
         filters: { type, genre, year },
         ...interactionMetadata()
       })
-        .then(() => setInteractionStatus("synced"))
-        .catch(() => setInteractionStatus("local"));
+        .catch(() => undefined);
     }, appConfig.interaction.searchDebounceMs);
     return () => window.clearTimeout(timeout);
   }, [filteredCatalog.length, genre, interactionMetadata, query, type, year]);
@@ -188,6 +239,7 @@ export default function App() {
   }, []);
 
   const handleNavigate = useCallback((target) => {
+    setActiveNavigationTarget(target);
     if (target === navigationTargets.home) {
       clearFilters();
       goHome();
@@ -213,7 +265,21 @@ export default function App() {
     }
   }, [clearFilters, goHome]);
 
-  const openModal = useCallback((item) => setModalItem(item), []);
+  const handleQueryChange = useCallback((nextQuery) => {
+    setQuery(nextQuery);
+    if (nextQuery.trim()) setActiveNavigationTarget(null);
+  }, []);
+
+  const requestAuth = useCallback((action, item = null) => {
+    if (authUser) return false;
+    setAuthPrompt({ action, title: item?.title || "" });
+    return true;
+  }, [authUser]);
+
+  const openModal = useCallback((item) => {
+    if (requestAuth("rating", item)) return;
+    setModalItem(item);
+  }, [requestAuth]);
   const openDetail = useCallback((item) => {
     setModalItem(null);
     openTitleRoute(item.id);
@@ -226,59 +292,90 @@ export default function App() {
 
   const saveSignal = useCallback(async (signal) => {
     const item = modalItem;
-    if (!item) return;
+    if (!item || !authUser) return;
+    const previousSignal = ratings[item.id];
     setRatings((current) => ({ ...current, [item.id]: { ...signal, savedAt: new Date().toISOString() } }));
-    setModalItem(null);
     try {
       await submitSignal({ record: item, ...signal, ...interactionMetadata() });
-      setInteractionStatus("synced");
+      setModalItem(null);
       setToast(translate(language, "savedSignal"));
-    } catch {
-      setInteractionStatus("local");
-      setToast(translate(language, "savedSignalLocally"));
+    } catch (error) {
+      if (isRetryableInteractionError(error)) {
+        setModalItem(null);
+        setToast(translate(language, "savedSignalLocally"));
+        return;
+      }
+      setRatings((current) => {
+        const next = { ...current };
+        if (previousSignal) next[item.id] = previousSignal;
+        else delete next[item.id];
+        return next;
+      });
+      if (error.status === 401 || error.status === 403) {
+        setModalItem(null);
+        setAuthPrompt({ action: "rating", title: item.title });
+        return;
+      }
+      throw Object.assign(error, { userMessage: "signalSaveError" });
     }
-  }, [interactionMetadata, language, modalItem]);
+  }, [authUser, interactionMetadata, language, modalItem, ratings]);
 
-  const toggleFavorite = useCallback(async (record, nextActive) => {
+  const togglePreference = useCallback(async (kind, record, nextActive) => {
+    if (requestAuth("preference", record)) return;
     const id = String(record.id);
-    const shouldAdd = typeof nextActive === "boolean" ? nextActive : !favorites.includes(id);
-    setFavorites((current) => shouldAdd
+    const intentMap = preferenceIntentRef.current[kind];
+    const currentActive = intentMap.has(id)
+      ? intentMap.get(id)
+      : (kind === "favorites" ? favorites : watchlist).includes(id);
+    const shouldAdd = intentMap.has(id) ? !currentActive : (typeof nextActive === "boolean" ? nextActive : !currentActive);
+    intentMap.set(id, shouldAdd);
+    const update = (current) => shouldAdd
       ? [...new Set([...current, id])]
-      : current.filter((itemId) => itemId !== id));
+      : current.filter((itemId) => itemId !== id);
+    if (kind === "favorites") setFavorites(update);
+    else setWatchlist(update);
     try {
-      if (shouldAdd) await addFavorite(record, interactionMetadata());
-      else await removeFavorite(record, interactionMetadata());
-      setInteractionStatus("synced");
+      const save = kind === "favorites" ? setFavoritePreference : setWatchlistPreference;
+      await save(record, shouldAdd, interactionMetadata());
       setToast(translate(language, "preferenceSaved"));
-    } catch {
-      setInteractionStatus("local");
-      setToast(translate(language, "preferenceSavedLocally"));
+    } catch (error) {
+      if (isRetryableInteractionError(error)) {
+        setToast(translate(language, "preferenceSavedLocally"));
+        return;
+      }
+      if (intentMap.get(id) === shouldAdd) {
+        intentMap.delete(id);
+        if (kind === "favorites") setFavorites((current) => shouldAdd ? current.filter((itemId) => itemId !== id) : [...new Set([...current, id])]);
+        else setWatchlist((current) => shouldAdd ? current.filter((itemId) => itemId !== id) : [...new Set([...current, id])]);
+      }
+      if (error.status === 401 || error.status === 403) {
+        setAuthPrompt({ action: "preference", title: record.title });
+      } else {
+        setToast(translate(language, "preferenceSaveError"));
+      }
     }
-  }, [favorites, interactionMetadata, language]);
+  }, [favorites, interactionMetadata, language, requestAuth, watchlist]);
 
-  const toggleWatchlist = useCallback(async (record, nextActive) => {
-    const id = String(record.id);
-    const shouldAdd = typeof nextActive === "boolean" ? nextActive : !watchlist.includes(id);
-    setWatchlist((current) => shouldAdd
-      ? [...new Set([...current, id])]
-      : current.filter((itemId) => itemId !== id));
-    try {
-      if (shouldAdd) await addWatchlistItem(record, interactionMetadata());
-      else await removeWatchlistItem(record, interactionMetadata());
-      setInteractionStatus("synced");
-      setToast(translate(language, "preferenceSaved"));
-    } catch {
-      setInteractionStatus("local");
-      setToast(translate(language, "preferenceSavedLocally"));
-    }
-  }, [interactionMetadata, language, watchlist]);
+  const toggleFavorite = useCallback((record, nextActive) => togglePreference("favorites", record, nextActive), [togglePreference]);
+  const toggleWatchlist = useCallback((record, nextActive) => togglePreference("watchlist", record, nextActive), [togglePreference]);
 
-  if (loadState === "loading") return <><Header language={language} setLanguage={setLanguage} query={query} setQuery={setQuery} onNavigate={handleNavigate} /><LoadingState language={language} /></>;
-  if (loadState === "error") return <><Header language={language} setLanguage={setLanguage} query={query} setQuery={setQuery} onNavigate={handleNavigate} /><ErrorState language={language} onRetry={() => loadData()} /></>;
+  const headerProps = {
+    language,
+    setLanguage,
+    query,
+    setQuery: handleQueryChange,
+    onNavigate: handleNavigate,
+    activeTarget: activeNavigationTarget,
+    authUser,
+    onAuthAction: (mode) => { window.location.href = getAuthPageUrl(mode); }
+  };
+
+  if (loadState === "loading" || !authReady) return <><Header {...headerProps} /><LoadingState language={language} /></>;
+  if (loadState === "error") return <><Header {...headerProps} /><ErrorState language={language} onRetry={() => loadData()} /></>;
 
   return (
     <div className="app-shell">
-      <Header language={language} setLanguage={setLanguage} query={query} setQuery={setQuery} onNavigate={handleNavigate} />
+      <Header {...headerProps} />
       {routeId ? (
         <DetailView item={routeItem} related={routeRelated} language={language} onBack={backFromDetail} onRate={openModal} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} isFavorite={routeItem ? favorites.includes(String(routeItem.id)) : false} isInWatchlist={routeItem ? watchlist.includes(String(routeItem.id)) : false} favoriteIds={favorites} watchlistIds={watchlist} />
       ) : (
@@ -321,8 +418,9 @@ export default function App() {
           </div>
         </main>
       )}
-      <footer className="app-footer"><p><strong>{appConfig.brand.name}</strong> / {translate(language, "footerNote")}</p><p>{translate(language, "dataNote")} / {translate(language, "signalsSaved", { count: ratedRecords.length })} / <span className="interaction-status" data-testid="interaction-status">{translate(language, interactionStatus === "synced" ? "interactionSynced" : "interactionLocal")}</span></p><p className="footer-attribution">{translate(language, "tmdbAttribution")}</p></footer>
+      <footer className="app-footer"><p><strong>{appConfig.brand.name}</strong> / {translate(language, "footerNote")}</p><p className="footer-attribution">{translate(language, "tmdbAttribution")}</p></footer>
       <RatingModal item={modalItem} language={language} existingSignal={modalItem ? ratings[modalItem.id] : null} onClose={() => setModalItem(null)} onSave={saveSignal} />
+      <AuthRequiredModal language={language} action={authPrompt?.action} title={authPrompt?.title} onClose={() => setAuthPrompt(null)} />
       {toast ? <div className="toast" role="status"><Check size={17} weight="bold" aria-hidden="true" />{toast}</div> : null}
     </div>
   );

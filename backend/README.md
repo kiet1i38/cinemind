@@ -1,14 +1,16 @@
 # CineMind backend
 
-This backend milestone implements the `ops` and `catalog` boundaries only. It does not implement interaction persistence, machine learning, recommendation serving, authentication, or login.
+This backend implements the `ops`, `catalog`, `interaction`, and cookie-session `auth` boundaries. It also exposes a protected maintenance reset endpoint that is intentionally excluded from the public OpenAPI schema.
 
 ## Implemented boundaries
 
 - `ops`: registers the Kaggle catalog source, records ingestion runs, and stores data-quality issues.
 - `catalog`: stores normalized title records plus genre, cast, country, and director relations.
+- `interaction`: stores anonymous sessions, search events, watch sessions, ratings, favorites, and watchlist items.
+- `auth`: stores account records and hashed opaque sessions; account sessions can own and aggregate interaction sessions.
 - Catalog input: `frontend/public/data/catalog.json`, which currently contains the normalized 8,807-title catalog.
 - Database: PostgreSQL.
-- API: FastAPI, with read-only catalog endpoints for the next frontend integration step.
+- API: FastAPI, with catalog, interaction, and protected maintenance boundaries.
 
 ## Project layout
 
@@ -17,8 +19,12 @@ backend/
 |-- migrations/
 |   |-- 000_bootstrap.sql
 |   |-- 001_create_ops_schema.sql
-|   `-- 002_create_catalog_schema.sql
+|   |-- 002_create_catalog_schema.sql
+|   |-- 003_create_interaction_schema.sql
+|   |-- 004_harden_interaction_constraints.sql
+|   `-- 005_create_auth_schema.sql
 |-- src/cinemind/
+|   |-- admin/
 |   |-- catalog/
 |   |-- db/
 |   |-- ops/
@@ -46,8 +52,12 @@ The backend waits for PostgreSQL, applies missing migrations, and upserts the ca
 - Catalog page: `http://127.0.0.1:8000/api/catalog?limit=20&offset=0`
 - Catalog summary: `http://127.0.0.1:8000/api/catalog/summary`
 - One title: `http://127.0.0.1:8000/api/catalog/s1`
+- Interactive Swagger: `http://127.0.0.1:8000/docs`
+- Redoc: `http://127.0.0.1:8000/redoc`
+- Auth state: `GET http://127.0.0.1:8000/api/auth/me`
+- Login/register: `POST http://127.0.0.1:8000/api/auth/login` and `POST http://127.0.0.1:8000/api/auth/register`
 
-The existing frontend remains on port `5173`. It is not switched to the API in this milestone.
+The frontend remains on port `5173` and uses the interaction API when available. Its separate reset console is `http://127.0.0.1:5173/reset.html`.
 
 ## Run locally
 
@@ -62,6 +72,8 @@ python -m uvicorn cinemind.main:app --reload --port 8000
 ```
 
 Use `backend/.env.example` as the configuration reference. Never commit a real `.env` file or database credential.
+
+Set `ADMIN_RESET_USERNAME` and `ADMIN_RESET_PASSWORD` before using the reset console. The endpoint requires HTTP Basic Auth and an exact scope-specific confirmation phrase. `interaction` resets the current session, `demo` resets all interaction data, and `full` clears application data before running the catalog bootstrap again.
 
 ## Tests
 
@@ -79,4 +91,6 @@ python -m unittest discover -s backend/tests -p "test_*.py"
 - Movie duration is stored in `movie_duration_min`; TV Show duration is stored in `season_count`.
 - A TV Show's `runtimeMinutes` value from the frontend catalog is not treated as Movie runtime.
 - Remote poster URL and local fallback path are stored separately.
+- Passwords are stored only as salted PBKDF2-HMAC-SHA256 hashes; the browser receives an HttpOnly, SameSite cookie and never receives the raw session token in JavaScript.
+- Login accepts a normalized email or username, and a newly authenticated account may merge its current anonymous interaction session.
 - Ingestion failures and invalid rows are recorded in `ops` before the process exits.
