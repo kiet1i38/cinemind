@@ -15,8 +15,13 @@ function getMode() {
 }
 
 function safeReturnTo(value) {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) return "./";
-  return value;
+  if (typeof value !== "string" || !value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return "./";
+  try {
+    const resolved = new URL(value, window.location.origin);
+    return resolved.origin === window.location.origin ? value : "./";
+  } catch {
+    return "./";
+  }
 }
 
 function errorCopy(error, language) {

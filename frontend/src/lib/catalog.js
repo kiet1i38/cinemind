@@ -8,6 +8,7 @@ function normalizeSearchTerm(value) {
 }
 
 function numericValue(value) {
+  if (value === null || value === undefined || (typeof value === "string" && value.trim() === "")) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -79,7 +80,12 @@ export function getRouteTitleId() {
   const prefix = getTitleRoutePrefix();
   if (!window.location.hash.startsWith(prefix)) return null;
   const encodedId = window.location.hash.slice(prefix.length);
-  return encodedId ? decodeURIComponent(encodedId) : null;
+  if (!encodedId) return null;
+  try {
+    return decodeURIComponent(encodedId);
+  } catch {
+    return null;
+  }
 }
 
 export function openTitleRoute(id) {

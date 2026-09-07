@@ -7,9 +7,9 @@ import { getRuntimeLabel, getTypeLabel } from "./lib/catalog";
 import { syncDocumentLanguage, translate } from "./lib/i18n";
 import { getCurrentUser, getAuthPageUrl, logout, logoutAll } from "./services/authService";
 import { loadCatalog } from "./services/catalogService";
-import { getInteractionState } from "./services/interactionService";
-import { clearInteractionState } from "./services/interactionStore";
-import { languageStore } from "./services/signalStore";
+import { getInteractionState, syncPendingInteractions } from "./services/interactionService";
+import { clearInteractionState, favoriteStore, mergeInteractionState, watchlistStore } from "./services/interactionStore";
+import { languageStore, signalStore } from "./services/signalStore";
 import "./styles.css";
 import "./profile.css";
 
@@ -46,7 +46,7 @@ export default function ProfilePage() {
   const [language, setLanguage] = useState(() => languageStore.read());
   const [user, setUser] = useState(null);
   const [catalog, setCatalog] = useState([]);
-  const [state, setState] = useState({ ratings: [], favorites: [], watchlist_items: [] });
+  const [state, setState] = useState({ ratings: {}, favorites: [], watchlist_items: [] });
   const [loadState, setLoadState] = useState("loading");
   const [message, setMessage] = useState("");
 
@@ -57,31 +57,56 @@ export default function ProfilePage() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getCurrentUser(), loadCatalog()])
-      .then(async ([currentUser, records]) => {
-        if (!currentUser) {
-          window.location.href = getAuthPageUrl("login", `${window.location.pathname}${window.location.search}`);
-          return;
-        }
-        const interactionState = await getInteractionState({ locale: language, platform: "web" });
-        if (cancelled) return;
-        setUser(currentUser);
-        setCatalog(records);
-        setState(interactionState || { ratings: [], favorites: [], watchlist_items: [] });
-        setLoadState("ready");
-      })
-      .catch(() => {
-        if (!cancelled) setLoadState("error");
-      });
+    const metadata = {
+      locale: language,
+      platform: typeof navigator !== "undefined" ? String(navigator.platform || "web").slice(0, 32) : "web"
+    };
+    const localInteractionState = () => ({
+      ratings: signalStore.read(),
+      favorites: favoriteStore.read(),
+      watchlist: watchlistStore.read()
+    });
+    const mergeProfileState = (remoteState) => mergeInteractionState(remoteState, localInteractionState());
+
+    async function loadProfile() {
+      const [currentUser, records] = await Promise.all([getCurrentUser(), loadCatalog()]);
+      if (!currentUser) {
+        window.location.href = getAuthPageUrl("login", `${window.location.pathname}${window.location.search}`);
+        return;
+      }
+
+      let interactionState = null;
+      try {
+        interactionState = await getInteractionState(metadata);
+      } catch {
+        // Keep pending browser activity visible while the interaction API recovers.
+      }
+      if (cancelled) return;
+      setUser(currentUser);
+      setCatalog(records);
+      setState(mergeProfileState(interactionState));
+      setLoadState("ready");
+
+      syncPendingInteractions(records, metadata)
+        .then(() => getInteractionState(metadata))
+        .then((reconciledState) => {
+          if (!cancelled) setState(mergeProfileState(reconciledState));
+        })
+        .catch(() => undefined);
+    }
+
+    loadProfile().catch(() => {
+      if (!cancelled) setLoadState("error");
+    });
     return () => {
       cancelled = true;
     };
   }, [language]);
 
   const recordsById = useMemo(() => new Map(catalog.map((record) => [String(record.id), record])), [catalog]);
-  const ratedRecords = useMemo(() => (state.ratings || []).map((item) => ({ record: recordsById.get(String(item.show_id)), rating: item.rating })).filter((item) => item.record), [recordsById, state.ratings]);
-  const favoriteRecords = useMemo(() => (state.favorites || []).map((item) => recordsById.get(String(item.show_id))).filter(Boolean), [recordsById, state.favorites]);
-  const watchlistRecords = useMemo(() => (state.watchlist_items || []).map((item) => recordsById.get(String(item.show_id))).filter(Boolean), [recordsById, state.watchlist_items]);
+  const ratedRecords = useMemo(() => Object.entries(state.ratings || {}).map(([showId, item]) => ({ record: recordsById.get(String(showId)), rating: item?.rating })).filter((item) => item.record), [recordsById, state.ratings]);
+  const favoriteRecords = useMemo(() => (state.favorites || []).map((showId) => recordsById.get(String(showId))).filter(Boolean), [recordsById, state.favorites]);
+  const watchlistRecords = useMemo(() => (state.watchlist_items || []).map((showId) => recordsById.get(String(showId))).filter(Boolean), [recordsById, state.watchlist_items]);
 
   async function signOut(allDevices = false) {
     const confirmed = window.confirm(translate(language, allDevices ? "logoutAllConfirm" : "logoutConfirm"));

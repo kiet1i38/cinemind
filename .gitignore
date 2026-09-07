@@ -4,6 +4,7 @@ frontend/dist/
 flag.md
 hướng dẫn.html
 now.html
+QA-REPORT-*.md
 # Local secrets and environment files
 **/.env
 **/.env.*

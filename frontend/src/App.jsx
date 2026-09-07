@@ -54,13 +54,17 @@ export default function App() {
   const [favorites, setFavorites] = useState(() => favoriteStore.read());
   const [watchlist, setWatchlist] = useState(() => watchlistStore.read());
   const [authUser, setAuthUser] = useState(null);
-  const [authReady, setAuthReady] = useState(false);
+  const [authStatus, setAuthStatus] = useState("checking");
   const [authPrompt, setAuthPrompt] = useState(null);
   const [toast, setToast] = useState("");
   const [activeNavigationTarget, setActiveNavigationTarget] = useState(navigationTargets.home);
   const searchEventSignature = useRef("");
   const languageRef = useRef(language);
   const preferenceIntentRef = useRef({ favorites: new Map(), watchlist: new Map() });
+  const authRequestRef = useRef(null);
+  const authRetryRef = useRef(null);
+
+  const authReady = authStatus === "authenticated" || authStatus === "anonymous";
 
   const loadData = useCallback((signal) => {
     setLoadState("loading");
@@ -95,32 +99,65 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    getCurrentUser()
-      .then((user) => {
-        if (cancelled) return;
-        const ownership = setInteractionOwner(user?.user_id);
-        if (ownership.changed) {
-          clearInteractionState({ preserveSession: true });
-          setInteractionOwner(user?.user_id);
-        }
-        setAuthUser(user);
-        setRatings(signalStore.read());
-        setFavorites(favoriteStore.read());
-        setWatchlist(watchlistStore.read());
-        setAuthReady(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
+    const clearRetry = () => {
+      if (authRetryRef.current === null) return;
+      window.clearTimeout(authRetryRef.current);
+      authRetryRef.current = null;
+    };
+    const applyConfirmedIdentity = (user) => {
+      const ownership = setInteractionOwner(user?.user_id);
+      if (ownership.changed) {
         clearInteractionState({ preserveSession: true });
-        setInteractionOwner(null);
-        setAuthUser(null);
-        setRatings({});
-        setFavorites([]);
-        setWatchlist([]);
-        setAuthReady(true);
-      });
+        setInteractionOwner(user?.user_id);
+      }
+      setAuthUser(user);
+      setRatings(signalStore.read());
+      setFavorites(favoriteStore.read());
+      setWatchlist(watchlistStore.read());
+      setAuthStatus(user ? "authenticated" : "anonymous");
+    };
+    const scheduleAuthRetry = () => {
+      if (cancelled || authRetryRef.current !== null) return;
+      authRetryRef.current = window.setTimeout(() => {
+        authRetryRef.current = null;
+        checkAuth();
+      }, 3000);
+    };
+    const checkAuth = () => {
+      if (cancelled || authRequestRef.current) return;
+      setAuthStatus("checking");
+      const request = getCurrentUser()
+        .then((user) => {
+          if (cancelled) return;
+          clearRetry();
+          applyConfirmedIdentity(user);
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          if (error?.status === 401 || error?.status === 403) {
+            clearRetry();
+            applyConfirmedIdentity(null);
+            return;
+          }
+          setAuthStatus("unavailable");
+          scheduleAuthRetry();
+        })
+        .finally(() => {
+          authRequestRef.current = null;
+        });
+      authRequestRef.current = request;
+    };
+    const retryWhenOnline = () => {
+      clearRetry();
+      checkAuth();
+    };
+
+    checkAuth();
+    window.addEventListener("online", retryWhenOnline);
     return () => {
       cancelled = true;
+      clearRetry();
+      window.removeEventListener("online", retryWhenOnline);
     };
   }, []);
 
@@ -267,7 +304,11 @@ export default function App() {
 
   const handleQueryChange = useCallback((nextQuery) => {
     setQuery(nextQuery);
-    if (nextQuery.trim()) setActiveNavigationTarget(null);
+    if (nextQuery.trim()) {
+      if (window.location.hash) closeTitleRoute();
+      setRouteId(null);
+      setActiveNavigationTarget(null);
+    }
   }, []);
 
   const requestAuth = useCallback((action, item = null) => {
@@ -370,7 +411,7 @@ export default function App() {
     onAuthAction: (mode) => { window.location.href = getAuthPageUrl(mode); }
   };
 
-  if (loadState === "loading" || !authReady) return <><Header {...headerProps} /><LoadingState language={language} /></>;
+  if (loadState === "loading" || !authReady) return <>{authReady ? <Header {...headerProps} /> : null}<LoadingState language={language} /></>;
   if (loadState === "error") return <><Header {...headerProps} /><ErrorState language={language} onRetry={() => loadData()} /></>;
 
   return (
