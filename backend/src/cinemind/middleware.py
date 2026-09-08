@@ -80,9 +80,17 @@ class InteractionRateLimitMiddleware:
     bypassing the session key by rotating arbitrary session headers.
     """
 
-    def __init__(self, app, max_attempts: int, window_seconds: int, trust_proxy_headers: bool = False):
+    def __init__(
+        self,
+        app,
+        max_attempts: int,
+        window_seconds: int,
+        trust_proxy_headers: bool = False,
+        auth_cookie_name: str = "cinemind_auth",
+    ):
         self.app = app
         self.trust_proxy_headers = trust_proxy_headers
+        self.auth_cookie_name = auth_cookie_name
         self.session_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
         self.client_limiter = SlidingWindowRateLimiter(
             max(max_attempts * 5, max_attempts), window_seconds
@@ -102,10 +110,10 @@ class InteractionRateLimitMiddleware:
             headers,
             trust_proxy_headers=self.trust_proxy_headers,
         )
-        session = headers.get("x-cinemind-session", "").strip()
-        auth_cookie = _cookie_value(headers.get("cookie", ""), "cinemind_auth")
-        principal = session or (
-            hashlib.sha256(auth_cookie.encode("utf-8")).hexdigest() if auth_cookie else client
+        principal = _interaction_principal(
+            headers,
+            client,
+            auth_cookie_name=self.auth_cookie_name,
         )
         client_key = f"interaction-client:{client}"
         principal_key = f"interaction-principal:{principal}"
@@ -199,3 +207,20 @@ def _cookie_value(cookie_header: str, name: str) -> str:
         if separator and key == name:
             return value
     return ""
+
+
+def _interaction_principal(
+    headers: dict[str, str],
+    client: str,
+    *,
+    auth_cookie_name: str,
+) -> str:
+    """Derive a stable limiter principal using the configured auth cookie."""
+
+    session = headers.get("x-cinemind-session", "").strip()
+    auth_cookie = _cookie_value(headers.get("cookie", ""), auth_cookie_name)
+    return session or (
+        hashlib.sha256(auth_cookie.encode("utf-8")).hexdigest()
+        if auth_cookie
+        else client
+    )

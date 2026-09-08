@@ -5,6 +5,7 @@ import unittest
 
 from cinemind.config import Settings
 from cinemind.interaction.limits import normalize_filters
+from cinemind.middleware import _interaction_principal
 from cinemind.security import SlidingWindowRateLimiter
 
 
@@ -28,6 +29,24 @@ class SecurityPrimitiveTests(unittest.TestCase):
 
         self.assertTrue(limiter.check("one", now=10).allowed)
         self.assertFalse(limiter.check("two", now=10).allowed)
+
+    def test_interaction_principal_uses_the_configured_auth_cookie_name(self):
+        custom_headers = {"cookie": "custom_auth=secret-token"}
+        configured = _interaction_principal(
+            custom_headers,
+            "10.0.0.1",
+            auth_cookie_name="custom_auth",
+        )
+
+        self.assertNotEqual(configured, "10.0.0.1")
+        self.assertEqual(
+            _interaction_principal(
+                {"cookie": "cinemind_auth=secret-token"},
+                "10.0.0.1",
+                auth_cookie_name="custom_auth",
+            ),
+            "10.0.0.1",
+        )
 
     def test_filter_normalization_rejects_oversized_or_non_string_values(self):
         with self.assertRaises(ValueError):

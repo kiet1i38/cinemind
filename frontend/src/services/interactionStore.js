@@ -192,7 +192,8 @@ export function acknowledgePendingPreference(kind, showId, mutationId) {
 
 export function mergeInteractionState(remoteState, localState = {}) {
   const pending = readPendingInteractions();
-  const ratings = { ...(localState.ratings || {}) };
+  const hasRemoteState = Boolean(remoteState && typeof remoteState === "object");
+  const ratings = hasRemoteState ? {} : { ...(localState.ratings || {}) };
   for (const item of remoteState?.ratings || []) {
     ratings[String(item.show_id)] = {
       rating: Number(item.rating),
@@ -209,10 +210,10 @@ export function mergeInteractionState(remoteState, localState = {}) {
   }
 
   const mergeIds = (localIds, remoteItems, pendingPreferences) => {
-    const ids = new Set([
-      ...(localIds || []).map(String),
-      ...(remoteItems || []).map((item) => String(item.show_id))
-    ]);
+    const sourceIds = hasRemoteState && Array.isArray(remoteItems)
+      ? remoteItems.map((item) => String(item.show_id))
+      : (localIds || []).map(String);
+    const ids = new Set(sourceIds);
     for (const [showId, preference] of Object.entries(pendingPreferences || {})) {
       if (preference.active) ids.add(showId);
       else ids.delete(showId);

@@ -147,8 +147,19 @@ def _optional_int(value: Any, field_name: str) -> int | None:
     if value is None or str(value).strip() == "":
         return None
     try:
-        return int(float(str(value).strip()))
-    except (TypeError, ValueError) as error:
+        if isinstance(value, bool):
+            raise ValueError
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            if not value.is_integer():
+                raise ValueError
+            return int(value)
+        text = str(value).strip()
+        if not text or not text.lstrip("+-").isdigit():
+            raise ValueError
+        return int(text)
+    except (TypeError, ValueError, OverflowError) as error:
         raise ValueError(f"{field_name} must be an integer") from error
 
 

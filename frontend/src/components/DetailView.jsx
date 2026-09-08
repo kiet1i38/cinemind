@@ -53,7 +53,7 @@ export function DetailView({ item, related, language, onBack, onRate, onSelect, 
         <section className="detail-facts" aria-labelledby="facts-heading">
           <h2 id="facts-heading">{translate(language, "catalogDetails")}</h2>
           <div className="facts-grid">
-            <div><span>{translate(language, "description")}</span><strong>{detailValue(item.listedIn, translate(language, "noData"))}</strong></div>
+            <div><span>{translate(language, "genres")}</span><strong>{detailValue(item.listedIn, translate(language, "noData"))}</strong></div>
             <div><span>{translate(language, "director")}</span><strong>{item.director || translate(language, "noData")}</strong></div>
             <div><span>{translate(language, "cast")}</span><strong>{detailValue(item.cast, translate(language, "noData"))}</strong></div>
             <div><span>{translate(language, "country")}</span><strong>{detailValue(item.country, translate(language, "noData"))}</strong></div>

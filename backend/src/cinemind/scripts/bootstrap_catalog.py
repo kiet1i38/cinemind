@@ -32,7 +32,7 @@ def bootstrap_catalog(settings: Settings) -> dict:
 
         with connection.transaction():
             previous_checksum = ops.get_source_checksum(source.source_id)
-            source_id = ops.upsert_dataset_source(source)
+            source_id = ops.ensure_dataset_source(source)
 
         if previous_checksum == checksum:
             with connection.transaction():
@@ -70,6 +70,11 @@ def bootstrap_catalog(settings: Settings) -> dict:
                 )
                 rows_loaded = CatalogRepository(connection).replace_catalog(
                     load_result.records, source_id, checksum
+                )
+                ops.mark_dataset_source_ingested(
+                    source_id=source_id,
+                    checksum=checksum,
+                    collected_at=source.collected_at,
                 )
 
             final_status = (

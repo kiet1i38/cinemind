@@ -14,8 +14,8 @@ class OpsRepository:
     def __init__(self, connection):
         self.connection = connection
 
-    def upsert_dataset_source(self, source: DatasetSource) -> UUID:
-        """Create or refresh a source definition and return its stable ID."""
+    def ensure_dataset_source(self, source: DatasetSource) -> UUID:
+        """Register source metadata without claiming the new import succeeded."""
 
         row = self.connection.execute(
             """
@@ -28,13 +28,11 @@ class OpsRepository:
                 collected_at,
                 checksum_sha256
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, NULL)
             ON CONFLICT (source_name, source_type)
             DO UPDATE SET
                 source_uri = EXCLUDED.source_uri,
                 schema_version = EXCLUDED.schema_version,
-                collected_at = EXCLUDED.collected_at,
-                checksum_sha256 = EXCLUDED.checksum_sha256,
                 is_active = TRUE,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING source_id
@@ -46,12 +44,30 @@ class OpsRepository:
                 source.source_uri,
                 source.schema_version,
                 source.collected_at,
-                source.checksum_sha256,
             ),
         ).fetchone()
         if row is None:
             raise RuntimeError("Could not register dataset source")
         return UUID(str(row["source_id"]))
+
+    def mark_dataset_source_ingested(
+        self, source_id: UUID, checksum: str, collected_at: datetime
+    ) -> None:
+        """Publish the checksum only after the catalog replacement succeeds."""
+
+        result = self.connection.execute(
+            """
+            UPDATE ops.dataset_sources
+            SET checksum_sha256 = %s,
+                collected_at = %s,
+                is_active = TRUE,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE source_id = %s
+            """,
+            (checksum, collected_at, source_id),
+        )
+        if result.rowcount != 1:
+            raise RuntimeError(f"Dataset source not found: {source_id}")
 
     def get_source_checksum(self, source_id: UUID) -> str | None:
         """Read the last ingested source checksum before a refresh."""

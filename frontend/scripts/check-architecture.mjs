@@ -6,6 +6,8 @@ const scriptDir = resolve(fileURLToPath(import.meta.url), "..");
 const frontendDir = resolve(scriptDir, "..");
 const sourceRoot = resolve(frontendDir, "src");
 const localeRoot = resolve(sourceRoot, "locales");
+const interactionServicePath = resolve(sourceRoot, "services/interactionService.js");
+const nginxConfigPath = resolve(frontendDir, "nginx.conf");
 
 const rules = [
   { file: "App.jsx", pattern: /preferredOrder|fallbackCatalog|cinemind-(?:language|ratings)|slice\(0,\s*(?:12|60)\)/u, message: "App must consume configuration and services instead of owning catalog constants." },
@@ -28,6 +30,16 @@ const missingVietnameseKeys = Object.keys(englishCopy).filter((key) => !(key in 
 const missingEnglishKeys = Object.keys(vietnameseCopy).filter((key) => !(key in englishCopy));
 if (missingVietnameseKeys.length || missingEnglishKeys.length) {
   violations.push(`locales: EN/VI keys must stay aligned (missing VI: ${missingVietnameseKeys.join(", ")}; missing EN: ${missingEnglishKeys.join(", ")}).`);
+}
+
+const interactionService = await readFile(interactionServicePath, "utf8");
+if (!/changePreference\(path,\s*"(?:POST|DELETE)",\s*record,\s*\{\s*\.\.\.metadata,\s*mutationId\s*\}\)/su.test(interactionService)) {
+  violations.push("services/interactionService.js: preference retries must reuse the queued mutationId.");
+}
+
+const nginxConfig = await readFile(nginxConfigPath, "utf8");
+if (/\$proxy_add_x_forwarded_for/u.test(nginxConfig) || !/proxy_set_header\s+X-Forwarded-For\s+\$remote_addr;/u.test(nginxConfig)) {
+  violations.push("nginx.conf: the trusted proxy must overwrite X-Forwarded-For with the direct client address.");
 }
 
 try {

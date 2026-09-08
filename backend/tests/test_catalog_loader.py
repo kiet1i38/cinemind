@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from cinemind.catalog.loader import load_catalog
+from cinemind.catalog.loader import _optional_int, load_catalog
 
 
 class CatalogLoaderTests(unittest.TestCase):
@@ -91,6 +91,16 @@ class CatalogLoaderTests(unittest.TestCase):
         self.assertEqual(result.records[0].title, "First")
         self.assertEqual(result.issues[0].issue_type, "duplicate_show_id")
         self.assertEqual(result.issues[0].severity, "error")
+
+    def test_fractional_integer_fields_are_rejected_instead_of_truncated(self) -> None:
+        for field_name, value in (
+            ("releaseYear", "2020.9"),
+            ("runtimeMinutes", 45.5),
+            ("seasons", "2.5"),
+        ):
+            with self.subTest(field_name=field_name):
+                with self.assertRaisesRegex(ValueError, "must be an integer"):
+                    _optional_int(value, field_name)
 
 
 if __name__ == "__main__":

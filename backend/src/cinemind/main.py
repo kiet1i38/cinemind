@@ -68,6 +68,7 @@ def create_app() -> FastAPI:
         max_attempts=settings.interaction_rate_limit_max_attempts,
         window_seconds=settings.interaction_rate_limit_window_seconds,
         trust_proxy_headers=settings.trust_proxy_headers,
+        auth_cookie_name=settings.auth_cookie_name,
     )
     application.add_middleware(
         CSRFMiddleware,

@@ -180,8 +180,8 @@ async function setPreference(kind, record, active, metadata) {
   return enqueueMutation(`${kind}:${record.id}`, async () => {
     try {
       const result = active
-        ? await changePreference(path, "POST", record, metadata)
-        : await changePreference(path, "DELETE", record, metadata);
+        ? await changePreference(path, "POST", record, { ...metadata, mutationId })
+        : await changePreference(path, "DELETE", record, { ...metadata, mutationId });
       acknowledgePendingPreference(kind, record.id, mutationId);
       return result;
     } catch (error) {
