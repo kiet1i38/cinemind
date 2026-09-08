@@ -102,6 +102,8 @@ class Settings:
             raise ValueError("db_pool_min_size must not exceed db_pool_max_size")
         if self.auth_password_iterations < 10_000:
             raise ValueError("auth_password_iterations must be at least 10000")
+        if self.auth_session_ttl_days > 365:
+            raise ValueError("auth_session_ttl_days must not exceed 365")
 
 
 @lru_cache(maxsize=1)

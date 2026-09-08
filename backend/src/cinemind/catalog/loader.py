@@ -80,13 +80,15 @@ def _parse_record(raw_record: Any) -> tuple[CatalogRecord, tuple[CatalogIssue, .
     if not isinstance(raw_record, Mapping):
         raise ValueError("record must be an object")
 
-    show_id = _required_text(raw_record.get("id"), "id")
+    show_id = _required_text(raw_record.get("id"), "id", max_length=32)
     title = _required_text(raw_record.get("title"), "title")
     content_type = _required_text(raw_record.get("type"), "type")
     if content_type not in CONTENT_TYPES:
         raise ValueError(f"unsupported type: {content_type}")
 
     release_year = _optional_int(raw_record.get("releaseYear"), "releaseYear")
+    if release_year is not None and not 1888 <= release_year <= 2100:
+        raise ValueError("releaseYear must be between 1888 and 2100")
     runtime_minutes = _positive_int_or_none(
         raw_record.get("runtimeMinutes"), "runtimeMinutes"
     )
@@ -112,7 +114,9 @@ def _parse_record(raw_record: Any) -> tuple[CatalogRecord, tuple[CatalogIssue, .
             description=_optional_text(raw_record.get("description")),
             date_added=date_added,
             release_year=release_year,
-            content_rating=_optional_text(raw_record.get("rating")),
+            content_rating=_optional_text(
+                raw_record.get("rating"), max_length=32, field_name="rating"
+            ),
             movie_duration_min=movie_duration_min,
             season_count=season_count,
             duration_basis=duration_basis,
@@ -129,18 +133,28 @@ def _parse_record(raw_record: Any) -> tuple[CatalogRecord, tuple[CatalogIssue, .
     )
 
 
-def _required_text(value: Any, field_name: str) -> str:
+def _required_text(value: Any, field_name: str, max_length: int | None = None) -> str:
     text = _optional_text(value)
     if not text:
         raise ValueError(f"{field_name} is required")
+    if max_length is not None and len(text) > max_length:
+        raise ValueError(f"{field_name} must be at most {max_length} characters")
     return text
 
 
-def _optional_text(value: Any) -> str | None:
+def _optional_text(
+    value: Any,
+    max_length: int | None = None,
+    field_name: str = "value",
+) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
-    return text or None
+    if not text:
+        return None
+    if max_length is not None and len(text) > max_length:
+        raise ValueError(f"{field_name} must be at most {max_length} characters")
+    return text
 
 
 def _optional_int(value: Any, field_name: str) -> int | None:

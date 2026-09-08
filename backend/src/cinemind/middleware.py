@@ -74,10 +74,9 @@ class RequestBodyLimitMiddleware:
 class InteractionRateLimitMiddleware:
     """Keep interaction error buckets isolated by client and browser session.
 
-    The interaction limiter is intentionally failure-based: successful calls
-    clear the failure bucket, while malformed, unauthorized, and server-error
-    responses consume a slot.  A separate client bucket prevents a caller from
-    bypassing the session key by rotating arbitrary session headers.
+    Malformed, unauthorized, and server-error responses consume failure slots.
+    A separate client bucket prevents callers from bypassing the principal key,
+    and successful anonymous-session creation has its own bounded quota.
     """
 
     def __init__(
@@ -94,6 +93,9 @@ class InteractionRateLimitMiddleware:
         self.session_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
         self.client_limiter = SlidingWindowRateLimiter(
             max(max_attempts * 5, max_attempts), window_seconds
+        )
+        self.session_creation_limiter = SlidingWindowRateLimiter(
+            max_attempts, window_seconds
         )
 
     async def __call__(self, scope, receive: Callable, send: Callable) -> None:
@@ -117,10 +119,27 @@ class InteractionRateLimitMiddleware:
         )
         client_key = f"interaction-client:{client}"
         principal_key = f"interaction-principal:{principal}"
+        is_session_creation = (
+            scope.get("method", "GET") == "POST"
+            and path == "/api/interaction/sessions"
+        )
         decision = self.client_limiter.check(client_key)
         principal_decision = self.session_limiter.check(principal_key)
-        if not decision.allowed or not principal_decision.allowed:
-            retry_after = max(decision.retry_after_seconds, principal_decision.retry_after_seconds)
+        creation_decision = (
+            self.session_creation_limiter.check(client_key)
+            if is_session_creation
+            else None
+        )
+        if (
+            not decision.allowed
+            or not principal_decision.allowed
+            or (creation_decision is not None and not creation_decision.allowed)
+        ):
+            retry_after = max(
+                decision.retry_after_seconds,
+                principal_decision.retry_after_seconds,
+                creation_decision.retry_after_seconds if creation_decision else 0,
+            )
             await JSONResponse(
                 {"detail": "Too many interaction requests. Please try again later."},
                 status_code=429,
@@ -145,9 +164,8 @@ class InteractionRateLimitMiddleware:
         if status_code >= 400:
             self.client_limiter.record_failure(client_key)
             self.session_limiter.record_failure(principal_key)
-        else:
-            self.client_limiter.record_success(client_key)
-            self.session_limiter.record_success(principal_key)
+        elif is_session_creation:
+            self.session_creation_limiter.record_failure(client_key)
 
 
 class CSRFMiddleware:

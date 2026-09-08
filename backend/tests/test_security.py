@@ -6,6 +6,7 @@ import unittest
 from cinemind.config import Settings
 from cinemind.interaction.limits import normalize_filters
 from cinemind.middleware import _interaction_principal
+from cinemind.middleware import InteractionRateLimitMiddleware
 from cinemind.security import SlidingWindowRateLimiter
 
 
@@ -131,6 +132,90 @@ class SecurityPrimitiveTests(unittest.TestCase):
                 reset_enabled=False,
                 full_reset_enabled=False,
             )
+
+    def test_runtime_settings_reject_session_ttl_over_one_year(self):
+        with self.assertRaisesRegex(ValueError, "must not exceed 365"):
+            Settings(
+                environment="test",
+                database_url="postgresql:///cinemind",
+                catalog_seed_path=SimpleNamespace(),
+                migrations_path=SimpleNamespace(),
+                catalog_source_name="catalog",
+                catalog_source_type="test",
+                catalog_source_uri="test://catalog",
+                catalog_schema_version="test-v1",
+                db_connect_retries=1,
+                db_connect_retry_delay_seconds=1,
+                db_connect_timeout_seconds=1,
+                db_pool_min_size=1,
+                db_pool_max_size=2,
+                db_pool_timeout_seconds=1,
+                max_request_body_bytes=32768,
+                max_watch_minutes=10080,
+                cors_allowed_origins=(),
+                trust_proxy_headers=False,
+                require_https=False,
+                auth_cookie_name="cinemind_auth",
+                auth_session_ttl_days=366,
+                auth_password_iterations=10000,
+                auth_rate_limit_window_seconds=60,
+                auth_rate_limit_max_attempts=5,
+                interaction_rate_limit_window_seconds=60,
+                interaction_rate_limit_max_attempts=10,
+                admin_reset_username="",
+                admin_reset_password="",
+                reset_enabled=False,
+                full_reset_enabled=False,
+            )
+
+
+class InteractionRateLimitMiddlewareTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.status = 201
+
+        async def app(_scope, _receive, send):
+            await send({"type": "http.response.start", "status": self.status, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        self.middleware = InteractionRateLimitMiddleware(app, max_attempts=2, window_seconds=60)
+
+    async def request(self, path):
+        response_status = None
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            nonlocal response_status
+            if message["type"] == "http.response.start":
+                response_status = message["status"]
+
+        await self.middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": path,
+                "headers": [],
+                "client": ("203.0.113.10", 1234),
+            },
+            receive,
+            send,
+        )
+        return response_status
+
+    async def test_success_does_not_clear_previous_failures(self):
+        self.status = 400
+        self.assertEqual(await self.request("/api/interaction/search-events"), 400)
+        self.status = 201
+        self.assertEqual(await self.request("/api/interaction/search-events"), 201)
+        self.status = 400
+        self.assertEqual(await self.request("/api/interaction/search-events"), 400)
+        self.assertEqual(await self.request("/api/interaction/search-events"), 429)
+
+    async def test_successful_session_creation_is_bounded(self):
+        self.assertEqual(await self.request("/api/interaction/sessions"), 201)
+        self.assertEqual(await self.request("/api/interaction/sessions"), 201)
+        self.assertEqual(await self.request("/api/interaction/sessions"), 429)
 
 
 if __name__ == "__main__":

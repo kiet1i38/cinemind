@@ -17,6 +17,10 @@ class InteractionValidationError(ValueError):
     """Raised when an interaction violates an application rule."""
 
 
+class InteractionConflictError(InteractionValidationError):
+    """Raised when a mutation id is replayed with a different payload."""
+
+
 class InteractionNotFoundError(LookupError):
     """Raised when a session or catalog title cannot be found."""
 
@@ -88,21 +92,30 @@ class InteractionService:
             self._require_session(session_id, user_id, session_token)
             self.repository.touch_session(session_id)
             if client_mutation_id is None:
-                return self.repository.create_search_event(
+                row = self.repository.create_search_event(
                     session_id,
                     query_text,
                     normalized_query,
                     result_count,
                     normalized_filters,
                 )
-            return self.repository.create_search_event(
-                session_id,
-                query_text,
-                normalized_query,
-                result_count,
-                normalized_filters,
-                client_mutation_id,
-            )
+            else:
+                row = self.repository.create_search_event(
+                    session_id,
+                    query_text,
+                    normalized_query,
+                    result_count,
+                    normalized_filters,
+                    client_mutation_id,
+                )
+                self._require_idempotent_match(
+                    row,
+                    query_text=query_text,
+                    normalized_query=normalized_query,
+                    result_count=result_count,
+                    filters=normalized_filters,
+                )
+            return row
 
     def record_watch_session(
         self,
@@ -138,6 +151,14 @@ class InteractionService:
                     metrics.completion_rate,
                     metrics.duration_basis,
                     client_mutation_id,
+                )
+                self._require_idempotent_match(
+                    watch_session,
+                    title_id=title["title_id"],
+                    watch_seconds=metrics.watch_seconds,
+                    runtime_seconds=metrics.runtime_seconds,
+                    completion_rate=metrics.completion_rate,
+                    duration_basis=metrics.duration_basis,
                 )
             self.repository.touch_session(session_id)
         return watch_session | {"show_id": title["show_id"]}
@@ -181,6 +202,12 @@ class InteractionService:
                     watch_session_id,
                     client_mutation_id,
                 )
+                self._require_idempotent_match(
+                    row,
+                    title_id=title["title_id"],
+                    rating_value=rating_value,
+                    watch_session_id=watch_session_id,
+                )
             return row | {"show_id": title["show_id"], "rating": rating_value}
 
     def record_signal(
@@ -220,6 +247,14 @@ class InteractionService:
                     metrics.duration_basis,
                     client_mutation_id,
                 )
+                self._require_idempotent_match(
+                    watch_session,
+                    title_id=title["title_id"],
+                    watch_seconds=metrics.watch_seconds,
+                    runtime_seconds=metrics.runtime_seconds,
+                    completion_rate=metrics.completion_rate,
+                    duration_basis=metrics.duration_basis,
+                )
             watch_session_id = watch_session["watch_session_id"]
             if client_mutation_id is None:
                 rating_row = self.repository.create_rating(
@@ -235,6 +270,12 @@ class InteractionService:
                     rating_value,
                     watch_session_id,
                     client_mutation_id,
+                )
+                self._require_idempotent_match(
+                    rating_row,
+                    title_id=title["title_id"],
+                    rating_value=rating_value,
+                    watch_session_id=watch_session_id,
                 )
             self.repository.touch_session(session_id)
         return {
@@ -265,6 +306,11 @@ class InteractionService:
                     user_id,
                     client_mutation_id,
                 )
+                self._require_idempotent_match(row, title_id=title["title_id"])
+                if row.get("removed_at") is not None:
+                    raise InteractionConflictError(
+                        "client_mutation_id was already used for a removal"
+                    )
         return row | {"show_id": title["show_id"], "active": True}
 
     def remove_preference(
@@ -290,6 +336,12 @@ class InteractionService:
                     user_id,
                     client_mutation_id,
                 )
+                if row is not None:
+                    self._require_idempotent_match(row, title_id=title["title_id"])
+                    if row.get("changed_at") is None:
+                        raise InteractionConflictError(
+                            "client_mutation_id was already used for an addition"
+                        )
         changed_at = row["changed_at"] if row else datetime.now(timezone.utc)
         return {
             "session_id": session_id,
@@ -324,6 +376,19 @@ class InteractionService:
             "favorites": state["favorites"],
             "watchlist_items": state["watchlist_items"],
         }
+
+    @staticmethod
+    def _require_idempotent_match(row: dict, **expected) -> None:
+        """Reject reuse of one mutation id for semantically different input."""
+
+        for field_name, expected_value in expected.items():
+            actual_value = row.get(field_name)
+            if field_name == "rating_value" and actual_value is None:
+                actual_value = row.get("rating")
+            if actual_value != expected_value:
+                raise InteractionConflictError(
+                    "client_mutation_id was already used with a different payload"
+                )
 
     def _prepare_watch(
         self,

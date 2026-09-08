@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from cinemind.interaction.schemas import RatingCreateRequest, SignalCreateRequest
 from cinemind.interaction.service import (
+    InteractionConflictError,
     InteractionNotFoundError,
     InteractionService,
     InteractionValidationError,
@@ -30,6 +31,8 @@ class FakeTransaction:
             copy.deepcopy(self.repository.watch_sessions),
             copy.deepcopy(self.repository.ratings),
             copy.deepcopy(self.repository.preferences),
+            copy.deepcopy(self.repository.watch_mutations),
+            copy.deepcopy(self.repository.rating_mutations),
         )
         return self
 
@@ -40,6 +43,8 @@ class FakeTransaction:
                 self.repository.watch_sessions,
                 self.repository.ratings,
                 self.repository.preferences,
+                self.repository.watch_mutations,
+                self.repository.rating_mutations,
             ) = self.snapshot
         else:
             self.repository.transactions_committed += 1
@@ -74,6 +79,8 @@ class FakeInteractionRepository:
         self.transactions_committed = 0
         self.transactions_rolled_back = 0
         self.fail_rating = False
+        self.watch_mutations = {}
+        self.rating_mutations = {}
 
     def transaction(self):
         return FakeTransaction(self)
@@ -109,7 +116,10 @@ class FakeInteractionRepository:
             "occurred_at": datetime.now(timezone.utc),
         }
 
-    def create_watch_session(self, watch_session_id, session_id, title_id, watch_seconds, runtime_seconds, completion_rate, duration_basis):
+    def create_watch_session(self, watch_session_id, session_id, title_id, watch_seconds, runtime_seconds, completion_rate, duration_basis, client_mutation_id=None):
+        mutation_key = (session_id, client_mutation_id)
+        if client_mutation_id is not None and mutation_key in self.watch_mutations:
+            return self.watch_mutations[mutation_key]
         row = {
             "watch_session_id": watch_session_id,
             "session_id": session_id,
@@ -121,23 +131,31 @@ class FakeInteractionRepository:
             "recorded_at": datetime.now(timezone.utc),
         }
         self.watch_sessions[watch_session_id] = row
+        if client_mutation_id is not None:
+            self.watch_mutations[mutation_key] = row
         return row
 
     def get_watch_session(self, watch_session_id):
         return self.watch_sessions.get(watch_session_id)
 
-    def create_rating(self, session_id, title_id, rating, watch_session_id):
+    def create_rating(self, session_id, title_id, rating, watch_session_id, client_mutation_id=None):
         if self.fail_rating:
             raise RuntimeError("simulated rating failure")
+        mutation_key = (session_id, client_mutation_id)
+        if client_mutation_id is not None and mutation_key in self.rating_mutations:
+            return self.rating_mutations[mutation_key]
         row = {
             "rating_id": len(self.ratings) + 1,
             "session_id": session_id,
             "title_id": title_id,
             "rating": rating,
+            "rating_value": rating,
             "watch_session_id": watch_session_id,
             "rated_at": datetime.now(timezone.utc),
         }
         self.ratings.append(row)
+        if client_mutation_id is not None:
+            self.rating_mutations[mutation_key] = row
         return row
 
     def add_preference(self, table_name, session_id, title_id):
@@ -215,6 +233,32 @@ class InteractionServiceTests(unittest.TestCase):
         self.assertEqual(result["rating"]["rating"], Decimal("8.5"))
         self.assertEqual(result["rating"]["watch_session_id"], result["watch_session"]["watch_session_id"])
         self.assertEqual(self.repository.transactions_committed, 1)
+
+    def test_signal_replay_rejects_a_different_payload(self):
+        mutation_id = uuid4()
+        first = self.service.record_signal(
+            self.session_id, "movie-1", Decimal("8.5"), 30,
+            client_mutation_id=mutation_id,
+        )
+        replay = self.service.record_signal(
+            self.session_id, "movie-1", Decimal("8.5"), 30,
+            client_mutation_id=mutation_id,
+        )
+
+        self.assertEqual(
+            replay["watch_session"]["watch_session_id"],
+            first["watch_session"]["watch_session_id"],
+        )
+        with self.assertRaises(InteractionConflictError):
+            self.service.record_signal(
+                self.session_id, "movie-1", Decimal("2"), 30,
+                client_mutation_id=mutation_id,
+            )
+        with self.assertRaises(InteractionConflictError):
+            self.service.record_signal(
+                self.session_id, "show-1", Decimal("8.5"), 30,
+                client_mutation_id=mutation_id,
+            )
 
     def test_signal_rolls_back_when_rating_write_fails(self):
         self.repository.fail_rating = True

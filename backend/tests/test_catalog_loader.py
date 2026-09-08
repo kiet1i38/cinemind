@@ -102,6 +102,21 @@ class CatalogLoaderTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "must be an integer"):
                     _optional_int(value, field_name)
 
+    def test_database_incompatible_fields_are_reported_before_import(self) -> None:
+        path = self.write_catalog([
+            {"id": "future", "type": "Movie", "title": "Future", "releaseYear": 2101},
+            {"id": "x" * 33, "type": "Movie", "title": "Long id"},
+            {"id": "valid", "type": "Movie", "title": "Valid", "releaseYear": 2020},
+        ])
+
+        result = load_catalog(path)
+
+        self.assertEqual([record.show_id for record in result.records], ["valid"])
+        self.assertEqual([issue.issue_type for issue in result.issues], [
+            "invalid_record",
+            "invalid_record",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

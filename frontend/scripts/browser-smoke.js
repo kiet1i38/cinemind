@@ -7,6 +7,14 @@ async (page) => {
   };
   const onPageError = (error) => pageErrors.push(error.message);
   const waitForHome = async () => page.getByTestId("home-page").waitFor();
+  const readScopedStorage = async (key, fallback) => page.evaluate(({ storageKey, fallbackValue }) => {
+    const raw = JSON.parse(window.localStorage.getItem(storageKey) || "null");
+    if (!(raw && typeof raw === "object" && !Array.isArray(raw) && raw.owners)) {
+      return raw ?? fallbackValue;
+    }
+    const owner = JSON.parse(window.localStorage.getItem("cinemind-interaction-owner") || '"anonymous"');
+    return raw.owners[owner] ?? fallbackValue;
+  }, { storageKey: key, fallbackValue: fallback });
 
   page.on("console", onConsole);
   page.on("pageerror", onPageError);
@@ -16,6 +24,15 @@ async (page) => {
     window.localStorage.clear();
     window.history.replaceState({}, "", "/");
   });
+  await page.route("**/api/auth/me", (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ detail: "Auth temporarily unavailable" })
+  }));
+  await page.reload();
+  await waitForHome();
+  report.authUnavailableStillBrowses = true;
+  await page.unroute("**/api/auth/me");
   await page.reload();
   await waitForHome();
 
@@ -88,7 +105,7 @@ async (page) => {
       password: "Browser-QA-password-123"
     };
   });
-  const anonymousSessionId = await page.evaluate(() => JSON.parse(window.localStorage.getItem("cinemind-interaction-session-id") || "null"));
+  const anonymousSessionId = await readScopedStorage("cinemind-interaction-session-id", null);
   const registration = await page.evaluate(async (credentials) => {
     const response = await fetch("/api/auth/register", {
       method: "POST",
@@ -137,7 +154,7 @@ async (page) => {
   await durationInput.fill("0");
   await page.getByRole("button", { name: "Save signal" }).click();
   await page.getByTestId("rating-modal").waitFor({ state: "detached" });
-  const lowerBoundarySignals = await page.evaluate(() => JSON.parse(window.localStorage.getItem("cinemind-ratings") || "{}"));
+  const lowerBoundarySignals = await readScopedStorage("cinemind-ratings", {});
   const lowerBoundarySignal = Object.values(lowerBoundarySignals)[0];
   report.lowerBoundarySignal = { rating: lowerBoundarySignal?.rating, watchMinutes: lowerBoundarySignal?.watchMinutes };
 
@@ -147,7 +164,7 @@ async (page) => {
   await durationInput.fill("0");
   await page.getByRole("button", { name: "Save signal" }).click();
   await page.getByTestId("rating-modal").waitFor({ state: "detached" });
-  const storedSignals = await page.evaluate(() => JSON.parse(window.localStorage.getItem("cinemind-ratings") || "{}"));
+  const storedSignals = await readScopedStorage("cinemind-ratings", {});
   const storedSignal = Object.values(storedSignals)[0];
   report.savedBoundarySignal = { rating: storedSignal?.rating, watchMinutes: storedSignal?.watchMinutes };
   report.previewRailCards = await page.locator("[data-testid=rail-signals] .catalog-card").count();
@@ -169,7 +186,9 @@ async (page) => {
   await page.getByRole("button", { name: "Save signal" }).click();
   await page.getByTestId("rating-modal").waitFor({ state: "detached" });
   report.signalQueuedAfterFailure = await page.evaluate(() => {
-    const outbox = JSON.parse(window.localStorage.getItem("cinemind-interaction-outbox") || "{}");
+    const stored = JSON.parse(window.localStorage.getItem("cinemind-interaction-outbox") || "null");
+    const owner = JSON.parse(window.localStorage.getItem("cinemind-interaction-owner") || '"anonymous"');
+    const outbox = stored?.owners?.[owner] || stored || {};
     return Object.keys(outbox.signals || {}).length > 0;
   });
   report.failureFallbackNotice = await page.getByRole("status").textContent();
@@ -178,7 +197,9 @@ async (page) => {
   page.on("pageerror", onPageError);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await page.waitForFunction(() => {
-    const outbox = JSON.parse(window.localStorage.getItem("cinemind-interaction-outbox") || "{}");
+    const stored = JSON.parse(window.localStorage.getItem("cinemind-interaction-outbox") || "null");
+    const owner = JSON.parse(window.localStorage.getItem("cinemind-interaction-owner") || '"anonymous"');
+    const outbox = stored?.owners?.[owner] || stored || {};
     return Object.keys(outbox.signals || {}).length === 0;
   });
   report.pendingSignalReconciled = true;
@@ -211,7 +232,7 @@ async (page) => {
   await page.getByRole("heading", { name: "Tìm một câu chuyện ở lại với bạn" }).waitFor();
   report.vietnameseHeading = true;
   await page.getByRole("button", { name: "EN", exact: true }).click();
-  const signalsAfterLanguageSwitch = await page.evaluate(() => JSON.parse(window.localStorage.getItem("cinemind-ratings") || "{}"));
+  const signalsAfterLanguageSwitch = await readScopedStorage("cinemind-ratings", {});
   report.localStateSurvivesLanguageSwitch = Object.keys(signalsAfterLanguageSwitch).length > 0;
 
   await page.setViewportSize({ width: 390, height: 844 });

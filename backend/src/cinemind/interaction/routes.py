@@ -25,11 +25,14 @@ from cinemind.interaction.schemas import (
     WatchSessionResponse,
 )
 from cinemind.interaction.service import (
+    InteractionConflictError,
     InteractionNotFoundError,
     InteractionService,
     InteractionUnauthorizedError,
     InteractionValidationError,
 )
+
+
 def enforce_interaction_rate_limit(request: Request) -> None:
     """Compatibility hook; request limiting is handled after response status."""
 
@@ -88,6 +91,8 @@ def create_search_event(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
+    except InteractionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -114,6 +119,8 @@ def create_watch_session(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
+    except InteractionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -141,6 +148,8 @@ def create_rating(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
+    except InteractionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -168,6 +177,8 @@ def create_signal(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
+    except InteractionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -304,6 +315,8 @@ def _preference_response(
         ))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except InteractionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except InteractionUnauthorizedError as error:
@@ -330,6 +343,8 @@ def _remove_preference_response(
         ))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except InteractionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except InteractionValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except InteractionUnauthorizedError as error:

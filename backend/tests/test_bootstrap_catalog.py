@@ -21,8 +21,10 @@ class _FakeOpsRepository:
         self.checksum = "old-checksum"
         self.marked_checksums = []
         self.finished_statuses = []
+        self.checksum_lookups = []
 
-    def get_source_checksum(self, _source_id):
+    def get_source_checksum(self, source_id):
+        self.checksum_lookups.append(source_id)
         return self.checksum
 
     def ensure_dataset_source(self, _source):
@@ -109,6 +111,41 @@ class BootstrapCatalogTests(unittest.TestCase):
         self.assertEqual(ops.checksum, "new-checksum")
         self.assertEqual(result["rows_loaded"], 1)
         self.assertIsNotNone(result["ingestion_run_id"])
+        self.assertEqual(ops.checksum_lookups, [source_id, source_id])
+
+    def test_checksum_lookup_uses_the_persisted_source_identity(self):
+        source_id = uuid4()
+        ops = _FakeOpsRepository(source_id)
+        ops.checksum = "same-checksum"
+        settings = SimpleNamespace(
+            migrations_path=Path("migrations"),
+            catalog_seed_path=Path("catalog.json"),
+            catalog_source_name="Netflix catalog",
+            catalog_source_type="seed",
+            catalog_source_uri="renamed-catalog.json",
+            catalog_schema_version="v1",
+        )
+        load_result = SimpleNamespace(records=[object()], issues=(), rows_read=1)
+
+        with (
+            patch.object(bootstrap_catalog, "wait_for_database"),
+            patch.object(bootstrap_catalog, "connection_scope", return_value=nullcontext(_FakeConnection())),
+            patch.object(bootstrap_catalog, "_advisory_lock", return_value=nullcontext()),
+            patch.object(bootstrap_catalog, "MigrationRunner") as migration_runner,
+            patch.object(bootstrap_catalog, "load_catalog", return_value=load_result),
+            patch.object(bootstrap_catalog, "file_checksum", return_value="same-checksum"),
+            patch.object(bootstrap_catalog, "OpsRepository", return_value=ops),
+            patch.object(
+                bootstrap_catalog,
+                "CatalogRepository",
+                return_value=_FakeCatalogRepository(None, {"replace_calls": 0, "fail_next_replace": False}),
+            ),
+        ):
+            migration_runner.return_value.apply.return_value = SimpleNamespace(applied_versions=())
+            result = bootstrap_catalog.bootstrap_catalog(settings)
+
+        self.assertEqual(ops.checksum_lookups, [source_id])
+        self.assertTrue(result["skipped_unchanged_source"])
 
 
 if __name__ == "__main__":

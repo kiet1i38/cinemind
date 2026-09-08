@@ -64,6 +64,7 @@ export default function App() {
   const authRetryRef = useRef(null);
 
   const authReady = authStatus === "authenticated" || authStatus === "anonymous";
+  const authResolved = authStatus !== "checking";
 
   const loadData = useCallback((signal) => {
     setLoadState("loading");
@@ -123,7 +124,7 @@ export default function App() {
     };
     const checkAuth = () => {
       if (cancelled || authRequestRef.current) return;
-      setAuthStatus("checking");
+      setAuthStatus((current) => current === "unavailable" ? current : "checking");
       const request = getCurrentUser()
         .then((user) => {
           if (cancelled) return;
@@ -228,7 +229,19 @@ export default function App() {
   const ratedRecords = useMemo(() => Object.keys(ratings).map((id) => catalog.find((record) => record.id === id)).filter(Boolean), [catalog, ratings]);
   const favoriteRecords = useMemo(() => favorites.map((id) => catalog.find((record) => record.id === id)).filter(Boolean), [catalog, favorites]);
   const watchlistRecords = useMemo(() => watchlist.map((id) => catalog.find((record) => record.id === id)).filter(Boolean), [catalog, watchlist]);
-  const lastRated = ratedRecords[ratedRecords.length - 1];
+  const lastRated = useMemo(() => {
+    let latestRecord = null;
+    let latestTimestamp = Number.NEGATIVE_INFINITY;
+    for (const [id, signal] of Object.entries(ratings)) {
+      const timestamp = Date.parse(signal?.savedAt || "");
+      const record = catalog.find((candidate) => String(candidate.id) === String(id));
+      if (record && Number.isFinite(timestamp) && timestamp > latestTimestamp) {
+        latestRecord = record;
+        latestTimestamp = timestamp;
+      }
+    }
+    return latestRecord || ratedRecords[ratedRecords.length - 1] || null;
+  }, [catalog, ratedRecords, ratings]);
   const previewPicks = useMemo(() => getRelatedTitles(lastRated, catalog), [catalog, lastRated]);
   const routeItem = routeId ? catalog.find((record) => record.id === routeId) : null;
   const routeRelated = useMemo(() => getRelatedTitles(routeItem, catalog), [catalog, routeItem]);
@@ -409,7 +422,7 @@ export default function App() {
     onAuthAction: (mode) => { window.location.href = getAuthPageUrl(mode); }
   };
 
-  if (loadState === "loading" || !authReady) return <>{authReady ? <Header {...headerProps} /> : null}<LoadingState language={language} /></>;
+  if (loadState === "loading" || !authResolved) return <>{authResolved ? <Header {...headerProps} /> : null}<LoadingState language={language} /></>;
   if (loadState === "error") return <><Header {...headerProps} /><ErrorState language={language} onRetry={() => loadData()} /></>;
 
   return (

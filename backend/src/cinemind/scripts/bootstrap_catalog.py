@@ -31,8 +31,8 @@ def bootstrap_catalog(settings: Settings) -> dict:
         ops = OpsRepository(connection)
 
         with connection.transaction():
-            previous_checksum = ops.get_source_checksum(source.source_id)
             source_id = ops.ensure_dataset_source(source)
+            previous_checksum = ops.get_source_checksum(source_id)
 
         if previous_checksum == checksum:
             with connection.transaction():
