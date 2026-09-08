@@ -45,7 +45,7 @@ services:
       ADMIN_RESET_USERNAME: ${ADMIN_RESET_USERNAME:-}
       ADMIN_RESET_PASSWORD: ${ADMIN_RESET_PASSWORD:-}
       RESET_ENABLED: ${RESET_ENABLED:-true}
-      FULL_RESET_ENABLED: ${FULL_RESET_ENABLED:-true}
+      FULL_RESET_ENABLED: ${FULL_RESET_ENABLED:-false}
     volumes:
       - ./frontend/public/data/catalog.json:/app/data/catalog.json:ro
     depends_on:

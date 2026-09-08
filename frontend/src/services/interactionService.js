@@ -4,6 +4,7 @@ import { appConfig, resolveApiBaseUrl } from "../config/appConfig";
 import {
   acknowledgePendingPreference,
   acknowledgePendingSignal,
+  createMutationId,
   interactionSessionStore,
   queuePendingPreference,
   queuePendingSignal,
@@ -17,6 +18,12 @@ const mutationChains = new Map();
 async function request(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const sessionId = interactionSessionStore.read();
+  const sessionToken = interactionSessionStore.readToken();
+  if (sessionId && !headers.has("X-Cinemind-Session")) headers.set("X-Cinemind-Session", sessionId);
+  if (sessionToken && !headers.has("X-Cinemind-Session-Token")) {
+    headers.set("X-Cinemind-Session-Token", sessionToken);
+  }
 
   const response = await fetch(`${resolveApiBaseUrl(interactionConfig.apiBaseUrl)}${path}`, {
     ...options,
@@ -52,7 +59,7 @@ export async function ensureInteractionSession({ locale, platform } = {}) {
       .then((payload) => {
         const sessionId = payload?.session_id;
         if (!sessionId) throw new Error("Interaction session response is missing session_id");
-        interactionSessionStore.write(sessionId);
+        interactionSessionStore.write(sessionId, payload?.session_token);
         return sessionId;
       })
       .finally(() => {
@@ -76,13 +83,15 @@ export async function getInteractionState(metadata = {}) {
 
 export async function recordSearchEvent({ query, resultCount, filters, ...metadata }) {
   const sessionId = await ensureInteractionSession(metadata);
+  const mutationId = metadata.mutationId || createMutationId();
   return request("/search-events", {
     method: "POST",
     body: JSON.stringify({
       session_id: sessionId,
       query,
       result_count: resultCount,
-      filters
+      filters,
+      client_mutation_id: mutationId
     })
   });
 }
@@ -91,16 +100,16 @@ export async function submitSignal({ record, rating, watchMinutes, ...metadata }
   const mutationId = queuePendingSignal(record.id, { rating, watchMinutes }, metadata.mutationId);
   return enqueueMutation(`signal:${record.id}`, async () => {
     try {
-      const sessionId = await ensureInteractionSession(metadata);
-      const result = await request("/signals", {
+      const result = await withFreshInteractionSession(metadata, async (sessionId) => request("/signals", {
         method: "POST",
         body: JSON.stringify({
           session_id: sessionId,
           show_id: record.id,
           rating,
-          watch_minutes: watchMinutes
+          watch_minutes: watchMinutes,
+          client_mutation_id: mutationId
         })
-      });
+      }));
       acknowledgePendingSignal(record.id, mutationId);
       return result;
     } catch (error) {
@@ -110,15 +119,19 @@ export async function submitSignal({ record, rating, watchMinutes, ...metadata }
   });
 }
 
-async function changePreference(path, method, record, metadata) {
-  const sessionId = await ensureInteractionSession(metadata);
-  const options = { method };
-  if (method === "POST") {
-    options.body = JSON.stringify({ session_id: sessionId, show_id: record.id });
-  } else {
-    path += `/${encodeURIComponent(record.id)}/${encodeURIComponent(sessionId)}`;
-  }
-  return request(path, options);
+async function changePreference(path, method, record, metadata = {}) {
+  const mutationId = metadata.mutationId || createMutationId();
+  return withFreshInteractionSession(metadata, async (sessionId) => {
+    const options = { method, headers: {} };
+    options.headers["X-Cinemind-Mutation-Id"] = mutationId;
+    let requestPath = path;
+    if (method === "POST") {
+      options.body = JSON.stringify({ session_id: sessionId, show_id: record.id, client_mutation_id: mutationId });
+    } else {
+      requestPath += `/${encodeURIComponent(record.id)}/${encodeURIComponent(sessionId)}`;
+    }
+    return request(requestPath, options);
+  });
 }
 
 export function addFavorite(record, metadata) {
@@ -138,11 +151,23 @@ export function removeWatchlistItem(record, metadata) {
 }
 
 export function isRetryableInteractionError(error) {
-  return !error?.status || error.status === 408 || error.status === 429 || error.status >= 500;
+  return !error?.status || error.status === 401 || error.status === 403 || error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
 export function setFavoritePreference(record, active, metadata = {}) {
   return setPreference("favorites", record, active, metadata);
+}
+
+async function withFreshInteractionSession(metadata, operation) {
+  const sessionId = await ensureInteractionSession(metadata);
+  try {
+    return await operation(sessionId);
+  } catch (error) {
+    if (error.status !== 401 && error.status !== 404) throw error;
+    interactionSessionStore.write(null);
+    const freshSessionId = await ensureInteractionSession(metadata);
+    return operation(freshSessionId);
+  }
 }
 
 export function setWatchlistPreference(record, active, metadata = {}) {

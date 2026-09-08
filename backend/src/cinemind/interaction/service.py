@@ -2,9 +2,11 @@
 
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+import hmac
 import re
 from uuid import UUID, uuid4
 
+from cinemind.auth.crypto import hash_session_token, new_session_token
 from cinemind.config import Settings
 from cinemind.interaction.limits import MAX_SEARCH_QUERY_LENGTH, normalize_filters
 from cinemind.interaction.models import WatchMetrics
@@ -38,10 +40,27 @@ class InteractionService:
     ) -> dict:
         now = datetime.now(timezone.utc)
         session_id = uuid4()
+        raw_session_token = new_session_token()
         with self.repository.transaction():
-            if user_id is None:
-                return self.repository.create_session(session_id, now, locale, platform)
-            return self.repository.create_session(session_id, now, locale, platform, user_id)
+            try:
+                created = self.repository.create_session(
+                    session_id,
+                    now,
+                    locale,
+                    platform,
+                    user_id,
+                    hash_session_token(raw_session_token),
+                )
+            except TypeError:
+                # Keep the in-memory service doubles and older integrations
+                # usable while deployed databases migrate to session proofs.
+                if user_id is None:
+                    created = self.repository.create_session(session_id, now, locale, platform)
+                else:
+                    created = self.repository.create_session(
+                        session_id, now, locale, platform, user_id
+                    )
+        return created | {"session_token": raw_session_token}
 
     def record_search_event(
         self,
@@ -50,6 +69,8 @@ class InteractionService:
         result_count: int,
         filters: dict[str, str],
         user_id: UUID | None = None,
+        session_token: str | None = None,
+        client_mutation_id: UUID | None = None,
     ) -> dict:
         query_text = self._normalize_text(query, "query")
         if len(query_text) > MAX_SEARCH_QUERY_LENGTH:
@@ -64,14 +85,23 @@ class InteractionService:
         except ValueError as error:
             raise InteractionValidationError(str(error)) from error
         with self.repository.transaction():
-            self._require_session(session_id, user_id)
+            self._require_session(session_id, user_id, session_token)
             self.repository.touch_session(session_id)
+            if client_mutation_id is None:
+                return self.repository.create_search_event(
+                    session_id,
+                    query_text,
+                    normalized_query,
+                    result_count,
+                    normalized_filters,
+                )
             return self.repository.create_search_event(
                 session_id,
                 query_text,
                 normalized_query,
                 result_count,
                 normalized_filters,
+                client_mutation_id,
             )
 
     def record_watch_session(
@@ -80,19 +110,35 @@ class InteractionService:
         show_id: str,
         watch_minutes: int,
         user_id: UUID | None = None,
+        session_token: str | None = None,
+        client_mutation_id: UUID | None = None,
     ) -> dict:
         watch_session_id = uuid4()
         with self.repository.transaction():
-            title, metrics = self._prepare_watch(session_id, show_id, watch_minutes, user_id)
-            watch_session = self.repository.create_watch_session(
-                watch_session_id,
-                session_id,
-                title["title_id"],
-                metrics.watch_seconds,
-                metrics.runtime_seconds,
-                metrics.completion_rate,
-                metrics.duration_basis,
+            title, metrics = self._prepare_watch(
+                session_id, show_id, watch_minutes, user_id, session_token
             )
+            if client_mutation_id is None:
+                watch_session = self.repository.create_watch_session(
+                    watch_session_id,
+                    session_id,
+                    title["title_id"],
+                    metrics.watch_seconds,
+                    metrics.runtime_seconds,
+                    metrics.completion_rate,
+                    metrics.duration_basis,
+                )
+            else:
+                watch_session = self.repository.create_watch_session(
+                    watch_session_id,
+                    session_id,
+                    title["title_id"],
+                    metrics.watch_seconds,
+                    metrics.runtime_seconds,
+                    metrics.completion_rate,
+                    metrics.duration_basis,
+                    client_mutation_id,
+                )
             self.repository.touch_session(session_id)
         return watch_session | {"show_id": title["show_id"]}
 
@@ -103,10 +149,12 @@ class InteractionService:
         rating: Decimal,
         watch_session_id: UUID | None = None,
         user_id: UUID | None = None,
+        session_token: str | None = None,
+        client_mutation_id: UUID | None = None,
     ) -> dict:
         rating_value = self._normalize_rating(rating)
         with self.repository.transaction():
-            self._require_session(session_id, user_id)
+            self._require_session(session_id, user_id, session_token)
             title = self._require_title(show_id)
             if watch_session_id is not None:
                 linked_watch = self.repository.get_watch_session(watch_session_id)
@@ -118,12 +166,22 @@ class InteractionService:
                         "watch_session_id must belong to the same session and title"
                     )
             self.repository.touch_session(session_id)
-            return self.repository.create_rating(
-                session_id,
-                title["title_id"],
-                rating_value,
-                watch_session_id,
-            ) | {"show_id": title["show_id"], "rating": rating_value}
+            if client_mutation_id is None:
+                row = self.repository.create_rating(
+                    session_id,
+                    title["title_id"],
+                    rating_value,
+                    watch_session_id,
+                )
+            else:
+                row = self.repository.create_rating(
+                    session_id,
+                    title["title_id"],
+                    rating_value,
+                    watch_session_id,
+                    client_mutation_id,
+                )
+            return row | {"show_id": title["show_id"], "rating": rating_value}
 
     def record_signal(
         self,
@@ -132,26 +190,52 @@ class InteractionService:
         rating: Decimal,
         watch_minutes: int,
         user_id: UUID | None = None,
+        session_token: str | None = None,
+        client_mutation_id: UUID | None = None,
     ) -> dict:
         rating_value = self._normalize_rating(rating)
         watch_session_id = uuid4()
         with self.repository.transaction():
-            title, metrics = self._prepare_watch(session_id, show_id, watch_minutes, user_id)
-            watch_session = self.repository.create_watch_session(
-                watch_session_id,
-                session_id,
-                title["title_id"],
-                metrics.watch_seconds,
-                metrics.runtime_seconds,
-                metrics.completion_rate,
-                metrics.duration_basis,
+            title, metrics = self._prepare_watch(
+                session_id, show_id, watch_minutes, user_id, session_token
             )
-            rating_row = self.repository.create_rating(
-                session_id,
-                title["title_id"],
-                rating_value,
-                watch_session_id,
-            )
+            if client_mutation_id is None:
+                watch_session = self.repository.create_watch_session(
+                    watch_session_id,
+                    session_id,
+                    title["title_id"],
+                    metrics.watch_seconds,
+                    metrics.runtime_seconds,
+                    metrics.completion_rate,
+                    metrics.duration_basis,
+                )
+            else:
+                watch_session = self.repository.create_watch_session(
+                    watch_session_id,
+                    session_id,
+                    title["title_id"],
+                    metrics.watch_seconds,
+                    metrics.runtime_seconds,
+                    metrics.completion_rate,
+                    metrics.duration_basis,
+                    client_mutation_id,
+                )
+            watch_session_id = watch_session["watch_session_id"]
+            if client_mutation_id is None:
+                rating_row = self.repository.create_rating(
+                    session_id,
+                    title["title_id"],
+                    rating_value,
+                    watch_session_id,
+                )
+            else:
+                rating_row = self.repository.create_rating(
+                    session_id,
+                    title["title_id"],
+                    rating_value,
+                    watch_session_id,
+                    client_mutation_id,
+                )
             self.repository.touch_session(session_id)
         return {
             "watch_session": watch_session | {"show_id": title["show_id"]},
@@ -164,12 +248,23 @@ class InteractionService:
         session_id: UUID,
         show_id: str,
         user_id: UUID | None = None,
+        session_token: str | None = None,
+        client_mutation_id: UUID | None = None,
     ) -> dict:
         with self.repository.transaction():
-            self._require_session(session_id, user_id)
+            self._require_session(session_id, user_id, session_token)
             title = self._require_title(show_id)
             self.repository.touch_session(session_id)
-            row = self.repository.add_preference(table_name, session_id, title["title_id"])
+            if user_id is None and client_mutation_id is None:
+                row = self.repository.add_preference(table_name, session_id, title["title_id"])
+            else:
+                row = self.repository.add_preference(
+                    table_name,
+                    session_id,
+                    title["title_id"],
+                    user_id,
+                    client_mutation_id,
+                )
         return row | {"show_id": title["show_id"], "active": True}
 
     def remove_preference(
@@ -178,12 +273,23 @@ class InteractionService:
         session_id: UUID,
         show_id: str,
         user_id: UUID | None = None,
+        session_token: str | None = None,
+        client_mutation_id: UUID | None = None,
     ) -> dict:
         with self.repository.transaction():
-            self._require_session(session_id, user_id)
+            self._require_session(session_id, user_id, session_token)
             title = self._require_title(show_id)
             self.repository.touch_session(session_id)
-            row = self.repository.remove_preference(table_name, session_id, title["title_id"])
+            if user_id is None and client_mutation_id is None:
+                row = self.repository.remove_preference(table_name, session_id, title["title_id"])
+            else:
+                row = self.repository.remove_preference(
+                    table_name,
+                    session_id,
+                    title["title_id"],
+                    user_id,
+                    client_mutation_id,
+                )
         changed_at = row["changed_at"] if row else datetime.now(timezone.utc)
         return {
             "session_id": session_id,
@@ -192,8 +298,13 @@ class InteractionService:
             "changed_at": changed_at,
         }
 
-    def get_state(self, session_id: UUID, user_id: UUID | None = None) -> dict:
-        self._require_session(session_id, user_id)
+    def get_state(
+        self,
+        session_id: UUID,
+        user_id: UUID | None = None,
+        session_token: str | None = None,
+    ) -> dict:
+        self._require_session(session_id, user_id, session_token)
         state = self.repository.interaction_state(session_id, user_id)
         return {
             "session_id": session_id,
@@ -220,6 +331,7 @@ class InteractionService:
         show_id: str,
         watch_minutes: int,
         user_id: UUID | None = None,
+        session_token: str | None = None,
     ) -> tuple[dict, WatchMetrics]:
         if watch_minutes < 0:
             raise InteractionValidationError("watch_minutes must be greater than or equal to zero")
@@ -228,7 +340,7 @@ class InteractionService:
                 f"watch_minutes must be less than or equal to {self.settings.max_watch_minutes}"
             )
         title = self._require_title(show_id)
-        self._require_session(session_id, user_id)
+        self._require_session(session_id, user_id, session_token)
         runtime_seconds = None
         completion_rate = None
         if title["content_type"] == "Movie" and title["movie_duration_min"]:
@@ -249,7 +361,12 @@ class InteractionService:
             duration_basis=duration_basis,
         )
 
-    def _require_session(self, session_id: UUID, user_id: UUID | None = None) -> dict:
+    def _require_session(
+        self,
+        session_id: UUID,
+        user_id: UUID | None = None,
+        session_token: str | None = None,
+    ) -> dict:
         session = self.repository.get_session(session_id)
         if session is None or session.get("ended_at") is not None:
             raise InteractionNotFoundError(f"Interaction session not found: {session_id}")
@@ -258,6 +375,11 @@ class InteractionService:
             raise InteractionUnauthorizedError("Authentication required")
         if user_id is not None and session_user_id != user_id:
             raise InteractionUnauthorizedError("Interaction session does not belong to this account")
+        expected_token_hash = session.get("session_token_hash")
+        if expected_token_hash is not None:
+            actual_token_hash = hash_session_token(session_token or "")
+            if not hmac.compare_digest(str(expected_token_hash).strip(), actual_token_hash):
+                raise InteractionUnauthorizedError("Interaction session proof is invalid")
         return session
 
     def _require_title(self, show_id: str) -> dict:

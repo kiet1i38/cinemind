@@ -31,7 +31,10 @@ async function request(path, options = {}) {
 
 function interactionSessionPayload() {
   const sessionId = interactionSessionStore.read();
-  return sessionId ? { anonymous_session_id: sessionId } : {};
+  const sessionToken = interactionSessionStore.readToken();
+  return sessionId
+    ? { anonymous_session_id: sessionId, anonymous_session_token: sessionToken }
+    : {};
 }
 
 export async function getCurrentUser() {
@@ -60,7 +63,15 @@ export function register({ email, username, displayName, password }) {
 }
 
 export function logout() {
-  return request("/logout", { method: "POST" });
+  const sessionId = interactionSessionStore.read();
+  const sessionToken = interactionSessionStore.readToken();
+  return request("/logout", {
+    method: "POST",
+    body: JSON.stringify({
+      interaction_session_id: sessionId,
+      interaction_session_token: sessionToken
+    })
+  });
 }
 
 export function logoutAll() {

@@ -14,6 +14,7 @@ class RegisterRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=80)
     password: str = Field(..., min_length=1, max_length=128)
     anonymous_session_id: UUID | None = None
+    anonymous_session_token: str | None = Field(default=None, min_length=20, max_length=256)
 
 
 class LoginRequest(BaseModel):
@@ -22,6 +23,7 @@ class LoginRequest(BaseModel):
     identifier: str = Field(..., min_length=1, max_length=320)
     password: str = Field(..., min_length=1, max_length=128)
     anonymous_session_id: UUID | None = None
+    anonymous_session_token: str | None = Field(default=None, min_length=20, max_length=256)
 
 
 class UserResponse(BaseModel):
@@ -53,3 +55,10 @@ class LogoutResponse(BaseModel):
     """Small response for idempotent logout operations."""
 
     ok: bool = True
+
+
+class LogoutRequest(BaseModel):
+    """Optional browser interaction session to end with the auth session."""
+
+    interaction_session_id: UUID | None = None
+    interaction_session_token: str | None = Field(default=None, min_length=20, max_length=256)

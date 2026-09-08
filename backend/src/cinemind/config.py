@@ -186,6 +186,8 @@ def get_settings() -> Settings:
         ),
         admin_reset_username=os.getenv("ADMIN_RESET_USERNAME", "").strip(),
         admin_reset_password=os.getenv("ADMIN_RESET_PASSWORD", ""),
-        reset_enabled=_bool_from_environment("RESET_ENABLED", True),
-        full_reset_enabled=_bool_from_environment("FULL_RESET_ENABLED", True),
+        # Local maintenance can be enabled by default, but production must
+        # explicitly opt in. A missing secret never exposes the endpoint.
+        reset_enabled=_bool_from_environment("RESET_ENABLED", environment != "production"),
+        full_reset_enabled=_bool_from_environment("FULL_RESET_ENABLED", False),
     )

@@ -143,8 +143,13 @@ class AuthRepository:
             (user_id,),
         )
 
-    def attach_interaction_session(self, session_id: UUID, user_id: UUID) -> bool:
-        """Bind only an anonymous or already-owned interaction session."""
+    def attach_interaction_session(
+        self,
+        session_id: UUID,
+        user_id: UUID,
+        session_token_hash: str | None = None,
+    ) -> bool:
+        """Bind only an anonymous session when its browser proof matches."""
 
         row = self.connection.execute(
             """
@@ -152,9 +157,45 @@ class AuthRepository:
             SET user_id = %s, last_seen_at = CURRENT_TIMESTAMP
             WHERE session_id = %s
               AND ended_at IS NULL
+              AND (session_token_hash IS NULL OR session_token_hash = %s)
               AND (user_id IS NULL OR user_id = %s)
             RETURNING session_id
             """,
-            (user_id, session_id, user_id),
+            (user_id, session_id, session_token_hash, user_id),
         ).fetchone()
         return row is not None
+
+    def end_interaction_session(
+        self,
+        session_id: UUID,
+        user_id: UUID,
+        session_token_hash: str | None,
+    ) -> bool:
+        """End only the current account-owned interaction session."""
+
+        row = self.connection.execute(
+            """
+            UPDATE interaction.sessions
+            SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP)
+            WHERE session_id = %s
+              AND user_id = %s
+              AND ended_at IS NULL
+              AND session_token_hash = %s
+            RETURNING session_id
+            """,
+            (session_id, user_id, session_token_hash),
+        ).fetchone()
+        return row is not None
+
+    def end_user_interaction_sessions(self, user_id: UUID) -> int:
+        """End all active interaction sessions for logout-all."""
+
+        result = self.connection.execute(
+            """
+            UPDATE interaction.sessions
+            SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP)
+            WHERE user_id = %s AND ended_at IS NULL
+            """,
+            (user_id,),
+        )
+        return result.rowcount

@@ -29,7 +29,6 @@ import { getDiscoverableTitles, getRecentTitles, getRelatedTitles, getTitlesByTy
 import { catalogPageSizeStore } from "./services/catalogPreferencesStore";
 import { getAuthPageUrl, getCurrentUser } from "./services/authService";
 import {
-  clearInteractionState,
   favoriteStore,
   mergeInteractionState,
   setInteractionOwner,
@@ -106,10 +105,9 @@ export default function App() {
     };
     const applyConfirmedIdentity = (user) => {
       const ownership = setInteractionOwner(user?.user_id);
-      if (ownership.changed) {
-        clearInteractionState({ preserveSession: true });
-        setInteractionOwner(user?.user_id);
-      }
+      // Each account has its own browser namespace. Never clear the new
+      // owner's state when the auth check finishes after a user switch.
+      if (ownership.changed) setRatings(signalStore.read());
       setAuthUser(user);
       setRatings(signalStore.read());
       setFavorites(favoriteStore.read());

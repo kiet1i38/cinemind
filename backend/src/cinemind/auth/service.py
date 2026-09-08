@@ -46,6 +46,7 @@ class AuthService:
         password: str,
         anonymous_session_id: UUID | None,
         user_agent: str | None,
+        anonymous_session_token: str | None = None,
     ) -> dict:
         normalized_email = self._normalize_email(email)
         normalized_username = self._normalize_username(username)
@@ -58,6 +59,7 @@ class AuthService:
             password,
             anonymous_session_id,
             user_agent,
+            anonymous_session_token,
         )
 
     def login(
@@ -66,6 +68,7 @@ class AuthService:
         password: str,
         anonymous_session_id: UUID | None,
         user_agent: str | None,
+        anonymous_session_token: str | None = None,
     ) -> dict:
         normalized_identifier = self._normalize_identifier(identifier)
         with self.repository.transaction():
@@ -78,17 +81,41 @@ class AuthService:
             password_valid = verify_password(password, password_hash)
             if not user or not user.get("is_active") or not password_valid:
                 raise InvalidCredentialsError("Invalid credentials")
-            return self._create_login_session(user, anonymous_session_id, user_agent)
+            return self._create_login_session(
+                user,
+                anonymous_session_id,
+                user_agent,
+                anonymous_session_token,
+            )
 
-    def logout(self, raw_token: str | None) -> None:
+    def logout(
+        self,
+        raw_token: str | None,
+        interaction_session_id: UUID | None = None,
+        interaction_session_token: str | None = None,
+    ) -> None:
         if not raw_token:
             return
         with self.repository.transaction():
-            self.repository.revoke_session(hash_session_token(raw_token))
+            auth_token_hash = hash_session_token(raw_token)
+            context = (
+                self.repository.get_auth_context(auth_token_hash)
+                if hasattr(self.repository, "get_auth_context")
+                else None
+            )
+            self.repository.revoke_session(auth_token_hash)
+            if context and interaction_session_id and hasattr(self.repository, "end_interaction_session"):
+                self.repository.end_interaction_session(
+                    interaction_session_id,
+                    context["user_id"],
+                    hash_session_token(interaction_session_token or ""),
+                )
 
     def logout_all(self, user_id: UUID) -> None:
         with self.repository.transaction():
             self.repository.revoke_all_sessions(user_id)
+            if hasattr(self.repository, "end_user_interaction_sessions"):
+                self.repository.end_user_interaction_sessions(user_id)
 
     def _create_authenticated_session(
         self,
@@ -98,6 +125,7 @@ class AuthService:
         password: str,
         anonymous_session_id: UUID | None,
         user_agent: str | None,
+        anonymous_session_token: str | None = None,
     ) -> dict:
         now = datetime.now(timezone.utc)
         user_id = uuid4()
@@ -118,7 +146,11 @@ class AuthService:
                     raise DuplicateAccountError("An account with these details already exists") from None
                 raise
             self.repository.set_last_login(user_id, now)
-            attached = self._attach_session(anonymous_session_id, user_id)
+            attached = self._attach_session(
+                anonymous_session_id,
+                user_id,
+                anonymous_session_token,
+            )
             self.repository.create_session(
                 uuid4(),
                 user_id,
@@ -135,11 +167,16 @@ class AuthService:
         user: dict,
         anonymous_session_id: UUID | None,
         user_agent: str | None,
+        anonymous_session_token: str | None = None,
     ) -> dict:
         now = datetime.now(timezone.utc)
         raw_token = new_session_token()
         self.repository.set_last_login(user["user_id"], now)
-        attached = self._attach_session(anonymous_session_id, user["user_id"])
+        attached = self._attach_session(
+            anonymous_session_id,
+            user["user_id"],
+            anonymous_session_token,
+        )
         self.repository.create_session(
             uuid4(),
             user["user_id"],
@@ -151,8 +188,23 @@ class AuthService:
         refreshed_user = self.repository.get_user(user["user_id"]) or user
         return self._result(refreshed_user, raw_token, anonymous_session_id if attached else None)
 
-    def _attach_session(self, session_id: UUID | None, user_id: UUID) -> bool:
-        return bool(session_id and self.repository.attach_interaction_session(session_id, user_id))
+    def _attach_session(
+        self,
+        session_id: UUID | None,
+        user_id: UUID,
+        session_token: str | None = None,
+    ) -> bool:
+        if not session_id:
+            return False
+        if session_token is not None:
+            return bool(
+                self.repository.attach_interaction_session(
+                    session_id,
+                    user_id,
+                    hash_session_token(session_token),
+                )
+            )
+        return bool(self.repository.attach_interaction_session(session_id, user_id))
 
     @staticmethod
     def _result(user: dict, raw_token: str, interaction_session_id: UUID | None) -> dict:

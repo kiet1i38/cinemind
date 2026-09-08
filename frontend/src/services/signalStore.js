@@ -1,8 +1,11 @@
 import { appConfig } from "../config/appConfig";
 import { createJsonStore } from "./browserStore";
+import {
+  readOwnerScopedSignalState,
+  writeOwnerScopedSignalState
+} from "./interactionStore";
 
 const languageStoreBase = createJsonStore(appConfig.languages.storageKey, appConfig.languages.default);
-const signalStoreBase = createJsonStore(appConfig.signals.storageKey, {});
 
 export const languageStore = {
   read() {
@@ -16,10 +19,10 @@ export const languageStore = {
 
 export const signalStore = {
   read() {
-    const value = signalStoreBase.read();
+    const value = readOwnerScopedSignalState();
     return value && typeof value === "object" && !Array.isArray(value) ? value : {};
   },
   write(value) {
-    signalStoreBase.write(value);
+    writeOwnerScopedSignalState(value);
   }
 };

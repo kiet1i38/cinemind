@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass
+import ipaddress
 from math import ceil
 from threading import Lock
 import time
@@ -88,3 +89,39 @@ class SlidingWindowRateLimiter:
         cutoff = now - self.window_seconds
         while events and events[0] <= cutoff:
             events.popleft()
+
+
+def client_address_from_headers(
+    direct_address: str | None,
+    headers: dict[str, str],
+    *,
+    trust_proxy_headers: bool,
+) -> str:
+    """Return a stable, validated client address for request-scoped limits.
+
+    Forwarded headers are attacker-controlled unless the deployment explicitly
+    opts in.  Even when enabled, only the first valid address is accepted so a
+    malformed header cannot collapse all traffic into one shared bucket.
+    """
+
+    if trust_proxy_headers:
+        forwarded = headers.get("x-forwarded-for", "")
+        for candidate in forwarded.split(","):
+            normalized = _normalize_ip(candidate.strip())
+            if normalized:
+                return normalized
+
+        forwarded_for = _normalize_ip(headers.get("x-real-ip", ""))
+        if forwarded_for:
+            return forwarded_for
+
+    return _normalize_ip(direct_address or "") or "unknown"
+
+
+def _normalize_ip(value: str) -> str | None:
+    """Normalize IPv4/IPv6 text without accepting arbitrary bucket keys."""
+
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None

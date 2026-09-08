@@ -9,7 +9,12 @@ class CatalogRepository:
     def __init__(self, connection):
         self.connection = connection
 
-    def replace_catalog(self, records: tuple[CatalogRecord, ...], source_id) -> int:
+    def replace_catalog(
+        self,
+        records: tuple[CatalogRecord, ...],
+        source_id,
+        source_checksum: str | None = None,
+    ) -> int:
         """Upsert titles and rebuild their relation rows for one source."""
 
         if not records:
@@ -33,11 +38,13 @@ class CatalogRepository:
                     poster_provider,
                     poster_path,
                     poster_url,
-                    poster_status
+                    poster_status,
+                    is_active,
+                    source_checksum_sha256
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, TRUE, %s
                 )
                 ON CONFLICT (show_id)
                 DO UPDATE SET
@@ -55,9 +62,11 @@ class CatalogRepository:
                     poster_path = EXCLUDED.poster_path,
                     poster_url = EXCLUDED.poster_url,
                     poster_status = EXCLUDED.poster_status,
+                    is_active = TRUE,
+                    source_checksum_sha256 = EXCLUDED.source_checksum_sha256,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                [self._title_values(record, source_id) for record in records],
+                    [self._title_values(record, source_id, source_checksum) for record in records],
             )
 
             show_ids = [record.show_id for record in records]
@@ -74,6 +83,15 @@ class CatalogRepository:
             }
             if len(title_ids) != len(show_ids):
                 raise RuntimeError("Catalog upsert did not return every title")
+
+            cursor.execute(
+                """
+                UPDATE catalog.titles
+                SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                WHERE source_id = %s AND show_id <> ALL(%s)
+                """,
+                (source_id, show_ids),
+            )
 
             numeric_title_ids = list(title_ids.values())
             self._delete_relations(cursor, numeric_title_ids)
@@ -190,7 +208,7 @@ class CatalogRepository:
                 poster_url,
                 poster_status
             FROM catalog.titles
-            WHERE show_id = %s
+            WHERE show_id = %s AND is_active = TRUE
             """,
             (show_id,),
         ).fetchone()
@@ -216,12 +234,13 @@ class CatalogRepository:
                 COUNT(*) FILTER (WHERE poster_status = 'available') AS public_posters,
                 COUNT(*) FILTER (WHERE poster_status = 'fallback') AS fallback_posters
             FROM catalog.titles
+            WHERE is_active = TRUE
             """
         ).fetchone()
         return {key: int(value) for key, value in row.items()}
 
     @staticmethod
-    def _title_values(record: CatalogRecord, source_id) -> tuple:
+    def _title_values(record: CatalogRecord, source_id, source_checksum: str | None) -> tuple:
         return (
             record.show_id,
             source_id,
@@ -238,6 +257,7 @@ class CatalogRepository:
             record.poster_path,
             record.poster_url,
             record.poster_status,
+            source_checksum,
         )
 
     @staticmethod
@@ -304,7 +324,7 @@ class CatalogRepository:
 
     @staticmethod
     def _filters(*, query, content_type, genre, release_year) -> tuple[str, list]:
-        clauses = []
+        clauses = ["t.is_active = TRUE"]
         params = []
         if query:
             clauses.append("(t.title ILIKE %s OR COALESCE(t.description, '') ILIKE %s)")

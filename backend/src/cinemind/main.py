@@ -14,7 +14,11 @@ from cinemind.catalog.schemas import ReadinessResponse
 from cinemind.config import get_settings
 from cinemind.db.connection import close_pool, connection_scope
 from cinemind.interaction.routes import router as interaction_router
-from cinemind.middleware import RequestBodyLimitMiddleware
+from cinemind.middleware import (
+    CSRFMiddleware,
+    InteractionRateLimitMiddleware,
+    RequestBodyLimitMiddleware,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +62,16 @@ def create_app() -> FastAPI:
     application.add_middleware(
         RequestBodyLimitMiddleware,
         max_body_bytes=settings.max_request_body_bytes,
+    )
+    application.add_middleware(
+        InteractionRateLimitMiddleware,
+        max_attempts=settings.interaction_rate_limit_max_attempts,
+        window_seconds=settings.interaction_rate_limit_window_seconds,
+        trust_proxy_headers=settings.trust_proxy_headers,
+    )
+    application.add_middleware(
+        CSRFMiddleware,
+        allowed_origins=settings.cors_allowed_origins,
     )
     application.add_middleware(
         CORSMiddleware,

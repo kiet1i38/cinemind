@@ -12,6 +12,7 @@ from cinemind.auth.schemas import (
     AuthResponse,
     AuthStateResponse,
     LoginRequest,
+    LogoutRequest,
     LogoutResponse,
     RegisterRequest,
     UserResponse,
@@ -68,6 +69,7 @@ def register(
             payload.password,
             payload.anonymous_session_id,
             _user_agent(request),
+            anonymous_session_token=payload.anonymous_session_token,
         )
     except DuplicateAccountError as error:
         _record_auth_failure(request, rate_key)
@@ -101,6 +103,7 @@ def login(
             payload.password,
             payload.anonymous_session_id,
             _user_agent(request),
+            anonymous_session_token=payload.anonymous_session_token,
         )
     except InvalidCredentialsError as error:
         _record_auth_failure(request, rate_key)
@@ -130,11 +133,16 @@ def me(
 def logout(
     request: Request,
     response: Response,
+    payload: LogoutRequest | None = None,
     service: AuthService = Depends(get_auth_service),
 ) -> LogoutResponse:
     """Revoke only the current browser session."""
 
-    service.logout(request.cookies.get(get_settings().auth_cookie_name))
+    service.logout(
+        request.cookies.get(get_settings().auth_cookie_name),
+        payload.interaction_session_id if payload else None,
+        payload.interaction_session_token if payload else None,
+    )
     _clear_cookie(response, get_settings())
     return LogoutResponse()
 
@@ -206,7 +214,7 @@ def _require_secure_transport(request: Request, settings: Settings) -> None:
 def _auth_rate_limit_key(request: Request, identifier: str, operation: str) -> str:
     """Build a bounded, non-sensitive bucket key from client and identifier."""
 
-    address = request.client.host if request.client else "unknown"
+    address = client_address_from_request(request, get_settings())
     identifier_hash = hashlib.sha256(
         str(identifier).strip().casefold().encode("utf-8")
     ).hexdigest()
@@ -214,8 +222,20 @@ def _auth_rate_limit_key(request: Request, identifier: str, operation: str) -> s
 
 
 def _auth_ip_key(request: Request, operation: str) -> str:
-    address = request.client.host if request.client else "unknown"
+    address = client_address_from_request(request, get_settings())
     return f"{operation}:{address}"
+
+
+def client_address_from_request(request: Request, settings: Settings) -> str:
+    """Resolve the actual peer address, honoring proxy headers only by opt-in."""
+
+    from cinemind.security import client_address_from_headers
+
+    return client_address_from_headers(
+        request.client.host if request.client else None,
+        {key.casefold(): value for key, value in request.headers.items()},
+        trust_proxy_headers=settings.trust_proxy_headers,
+    )
 
 
 def _enforce_auth_rate_limit(request: Request, identifier_key: str) -> None:

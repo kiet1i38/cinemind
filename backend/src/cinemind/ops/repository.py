@@ -53,6 +53,30 @@ class OpsRepository:
             raise RuntimeError("Could not register dataset source")
         return UUID(str(row["source_id"]))
 
+    def get_source_checksum(self, source_id: UUID) -> str | None:
+        """Read the last ingested source checksum before a refresh."""
+
+        row = self.connection.execute(
+            "SELECT checksum_sha256 FROM ops.dataset_sources WHERE source_id = %s",
+            (source_id,),
+        ).fetchone()
+        return str(row["checksum_sha256"]).strip() if row and row["checksum_sha256"] else None
+
+    def reconcile_running_ingestion_runs(self, source_id: UUID) -> int:
+        """Close interrupted runs so a crashed bootstrap cannot stay running forever."""
+
+        result = self.connection.execute(
+            """
+            UPDATE ops.ingestion_runs
+            SET status = 'failed',
+                finished_at = CURRENT_TIMESTAMP,
+                error_message = COALESCE(error_message, 'Reconciled after interrupted bootstrap')
+            WHERE source_id = %s AND status = 'running'
+            """,
+            (source_id,),
+        )
+        return result.rowcount
+
     def create_ingestion_run(
         self,
         ingestion_run_id: UUID,

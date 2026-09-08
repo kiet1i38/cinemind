@@ -8,7 +8,7 @@ import { syncDocumentLanguage, translate } from "./lib/i18n";
 import { getCurrentUser, getAuthPageUrl, logout, logoutAll } from "./services/authService";
 import { loadCatalog } from "./services/catalogService";
 import { getInteractionState, syncPendingInteractions } from "./services/interactionService";
-import { clearInteractionState, favoriteStore, mergeInteractionState, watchlistStore } from "./services/interactionStore";
+import { clearInteractionState, favoriteStore, mergeInteractionState, setInteractionOwner, watchlistStore } from "./services/interactionStore";
 import { languageStore, signalStore } from "./services/signalStore";
 import "./styles.css";
 import "./profile.css";
@@ -74,6 +74,7 @@ export default function ProfilePage() {
         window.location.href = getAuthPageUrl("login", `${window.location.pathname}${window.location.search}`);
         return;
       }
+      setInteractionOwner(currentUser.user_id);
 
       let interactionState = null;
       try {
@@ -112,6 +113,11 @@ export default function ProfilePage() {
     const confirmed = window.confirm(translate(language, allDevices ? "logoutAllConfirm" : "logoutConfirm"));
     if (!confirmed) return;
     try {
+      // Give the append-only outbox one last chance before the owner changes.
+      await syncPendingInteractions(catalog, {
+        locale: language,
+        platform: typeof navigator !== "undefined" ? String(navigator.platform || "web").slice(0, 32) : "web"
+      });
       if (allDevices) await logoutAll();
       else await logout();
       clearInteractionState();

@@ -1,6 +1,7 @@
 """Apply migrations and load the normalized catalog into PostgreSQL."""
 
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -20,7 +21,7 @@ def bootstrap_catalog(settings: Settings) -> dict:
     """Migrate the database, load records and return an audit summary."""
 
     wait_for_database(settings)
-    with connection_scope(settings) as connection:
+    with connection_scope(settings) as connection, _advisory_lock(connection):
         migration_result = MigrationRunner(
             connection, settings.migrations_path
         ).apply()
@@ -30,10 +31,27 @@ def bootstrap_catalog(settings: Settings) -> dict:
         ops = OpsRepository(connection)
 
         with connection.transaction():
+            previous_checksum = ops.get_source_checksum(source.source_id)
             source_id = ops.upsert_dataset_source(source)
+
+        if previous_checksum == checksum:
+            with connection.transaction():
+                reconciled_runs = ops.reconcile_running_ingestion_runs(source_id)
+            summary = CatalogRepository(connection).summary()
+            return {
+                "migrations_applied": list(migration_result.applied_versions),
+                "ingestion_run_id": None,
+                "rows_read": load_result.rows_read,
+                "rows_loaded": 0,
+                "quality_issues": 0,
+                "reconciled_running_runs": reconciled_runs,
+                "skipped_unchanged_source": True,
+                "catalog_summary": summary,
+            }
 
         ingestion_run_id = uuid4()
         with connection.transaction():
+            ops.reconcile_running_ingestion_runs(source_id)
             ops.create_ingestion_run(
                 ingestion_run_id=ingestion_run_id,
                 source_id=source_id,
@@ -51,7 +69,7 @@ def bootstrap_catalog(settings: Settings) -> dict:
                     tuple(_to_quality_issue(issue) for issue in load_result.issues),
                 )
                 rows_loaded = CatalogRepository(connection).replace_catalog(
-                    load_result.records, source_id
+                    load_result.records, source_id, checksum
                 )
 
             final_status = (
@@ -99,6 +117,18 @@ def build_source(settings: Settings, checksum: str) -> DatasetSource:
         collected_at=datetime.now(timezone.utc),
         checksum_sha256=checksum,
     )
+
+
+@contextmanager
+def _advisory_lock(connection):
+    """Serialize bootstrap/migration work across multiple backend workers."""
+
+    lock_key = 271820260
+    connection.execute("SELECT pg_advisory_lock(%s)", (lock_key,))
+    try:
+        yield
+    finally:
+        connection.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
 
 
 def file_checksum(path: Path) -> str:

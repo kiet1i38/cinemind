@@ -1,7 +1,7 @@
 // Client for the protected maintenance endpoint. Credentials stay in memory only.
 
 import { appConfig, resolveApiBaseUrl } from "../config/appConfig";
-import { interactionSessionStore } from "./interactionStore";
+import { clearInteractionState, interactionSessionStore } from "./interactionStore";
 
 const resetConfig = appConfig.adminReset;
 
@@ -56,15 +56,5 @@ export function readCurrentInteractionSession() {
 }
 
 export function clearLocalInteractionState() {
-  const keys = [
-    appConfig.interaction.sessionStorageKey,
-    appConfig.interaction.favoritesStorageKey,
-    appConfig.interaction.watchlistStorageKey,
-    appConfig.signals.storageKey
-  ];
-  try {
-    keys.forEach((key) => window.localStorage.removeItem(key));
-  } catch {
-    // Local storage can be unavailable in a restricted browser context.
-  }
+  clearInteractionState({ clearPending: true, resetOwner: true });
 }
