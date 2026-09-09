@@ -142,7 +142,7 @@ try {
   await loginInputs.nth(0).fill("nonexistent-exploratory@example.test");
   await loginInputs.nth(1).fill("Definitely-wrong-password-123");
   await page.locator('form button[type="submit"]').click();
-  await page.waitForTimeout(1_200);
+  await page.locator(".auth-feedback, [role=\"alert\"]").first().waitFor({ state: "visible", timeout: 20_000 }).catch(() => undefined);
   check("invalidLoginShowsFeedback", (await page.locator('[role="alert"]').count()) > 0 || (await page.locator(".auth-feedback").count()) > 0);
 
   const authSwitch = page.locator(".auth-switch");
