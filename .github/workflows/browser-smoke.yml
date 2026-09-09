@@ -31,3 +31,8 @@ jobs:
         env:
           CINEMIND_BASE_URL: https://kietchaukg.helioho.st/cinemind/
         run: node scripts/run-browser-smoke.mjs
+      - name: Run exploratory browser test
+        working-directory: frontend
+        env:
+          CINEMIND_BASE_URL: https://kietchaukg.helioho.st/cinemind/
+        run: node scripts/run-exploratory-browser.mjs
