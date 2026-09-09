@@ -1,0 +1,33 @@
+name: Hosted Browser Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/browser-smoke
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  hosted-browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run hosted user-flow smoke test
+        working-directory: frontend
+        env:
+          CINEMIND_BASE_URL: https://kietchaukg.helioho.st/cinemind/
+        run: node scripts/run-browser-smoke.mjs

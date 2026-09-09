@@ -1,4 +1,4 @@
-async (page) => {
+export default async (page) => {
   const report = {};
   const consoleErrors = [];
   const pageErrors = [];
@@ -19,11 +19,15 @@ async (page) => {
   page.on("console", onConsole);
   page.on("pageerror", onPageError);
   await page.setViewportSize({ width: 1440, height: 900 });
+  const appUrl = new URL(page.url());
+  const appBasePath = appUrl.pathname.startsWith("/cinemind/") ? "/cinemind/" : "/";
+  const apiPrefix = appBasePath === "/cinemind/" ? "/cinemind-api/api" : "/api";
+  const catalogUrl = new URL("data/catalog.json", appUrl).href;
   await page.context().clearCookies();
   await page.evaluate(() => {
     window.localStorage.clear();
-    window.history.replaceState({}, "", "/");
   });
+  await page.evaluate((path) => window.history.replaceState({}, "", path), appBasePath);
   await page.route("**/api/auth/me", (route) => route.fulfill({
     status: 503,
     contentType: "application/json",
@@ -39,15 +43,15 @@ async (page) => {
   report.home = await page.getByTestId("home-page").isVisible();
   report.catalogCount = await page.locator(".filter-count").textContent();
   report.railCount = await page.locator("[data-testid^=rail-]").count();
-  report.catalogPosterCoverage = await page.evaluate(async () => {
-    const records = await (await fetch("/data/catalog.json")).json();
+  report.catalogPosterCoverage = await page.evaluate(async (url) => {
+    const records = await (await fetch(url)).json();
     return {
       records: records.length,
       withPosterUrl: records.filter((record) => Boolean(record.posterUrl)).length,
       withFallbackUrl: records.filter((record) => Boolean(record.posterFallbackUrl)).length,
       completePosterCoverage: records.every((record) => Boolean(record.posterUrl || record.posterFallbackUrl))
     };
-  });
+  }, catalogUrl);
   const posterStats = async (selector) => page.locator(selector).evaluateAll((cards) => {
     const images = cards.map((card) => card.querySelector(".poster-image img"));
     return {
@@ -106,15 +110,15 @@ async (page) => {
     };
   });
   const anonymousSessionId = await readScopedStorage("cinemind-interaction-session-id", null);
-  const registration = await page.evaluate(async (credentials) => {
-    const response = await fetch("/api/auth/register", {
+  const registration = await page.evaluate(async ({ credentials, apiPath }) => {
+    const response = await fetch(`${apiPath}/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify(credentials)
     });
     return { ok: response.ok, status: response.status };
-  }, { ...account, anonymous_session_id: anonymousSessionId });
+  }, { credentials: { ...account, anonymous_session_id: anonymousSessionId }, apiPath: apiPrefix });
   if (!registration.ok) throw new Error(`Browser QA registration failed with ${registration.status}`);
   await page.reload();
   await waitForHome();
