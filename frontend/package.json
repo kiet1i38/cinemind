@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "CineMind frontend prototype",
+  "overrides": {
+    "lodash": "4.18.1"
+  },
   "scripts": {
     "dev": "webpack serve --mode development",
     "build": "webpack --mode production",
@@ -26,14 +29,13 @@
     "babel-loader": "^9.2.1",
     "css-loader": "^7.1.2",
     "html-webpack-plugin": "^5.6.3",
-    "lodash": "4.17.21",
-    "playwright": "^1.55.0",
+    "playwright": "^1.55.1",
     "postcss": "^8.5.3",
     "postcss-loader": "^8.1.1",
     "style-loader": "^4.0.0",
     "tailwindcss": "^3.4.17",
     "webpack": "^5.98.0",
     "webpack-cli": "^6.0.1",
-    "webpack-dev-server": "^5.2.0"
+    "webpack-dev-server": "^6.0.0"
   }
 }
