@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { appConfig, isMovie } from "../config/appConfig";
+import { appConfig, appLanguage, isMovie } from "../config/appConfig";
 import { translate } from "../lib/i18n";
 
 function toneFor(record) {
@@ -8,7 +8,7 @@ function toneFor(record) {
   return tones[value % tones.length];
 }
 
-export function PosterImage({ record, language = appConfig.languages.default, className = "", priority = false }) {
+export function PosterImage({ record, language = appLanguage, className = "", priority = false }) {
   const [source, setSource] = useState(record.posterUrl || record.posterFallbackUrl || null);
   const [failed, setFailed] = useState(false);
 

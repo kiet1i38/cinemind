@@ -228,13 +228,6 @@ async (page) => {
   report.remotePosterFailureFallback = await vendettaImage.getAttribute("src");
   await page.getByTestId("filter-bar").getByRole("button", { name: "Clear filters" }).click();
 
-  await page.getByRole("button", { name: "VI", exact: true }).click();
-  await page.getByRole("heading", { name: "Tìm một câu chuyện ở lại với bạn" }).waitFor();
-  report.vietnameseHeading = true;
-  await page.getByRole("button", { name: "EN", exact: true }).click();
-  const signalsAfterLanguageSwitch = await readScopedStorage("cinemind-ratings", {});
-  report.localStateSurvivesLanguageSwitch = Object.keys(signalsAfterLanguageSwitch).length > 0;
-
   await page.setViewportSize({ width: 390, height: 844 });
   report.mobileDesktopNav = await page.locator(".desktop-nav").evaluate((node) => getComputedStyle(node).display);
   await page.getByRole("button", { name: "Open menu" }).click();

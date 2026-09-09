@@ -88,9 +88,9 @@ class CatalogRepository:
                 """
                 UPDATE catalog.titles
                 SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-                WHERE source_id = %s AND show_id <> ALL(%s)
+                WHERE show_id <> ALL(%s)
                 """,
-                (source_id, show_ids),
+                (show_ids,),
             )
 
             numeric_title_ids = list(title_ids.values())
@@ -98,6 +98,37 @@ class CatalogRepository:
             self._insert_relations(cursor, records, title_ids)
 
         return len(records)
+
+    def matches_source(
+        self,
+        records: tuple[CatalogRecord, ...],
+        source_id,
+        source_checksum: str,
+    ) -> bool:
+        """Verify that the active catalog still represents this seed file.
+
+        A source checksum alone is not enough to justify skipping a bootstrap:
+        rows may have been removed or changed by a manual repair.  Compare the
+        active show-id set and the provenance columns before treating a source
+        as unchanged.
+        """
+
+        expected_ids = {record.show_id for record in records}
+        rows = self.connection.execute(
+            """
+            SELECT show_id, source_id, source_checksum_sha256
+            FROM catalog.titles
+            WHERE is_active = TRUE
+            """
+        ).fetchall()
+        if len(rows) != len(expected_ids):
+            return False
+        return all(
+            row["show_id"] in expected_ids
+            and str(row["source_id"]).strip() == str(source_id).strip()
+            and str(row["source_checksum_sha256"] or "").strip() == str(source_checksum).strip()
+            for row in rows
+        )
 
     def list_titles(
         self,

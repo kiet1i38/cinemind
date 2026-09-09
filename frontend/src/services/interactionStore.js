@@ -130,6 +130,7 @@ function normalizeOutbox(value) {
   const preferences = source.preferences && typeof source.preferences === "object" ? source.preferences : {};
   return {
     signals: source.signals && typeof source.signals === "object" ? source.signals : {},
+    searches: source.searches && typeof source.searches === "object" ? source.searches : {},
     preferences: {
       favorites: preferences.favorites && typeof preferences.favorites === "object" ? preferences.favorites : {},
       watchlist: preferences.watchlist && typeof preferences.watchlist === "object" ? preferences.watchlist : {}
@@ -140,6 +141,7 @@ function normalizeOutbox(value) {
 export function readPendingInteractions() {
   return normalizeOutbox(scopedValue(outboxStoreBase, {
     signals: {},
+    searches: {},
     preferences: { favorites: {}, watchlist: {} }
   }));
 }
@@ -166,6 +168,31 @@ export function acknowledgePendingSignal(showId, mutationId) {
   const key = String(showId);
   if (outbox.signals[key]?.mutationId !== mutationId) return;
   delete outbox.signals[key];
+  writePendingInteractions(outbox);
+}
+
+export function queuePendingSearch(
+  { query, resultCount, filters },
+  mutationId = createMutationId()
+) {
+  const outbox = readPendingInteractions();
+  const key = String(mutationId);
+  outbox.searches[key] = {
+    query: String(query ?? ""),
+    resultCount: Number(resultCount),
+    filters: filters && typeof filters === "object" && !Array.isArray(filters) ? { ...filters } : {},
+    queuedAt: new Date().toISOString(),
+    mutationId
+  };
+  writePendingInteractions(outbox);
+  return mutationId;
+}
+
+export function acknowledgePendingSearch(mutationId) {
+  const outbox = readPendingInteractions();
+  const key = String(mutationId);
+  if (!outbox.searches[key] || outbox.searches[key].mutationId !== mutationId) return;
+  delete outbox.searches[key];
   writePendingInteractions(outbox);
 }
 

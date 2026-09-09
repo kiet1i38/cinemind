@@ -54,7 +54,9 @@ if (!Array.isArray(catalog) || !catalog.length) {
   process.exit(1);
 }
 
-const missingPosterUrls = catalog.filter((record) => !record?.posterUrl);
+// A generated local poster is a valid renderable poster even when there is no
+// remote URL.  Only report a missing URL when neither source can render.
+const missingPosterUrls = catalog.filter((record) => !record?.posterUrl && !record?.posterFallbackUrl);
 const fallbackResults = await Promise.all(catalog.map(async (record) => ({ id: record.id, ok: await checkLocalFallback(record) })));
 const missingFallbackFiles = fallbackResults.filter((result) => !result.ok).map((result) => result.id);
 const publicRecords = catalog.filter((record) => record.posterKind === "public" && record.posterUrl && !record.posterUrl.startsWith(localFallbackPrefix));
@@ -83,7 +85,8 @@ const report = {
   missingFallbackFiles,
   failedPublicUrls,
   allRecordsHaveLocalFallback: missingFallbackFiles.length === 0,
-  allRecordsHaveRenderablePoster: missingPosterUrls.length === 0 && missingFallbackFiles.length === 0
+  allRecordsHaveRenderablePoster: missingPosterUrls.length === 0 && missingFallbackFiles.length === 0,
+  allPublicPosterLinksReachable: failedPublicUrls.length === 0
 };
 console.log(JSON.stringify(report, null, 2));
-if (!report.allRecordsHaveRenderablePoster) process.exitCode = 1;
+if (!report.allRecordsHaveRenderablePoster || !report.allPublicPosterLinksReachable) process.exitCode = 1;

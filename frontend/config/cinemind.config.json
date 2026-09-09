@@ -10,23 +10,14 @@
     "catalogProvider": "Kaggle",
     "posterProvider": "TMDB API with IMDb and TVmaze fallback",
     "posterProviderLabels": {
-      "en": "TMDB API, IMDb, and TVmaze",
-      "vi": "TMDB API, IMDb và TVmaze"
+      "en": "TMDB API, IMDb, and TVmaze"
     },
     "posterAttributionLabels": {
-      "en": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
-      "vi": "Sản phẩm này sử dụng TMDB API nhưng không được TMDB chứng nhận hoặc bảo trợ."
+      "en": "This product uses the TMDB API but is not endorsed or certified by TMDB."
     },
     "posterAttribution": "This product uses the TMDB API but is not endorsed or certified by TMDB."
   },
-  "languages": {
-    "default": "en",
-    "storageKey": "cinemind-language",
-    "options": [
-      { "value": "en", "labelKey": "english" },
-      { "value": "vi", "labelKey": "vietnamese" }
-    ]
-  },
+  "language": "en",
   "navigation": [
     { "target": "home", "labelKey": "home" },
     { "target": "movies", "labelKey": "movies" },

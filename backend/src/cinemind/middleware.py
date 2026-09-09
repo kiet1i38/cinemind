@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 import hashlib
+from uuid import UUID
 
 from starlette.responses import JSONResponse
 
@@ -235,10 +236,22 @@ def _interaction_principal(
 ) -> str:
     """Derive a stable limiter principal using the configured auth cookie."""
 
-    session = headers.get("x-cinemind-session", "").strip()
+    session = _validated_session_header(headers.get("x-cinemind-session", ""))
     auth_cookie = _cookie_value(headers.get("cookie", ""), auth_cookie_name)
     return session or (
         hashlib.sha256(auth_cookie.encode("utf-8")).hexdigest()
         if auth_cookie
         else client
     )
+
+
+def _validated_session_header(value: str) -> str:
+    """Use only canonical UUID session headers as limiter principals."""
+
+    normalized = str(value or "").strip()
+    if len(normalized) > 64:
+        return ""
+    try:
+        return str(UUID(normalized))
+    except (ValueError, AttributeError, TypeError):
+        return ""

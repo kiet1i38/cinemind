@@ -9,7 +9,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from cinemind.interaction.schemas import RatingCreateRequest, SignalCreateRequest
+from cinemind.interaction.schemas import RatingCreateRequest, SessionCreateRequest, SignalCreateRequest
 from cinemind.interaction.service import (
     InteractionConflictError,
     InteractionNotFoundError,
@@ -396,6 +396,10 @@ class InteractionSchemaTests(unittest.TestCase):
                 rating=8,
                 watch_minutes=-1,
             )
+
+    def test_session_schema_rejects_blank_metadata(self):
+        with self.assertRaises(ValidationError):
+            SessionCreateRequest(locale="   ")
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import sys
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from cinemind.catalog.loader import load_catalog
+from cinemind.catalog.models import CatalogLoadResult
 from cinemind.catalog.repository import CatalogRepository
 from cinemind.config import Settings, get_settings
 from cinemind.db.connection import connection_scope, wait_for_database
@@ -25,16 +26,32 @@ def bootstrap_catalog(settings: Settings) -> dict:
         migration_result = MigrationRunner(
             connection, settings.migrations_path
         ).apply()
-        load_result = load_catalog(settings.catalog_seed_path)
-        checksum = file_checksum(settings.catalog_seed_path)
+        load_error = None
+        try:
+            checksum = file_checksum(settings.catalog_seed_path)
+            load_result = load_catalog(settings.catalog_seed_path)
+        except Exception as error:
+            # Register the source and a failed ingestion run even when the
+            # seed is missing, unreadable, or malformed.  Startup diagnostics
+            # must not disappear before the loader can produce a result.
+            load_error = error
+            checksum = ""
+            load_result = CatalogLoadResult(records=(), issues=(), rows_read=0)
         source = build_source(settings, checksum)
         ops = OpsRepository(connection)
+        catalog_repository = CatalogRepository(connection)
 
         with connection.transaction():
             source_id = ops.ensure_dataset_source(source)
             previous_checksum = ops.get_source_checksum(source_id)
 
-        if previous_checksum == checksum:
+        catalog_is_current = _catalog_matches_source(
+            catalog_repository,
+            load_result.records,
+            source_id,
+            checksum,
+        )
+        if load_error is None and previous_checksum == checksum and catalog_is_current:
             with connection.transaction():
                 reconciled_runs = ops.reconcile_running_ingestion_runs(source_id)
             summary = CatalogRepository(connection).summary()
@@ -60,15 +77,20 @@ def bootstrap_catalog(settings: Settings) -> dict:
             )
 
         try:
-            if not load_result.records:
-                raise ValueError("Catalog contains no valid records")
-
+            # Commit audit issues independently of the catalog replacement so
+            # an all-invalid seed still leaves a durable quality trail.
             with connection.transaction():
                 ops.record_quality_issues(
                     ingestion_run_id,
                     tuple(_to_quality_issue(issue) for issue in load_result.issues),
                 )
-                rows_loaded = CatalogRepository(connection).replace_catalog(
+            if load_error is not None:
+                raise load_error
+            if not load_result.records:
+                raise ValueError("Catalog contains no valid records")
+
+            with connection.transaction():
+                rows_loaded = catalog_repository.replace_catalog(
                     load_result.records, source_id, checksum
                 )
                 ops.mark_dataset_source_ingested(
@@ -103,7 +125,7 @@ def bootstrap_catalog(settings: Settings) -> dict:
             "migrations_applied": list(migration_result.applied_versions),
             "ingestion_run_id": str(ingestion_run_id),
             "rows_read": load_result.rows_read,
-            "rows_loaded": len(load_result.records),
+            "rows_loaded": rows_loaded,
             "quality_issues": len(load_result.issues),
             "catalog_summary": summary,
         }
@@ -112,7 +134,10 @@ def bootstrap_catalog(settings: Settings) -> dict:
 def build_source(settings: Settings, checksum: str) -> DatasetSource:
     """Build a deterministic source identity from configuration."""
 
-    source_key = f"{settings.catalog_source_type}:{settings.catalog_source_uri}"
+    # The database enforces uniqueness by name and type.  Derive the stable
+    # UUID from the same identity so a URI change updates the existing source
+    # row instead of creating a parallel, stale source identity.
+    source_key = f"{settings.catalog_source_name.strip().casefold()}:{settings.catalog_source_type.strip().casefold()}"
     return DatasetSource(
         source_id=uuid5(NAMESPACE_URL, source_key),
         source_name=settings.catalog_source_name,
@@ -122,6 +147,20 @@ def build_source(settings: Settings, checksum: str) -> DatasetSource:
         collected_at=datetime.now(timezone.utc),
         checksum_sha256=checksum,
     )
+
+
+def _catalog_matches_source(repository, records, source_id, checksum: str) -> bool:
+    """Run the integrity guard when the repository supports it.
+
+    The fallback keeps lightweight repository doubles and older integrations
+    compatible while production repositories enforce provenance and row-set
+    checks before a checksum-only skip.
+    """
+
+    checker = getattr(repository, "matches_source", None)
+    if checker is None:
+        return True
+    return bool(checker(records, source_id, checksum))
 
 
 @contextmanager

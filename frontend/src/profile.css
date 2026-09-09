@@ -8,10 +8,6 @@
 .profile-brand svg { color: #e50914; }
 .profile-brand .brand-wordmark { font-size: 22px; }
 .profile-header-tools { display: flex; align-items: center; gap: 25px; }
-.profile-language { display: flex; align-items: center; gap: 7px; color: #838383; font-size: 11px; }
-.profile-language > span { display: inline-flex; gap: 6px; }
-.profile-language button { display: inline-flex; min-width: 30px; min-height: 32px; align-items: center; justify-content: center; padding: 6px 4px; border: 0; color: #777; background: transparent; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; }
-.profile-language button:hover, .profile-language button.active { color: #fff; }
 .profile-back-link, .profile-footer a { display: inline-flex; align-items: center; gap: 7px; color: #aaa; font-size: 11px; text-decoration: none; }
 .profile-back-link:hover, .profile-footer a:hover { color: #fff; }
 .profile-intro { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 22px; align-items: center; padding: 60px 0 46px; }

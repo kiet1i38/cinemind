@@ -71,7 +71,7 @@ def create_session(
 @router.post("/search-events", response_model=SearchEventResponse, status_code=status.HTTP_201_CREATED)
 def create_search_event(
     payload: SearchEventCreateRequest,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
     auth: AuthContext | None = Depends(get_optional_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> SearchEventResponse:
@@ -100,7 +100,7 @@ def create_search_event(
 @router.post("/watch-sessions", response_model=WatchSessionResponse, status_code=status.HTTP_201_CREATED)
 def create_watch_session(
     payload: WatchSessionCreateRequest,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
     auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> WatchSessionResponse:
@@ -128,7 +128,7 @@ def create_watch_session(
 @router.post("/ratings", response_model=RatingResponse, status_code=status.HTTP_201_CREATED)
 def create_rating(
     payload: RatingCreateRequest,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
     auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> RatingResponse:
@@ -157,7 +157,7 @@ def create_rating(
 @router.post("/signals", response_model=SignalResponse, status_code=status.HTTP_201_CREATED)
 def create_signal(
     payload: SignalCreateRequest,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
     auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> SignalResponse:
@@ -186,7 +186,7 @@ def create_signal(
 @router.post("/favorites", response_model=PreferenceResponse, status_code=status.HTTP_201_CREATED)
 def add_favorite(
     payload: PreferenceCreateRequest,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
     auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
@@ -199,8 +199,8 @@ def add_favorite(
 def remove_favorite(
     show_id: str,
     session_id: UUID = Query(...),
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
-    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
+    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id", max_length=64),
     auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
@@ -213,8 +213,8 @@ def remove_favorite(
 def remove_favorite_by_path(
     show_id: str,
     session_id: UUID,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
-    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
+    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id", max_length=64),
     auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
@@ -226,7 +226,7 @@ def remove_favorite_by_path(
 @router.post("/watchlist-items", response_model=PreferenceResponse, status_code=status.HTTP_201_CREATED)
 def add_watchlist_item(
     payload: PreferenceCreateRequest,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
     auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
@@ -239,8 +239,8 @@ def add_watchlist_item(
 def remove_watchlist_item(
     show_id: str,
     session_id: UUID = Query(...),
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
-    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
+    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id", max_length=64),
     auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
@@ -253,8 +253,8 @@ def remove_watchlist_item(
 def remove_watchlist_item_by_path(
     show_id: str,
     session_id: UUID,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
-    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
+    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id", max_length=64),
     auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> PreferenceResponse:
@@ -266,7 +266,7 @@ def remove_watchlist_item_by_path(
 @router.get("/state", response_model=InteractionStateResponse)
 def get_interaction_state(
     session_id: UUID = Query(...),
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
     auth: AuthContext | None = Depends(get_optional_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> InteractionStateResponse:
@@ -283,7 +283,7 @@ def get_interaction_state(
 @router.get("/state/{session_id}", response_model=InteractionStateResponse)
 def get_interaction_state_by_path(
     session_id: UUID,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token"),
+    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
     auth: AuthContext | None = Depends(get_optional_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> InteractionStateResponse:

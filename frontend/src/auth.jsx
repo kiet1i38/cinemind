@@ -1,12 +1,11 @@
-import { ArrowLeft, ArrowRight, CheckCircle, Globe, LockKey } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowRight, CheckCircle, LockKey } from "@phosphor-icons/react";
 import { createRoot } from "react-dom/client";
 import { useEffect, useMemo, useState } from "react";
-import { appConfig, authConfig, languageOptions } from "./config/appConfig";
+import { appConfig, appLanguage, authConfig } from "./config/appConfig";
 import { PosterImage } from "./components/PosterImage";
-import { syncDocumentLanguage, translate } from "./lib/i18n";
+import { translate } from "./lib/i18n";
 import { loadCatalog } from "./services/catalogService";
 import { getCurrentUser, login, register } from "./services/authService";
-import { languageStore } from "./services/signalStore";
 import "./styles.css";
 import "./auth.css";
 
@@ -31,7 +30,7 @@ function errorCopy(error, language) {
 }
 
 export default function AuthPage() {
-  const [language, setLanguage] = useState(() => languageStore.read());
+  const language = appLanguage;
   const [mode, setMode] = useState(getMode);
   const [catalog, setCatalog] = useState([]);
   const [email, setEmail] = useState("");
@@ -46,11 +45,6 @@ export default function AuthPage() {
 
   const returnTo = useMemo(() => safeReturnTo(new URLSearchParams(window.location.search).get("returnTo")), []);
   const featured = catalog.find((record) => record.posterUrl || record.posterFallbackUrl) || catalog[0] || null;
-
-  useEffect(() => {
-    languageStore.write(language);
-    syncDocumentLanguage(language);
-  }, [language]);
 
   useEffect(() => {
     let cancelled = false;
@@ -145,13 +139,6 @@ export default function AuthPage() {
             <span className="brand-wordmark"><span>{appConfig.brand.wordmarkPrefix}</span><strong>{appConfig.brand.wordmarkSuffix}</strong></span>
           </a>
           <div className="auth-header-tools">
-            <div className="auth-language" role="group" aria-label={translate(language, "languageLabel")}>
-              <Globe size={15} aria-hidden="true" />
-              {languageOptions.map((option, index) => <span key={option.value} className="auth-language-item">
-                {index > 0 ? <span aria-hidden="true">/</span> : null}
-                <button type="button" className={language === option.value ? "active" : ""} onClick={() => setLanguage(option.value)}>{translate(language, option.labelKey)}</button>
-              </span>)}
-            </div>
             <span className="auth-header-note"><LockKey size={14} aria-hidden="true" /> {translate(language, "secureSessionNote")}</span>
           </div>
         </header>

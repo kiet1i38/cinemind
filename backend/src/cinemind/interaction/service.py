@@ -442,13 +442,17 @@ class InteractionService:
             raise InteractionUnauthorizedError("Interaction session does not belong to this account")
         expected_token_hash = session.get("session_token_hash")
         if expected_token_hash is not None:
-            actual_token_hash = hash_session_token(session_token or "")
-            if not hmac.compare_digest(str(expected_token_hash).strip(), actual_token_hash):
+            supplied_token = str(session_token or "").strip()
+            actual_token_hash = hash_session_token(supplied_token)
+            expected_hash = str(expected_token_hash).strip()
+            if not hmac.compare_digest(expected_hash, actual_token_hash):
                 raise InteractionUnauthorizedError("Interaction session proof is invalid")
         return session
 
     def _require_title(self, show_id: str) -> dict:
         normalized = self._normalize_text(show_id, "show_id")
+        if len(normalized) > 32:
+            raise InteractionValidationError("show_id must be at most 32 characters")
         title = self.repository.get_title(normalized)
         if title is None:
             raise InteractionNotFoundError(f"Catalog title not found: {normalized}")

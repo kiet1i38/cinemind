@@ -52,10 +52,6 @@
 .auth-brand svg { color: #e50914; }
 .auth-brand .brand-wordmark { font-size: 22px; }
 .auth-header-tools { display: flex; align-items: center; gap: 25px; }
-.auth-language { display: flex; align-items: center; gap: 6px; color: #838383; font-size: 11px; }
-.auth-language-item { display: inline-flex; align-items: center; gap: 6px; }
-.auth-language button { display: inline-flex; min-width: 30px; min-height: 32px; align-items: center; justify-content: center; padding: 6px 4px; border: 0; color: #777; background: transparent; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; }
-.auth-language button:hover, .auth-language button.active { color: #fff; }
 .auth-header-note { display: inline-flex; align-items: center; gap: 7px; color: #777; font-size: 10px; letter-spacing: 0.05em; }
 
 .auth-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 0.68fr); gap: clamp(60px, 10vw, 150px); align-items: center; min-height: calc(100dvh - 135px); padding: 52px 0 70px; }

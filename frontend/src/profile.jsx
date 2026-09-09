@@ -1,22 +1,22 @@
-import { ArrowLeft, ArrowRight, BookmarkSimple, CheckCircle, Globe, Heart, ShieldCheck, Star, UserCircle } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowRight, BookmarkSimple, CheckCircle, Heart, ShieldCheck, Star, UserCircle } from "@phosphor-icons/react";
 import { createRoot } from "react-dom/client";
 import { useEffect, useMemo, useState } from "react";
-import { appConfig, languageOptions } from "./config/appConfig";
+import { appConfig, appLanguage } from "./config/appConfig";
 import { PosterImage } from "./components/PosterImage";
 import { getRuntimeLabel, getTypeLabel } from "./lib/catalog";
-import { syncDocumentLanguage, translate } from "./lib/i18n";
+import { translate } from "./lib/i18n";
 import { getCurrentUser, getAuthPageUrl, logout, logoutAll } from "./services/authService";
 import { loadCatalog } from "./services/catalogService";
 import { getInteractionState, syncPendingInteractions } from "./services/interactionService";
 import { clearInteractionState, favoriteStore, mergeInteractionState, setInteractionOwner, watchlistStore } from "./services/interactionStore";
-import { languageStore, signalStore } from "./services/signalStore";
+import { signalStore } from "./services/signalStore";
 import "./styles.css";
 import "./profile.css";
 
 function formatDate(value, language) {
   if (!value) return translate(language, "noData");
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? translate(language, "noData") : date.toLocaleDateString(language === "vi" ? "vi-VN" : "en-US", { year: "numeric", month: "short", day: "numeric" });
+  return Number.isNaN(date.getTime()) ? translate(language, "noData") : date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
 function userInitials(user) {
@@ -43,17 +43,12 @@ function EmptyProfileState({ language, children }) {
 }
 
 export default function ProfilePage() {
-  const [language, setLanguage] = useState(() => languageStore.read());
+  const language = appLanguage;
   const [user, setUser] = useState(null);
   const [catalog, setCatalog] = useState([]);
   const [state, setState] = useState({ ratings: {}, favorites: [], watchlist_items: [] });
   const [loadState, setLoadState] = useState("loading");
   const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    languageStore.write(language);
-    syncDocumentLanguage(language);
-  }, [language]);
 
   useEffect(() => {
     let cancelled = false;
@@ -141,7 +136,6 @@ export default function ProfilePage() {
             <span className="brand-wordmark"><span>{appConfig.brand.wordmarkPrefix}</span><strong>{appConfig.brand.wordmarkSuffix}</strong></span>
           </a>
           <div className="profile-header-tools">
-            <div className="profile-language" role="group" aria-label={translate(language, "languageLabel")}><Globe size={15} aria-hidden="true" />{languageOptions.map((option, index) => <span key={option.value}>{index ? <span aria-hidden="true">/</span> : null}<button type="button" className={language === option.value ? "active" : ""} onClick={() => setLanguage(option.value)}>{translate(language, option.labelKey)}</button></span>)}</div>
             <a className="profile-back-link" href="./">{translate(language, "backToCineMind")}</a>
           </div>
         </header>

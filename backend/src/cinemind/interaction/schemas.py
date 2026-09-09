@@ -15,6 +15,18 @@ class SessionCreateRequest(BaseModel):
     locale: str | None = Field(default=None, min_length=1, max_length=16)
     platform: str | None = Field(default=None, min_length=1, max_length=32)
 
+    @field_validator("locale", "platform", mode="before")
+    @classmethod
+    def reject_blank_metadata(cls, value: str | None) -> str | None:
+        """Normalize metadata and reject values the database cannot store."""
+
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("metadata must contain a non-whitespace value")
+        return normalized
+
 
 class SessionResponse(BaseModel):
     """Created or refreshed anonymous session."""

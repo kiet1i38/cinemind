@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 const scriptDir = resolve(fileURLToPath(import.meta.url), "..");
 const frontendDir = resolve(scriptDir, "..");
 const sourceRoot = resolve(frontendDir, "src");
-const localeRoot = resolve(sourceRoot, "locales");
 const interactionServicePath = resolve(sourceRoot, "services/interactionService.js");
 const nginxConfigPath = resolve(frontendDir, "nginx.conf");
 
@@ -24,13 +23,8 @@ for (const rule of rules) {
   if (rule.pattern.test(content)) violations.push(`${rule.file}: ${rule.message}`);
 }
 
-const englishCopy = JSON.parse(await readFile(resolve(localeRoot, "en.json"), "utf8"));
-const vietnameseCopy = JSON.parse(await readFile(resolve(localeRoot, "vi.json"), "utf8"));
-const missingVietnameseKeys = Object.keys(englishCopy).filter((key) => !(key in vietnameseCopy));
-const missingEnglishKeys = Object.keys(vietnameseCopy).filter((key) => !(key in englishCopy));
-if (missingVietnameseKeys.length || missingEnglishKeys.length) {
-  violations.push(`locales: EN/VI keys must stay aligned (missing VI: ${missingVietnameseKeys.join(", ")}; missing EN: ${missingEnglishKeys.join(", ")}).`);
-}
+const englishCopy = JSON.parse(await readFile(resolve(sourceRoot, "locales/en.json"), "utf8"));
+if (!Object.keys(englishCopy).length) violations.push("locales: the English copy must not be empty.");
 
 const interactionService = await readFile(interactionServicePath, "utf8");
 if (!/changePreference\(path,\s*"(?:POST|DELETE)",\s*record,\s*\{\s*\.\.\.metadata,\s*mutationId\s*\}\)/su.test(interactionService)) {
@@ -54,5 +48,5 @@ if (violations.length) {
   violations.forEach((violation) => console.error(`- ${violation}`));
   process.exitCode = 1;
 } else {
-  console.log("Architecture checks passed: catalog, signal, poster, and localization constants are centralized.");
+  console.log("Architecture checks passed: catalog, signal, poster, and English copy constants are centralized.");
 }

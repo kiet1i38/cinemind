@@ -96,6 +96,9 @@ class AuthService:
     ) -> None:
         if not raw_token:
             return
+        raw_token = str(raw_token).strip()
+        if not raw_token:
+            return
         with self.repository.transaction():
             auth_token_hash = hash_session_token(raw_token)
             context = (
@@ -197,6 +200,7 @@ class AuthService:
         if not session_id:
             return False
         if session_token is not None:
+            session_token = str(session_token).strip()
             return bool(
                 self.repository.attach_interaction_session(
                     session_id,

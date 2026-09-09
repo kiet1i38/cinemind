@@ -7,12 +7,12 @@ CineMind is a Netflix-inspired catalog and Data Mining prototype for the midterm
 - React + TailwindCSS frontend
 - Webpack development server on port 5173
 - Responsive desktop and mobile layout
-- English and Vietnamese interface toggle
+- English-only interface
 - Real catalog titles and metadata from Kaggle
 - TMDB poster URLs when a local TMDB credential is configured, with IMDb and TVmaze fallbacks plus a generated poster asset for every unmatched title
 - Search, type, genre and release-year filters
 - Title detail page and rating/watch-duration modal
-- Cookie-session account flow with email/username login, registration, logout, account profile, and English/Vietnamese support
+- Cookie-session account flow with email/username login, registration, logout, and account profile
 - Anonymous interaction persistence that can merge into an account: sessions, search events, watch signals, ratings, favorites, and watchlist items
 - Backend `ops`, `catalog`, `interaction`, and `auth` schemas with PostgreSQL migrations, catalog ingestion, data-quality audit, and API endpoints
 - Protected three-scope database reset console for local and demo maintenance
@@ -31,11 +31,11 @@ The UI includes the TMDB attribution required for this prototype. Poster image r
 
 ## Run with Docker
 
-Run `npm run build` from `frontend`, then run `docker compose up --build -d` and open `http://127.0.0.1:5173`. The same Compose project starts PostgreSQL and the backend on port `8000`; the backend applies migrations and seeds `catalog.json` automatically.
+Run `docker compose up --build -d` and open `http://127.0.0.1:5173`. The frontend image builds its production bundle in a dedicated stage. The same Compose project starts PostgreSQL and the backend on port `8000`; the backend applies migrations and seeds `catalog.json` automatically.
 
 Interactive API documentation is available at `http://127.0.0.1:8000/docs`. Account access is available at `http://127.0.0.1:5173/auth.html`, and the signed-in profile is available at `http://127.0.0.1:5173/profile.html`. The separate reset console is available at `http://127.0.0.1:5173/reset.html`; configure `ADMIN_RESET_USERNAME` and `ADMIN_RESET_PASSWORD` in a local ignored environment file before using it. The reset API is excluded from the public OpenAPI schema and requires Basic Auth plus an exact confirmation phrase.
 
-The Docker image serves the verified production bundle through nginx on port 5173. After a UI change, run `npm run build` again before rebuilding the image. The backend service applies the PostgreSQL migrations and seeds the catalog on port 8000. Backend endpoints and local commands are documented in `backend/README.md`.
+The Docker image serves the verified production bundle through nginx on port 5173. After a UI change, rebuild the image with `docker compose up --build -d`. The backend service applies the PostgreSQL migrations and seeds the catalog on port 8000. Backend endpoints and local commands are documented in `backend/README.md`.
 
 ## Run locally
 

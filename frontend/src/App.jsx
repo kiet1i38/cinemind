@@ -1,6 +1,6 @@
 import { Check } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { appConfig, catalogConfig, catalogTypes, navigationTargets } from "./config/appConfig";
+import { appConfig, appLanguage, catalogConfig, catalogTypes, navigationTargets } from "./config/appConfig";
 import { CatalogCard } from "./components/CatalogCard";
 import { CatalogPagination } from "./components/CatalogPagination";
 import { DetailView } from "./components/DetailView";
@@ -34,11 +34,11 @@ import {
   setInteractionOwner,
   watchlistStore
 } from "./services/interactionStore";
-import { languageStore, signalStore } from "./services/signalStore";
+import { signalStore } from "./services/signalStore";
 import "./authGate.css";
 
 export default function App() {
-  const [language, setLanguage] = useState(() => languageStore.read());
+  const language = appLanguage;
   const [catalog, setCatalog] = useState([]);
   const [loadState, setLoadState] = useState("loading");
   const [query, setQuery] = useState("");
@@ -60,29 +60,42 @@ export default function App() {
   const searchEventSignature = useRef("");
   const languageRef = useRef(language);
   const preferenceIntentRef = useRef({ favorites: new Map(), watchlist: new Map() });
+  const interactionRevisionRef = useRef(0);
   const authRequestRef = useRef(null);
   const authRetryRef = useRef(null);
+  const catalogRequestRef = useRef({ requestId: 0, controller: null });
 
   const authReady = authStatus === "authenticated" || authStatus === "anonymous";
   const authResolved = authStatus !== "checking";
 
-  const loadData = useCallback((signal) => {
+  const loadData = useCallback(() => {
+    const requestId = catalogRequestRef.current.requestId + 1;
+    catalogRequestRef.current.controller?.abort();
+    const controller = new AbortController();
+    catalogRequestRef.current = { requestId, controller };
     setLoadState("loading");
-    loadCatalog(signal)
+    loadCatalog(controller.signal)
       .then((records) => {
+        if (catalogRequestRef.current.requestId !== requestId) return;
         setCatalog(records);
         setLoadState("ready");
       })
       .catch((error) => {
         if (error?.name === "AbortError") return;
+        if (catalogRequestRef.current.requestId !== requestId) return;
         setLoadState("error");
       });
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    loadData(controller.signal);
-    return () => controller.abort();
+    loadData();
+    return () => {
+      catalogRequestRef.current.controller?.abort();
+      catalogRequestRef.current = {
+        requestId: catalogRequestRef.current.requestId + 1,
+        controller: null
+      };
+    };
   }, [loadData]);
 
   useEffect(() => {
@@ -92,10 +105,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    languageStore.write(language);
-    syncDocumentLanguage(language);
+    syncDocumentLanguage();
     languageRef.current = language;
-  }, [language]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -180,9 +192,15 @@ export default function App() {
   useEffect(() => {
     if (!authReady || !catalog.length) return undefined;
     let cancelled = false;
+    const hydrationOwner = authUser?.user_id ? String(authUser.user_id) : "anonymous";
+    const hydrationRevision = interactionRevisionRef.current;
     getInteractionState(interactionMetadata())
       .then((state) => {
-        if (cancelled) return;
+        if (
+          cancelled
+          || hydrationRevision !== interactionRevisionRef.current
+          || hydrationOwner !== (authUser?.user_id ? String(authUser.user_id) : "anonymous")
+        ) return;
         const merged = mergeInteractionState(state, {
           ratings: signalStore.read(),
           favorites: favoriteStore.read(),
@@ -197,7 +215,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [authReady, catalog, interactionMetadata]);
+  }, [authReady, authUser?.user_id, catalog, interactionMetadata]);
 
   useEffect(() => {
     if (!authReady || !catalog.length) return undefined;
@@ -353,6 +371,7 @@ export default function App() {
   const saveSignal = useCallback(async (signal) => {
     const item = modalItem;
     if (!item || !authUser) return;
+    interactionRevisionRef.current += 1;
     const previousSignal = ratings[item.id];
     setRatings((current) => ({ ...current, [item.id]: { ...signal, savedAt: new Date().toISOString() } }));
     try {
@@ -382,6 +401,7 @@ export default function App() {
 
   const togglePreference = useCallback(async (kind, record, nextActive) => {
     if (requestAuth("preference", record)) return;
+    interactionRevisionRef.current += 1;
     const id = String(record.id);
     const intentMap = preferenceIntentRef.current[kind];
     const currentActive = intentMap.has(id)
@@ -421,7 +441,6 @@ export default function App() {
 
   const headerProps = {
     language,
-    setLanguage,
     query,
     setQuery: handleQueryChange,
     onNavigate: handleNavigate,
@@ -431,7 +450,7 @@ export default function App() {
   };
 
   if (loadState === "loading" || !authResolved) return <>{authResolved ? <Header {...headerProps} /> : null}<LoadingState language={language} /></>;
-  if (loadState === "error") return <><Header {...headerProps} /><ErrorState language={language} onRetry={() => loadData()} /></>;
+  if (loadState === "error") return <><Header {...headerProps} /><ErrorState language={language} onRetry={loadData} /></>;
 
   return (
     <div className="app-shell">

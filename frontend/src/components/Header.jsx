@@ -1,6 +1,6 @@
-import { Globe, List, MagnifyingGlass, X } from "@phosphor-icons/react";
-import { Fragment, useState } from "react";
-import { appConfig, languageOptions } from "../config/appConfig";
+import { List, MagnifyingGlass, X } from "@phosphor-icons/react";
+import { useState } from "react";
+import { appConfig } from "../config/appConfig";
 import { translate } from "../lib/i18n";
 
 function userInitials(user) {
@@ -8,7 +8,7 @@ function userInitials(user) {
   return words.slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "CM";
 }
 
-export function Header({ language, setLanguage, query, setQuery, onNavigate, activeTarget, authUser, onAuthAction }) {
+export function Header({ language, query, setQuery, onNavigate, activeTarget, authUser, onAuthAction }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   const navigate = (target) => {
@@ -43,13 +43,6 @@ export function Header({ language, setLanguage, query, setQuery, onNavigate, act
               aria-label={translate(language, "searchLabel")}
             />
           </label>
-          <div className="language-switcher" role="group" aria-label={translate(language, "languageLabel")}>
-            <Globe size={16} weight="regular" aria-hidden="true" />
-            {languageOptions.map((option, index) => <Fragment key={option.value}>
-              {index > 0 ? <span aria-hidden="true">/</span> : null}
-              <button type="button" className={language === option.value ? "language-active" : ""} onClick={() => setLanguage(option.value)} aria-pressed={language === option.value}>{translate(language, option.labelKey)}</button>
-            </Fragment>)}
-          </div>
           <button type="button" className="mobile-menu-button" onClick={() => setMenuOpen((open) => !open)} aria-label={menuOpen ? translate(language, "close") : translate(language, "openMenu")} aria-expanded={menuOpen}>
             {menuOpen ? <X size={22} aria-hidden="true" /> : <List size={22} aria-hidden="true" />}
           </button>

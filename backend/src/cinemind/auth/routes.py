@@ -52,20 +52,39 @@ def get_auth_service() -> Iterator[AuthService]:
         yield AuthService(AuthRepository(connection), settings)
 
 
-@router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-def register(
-    payload: RegisterRequest,
-    request: Request,
-    response: Response,
-    service: AuthService = Depends(get_auth_service),
-) -> AuthResponse:
-    """Register an account and merge the current anonymous session when possible."""
+def _prepare_register_request(request: Request, payload: RegisterRequest) -> str:
+    """Validate transport and rate limits before opening a DB connection."""
 
     settings = get_settings()
     _require_secure_transport(request, settings)
     rate_key = _auth_rate_limit_key(request, payload.email, "register")
     _enforce_auth_rate_limit(request, rate_key)
     _enforce_registration_rate_limit(request)
+    return rate_key
+
+
+def _prepare_login_request(request: Request, payload: LoginRequest) -> str:
+    """Validate transport and rate limits before opening a DB connection."""
+
+    settings = get_settings()
+    _require_secure_transport(request, settings)
+    rate_key = _auth_rate_limit_key(request, payload.identifier, "login")
+    _enforce_auth_rate_limit(request, rate_key)
+    return rate_key
+
+
+@router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+def register(
+    payload: RegisterRequest,
+    request: Request,
+    response: Response,
+    prepared_rate_key: str | None = Depends(_prepare_register_request),
+    service: AuthService = Depends(get_auth_service),
+) -> AuthResponse:
+    """Register an account and merge the current anonymous session when possible."""
+
+    settings = get_settings()
+    rate_key = prepared_rate_key if isinstance(prepared_rate_key, str) else _auth_rate_limit_key(request, payload.email, "register")
     try:
         result = service.register(
             payload.email,
@@ -98,14 +117,13 @@ def login(
     payload: LoginRequest,
     request: Request,
     response: Response,
+    prepared_rate_key: str | None = Depends(_prepare_login_request),
     service: AuthService = Depends(get_auth_service),
 ) -> AuthResponse:
     """Sign in by email or username without disclosing account existence."""
 
     settings = get_settings()
-    _require_secure_transport(request, settings)
-    rate_key = _auth_rate_limit_key(request, payload.identifier, "login")
-    _enforce_auth_rate_limit(request, rate_key)
+    rate_key = prepared_rate_key if isinstance(prepared_rate_key, str) else _auth_rate_limit_key(request, payload.identifier, "login")
     try:
         result = service.login(
             payload.identifier,

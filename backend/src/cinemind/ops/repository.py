@@ -48,7 +48,19 @@ class OpsRepository:
         ).fetchone()
         if row is None:
             raise RuntimeError("Could not register dataset source")
-        return UUID(str(row["source_id"]))
+        persisted_source_id = UUID(str(row["source_id"]))
+        # Only one configured source should be active for the served catalog.
+        # Keep historical rows for auditability, but prevent a renamed or
+        # replaced source from leaving stale active metadata behind.
+        self.connection.execute(
+            """
+            UPDATE ops.dataset_sources
+            SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+            WHERE source_id <> %s AND is_active = TRUE
+            """,
+            (persisted_source_id,),
+        )
+        return persisted_source_id
 
     def mark_dataset_source_ingested(
         self, source_id: UUID, checksum: str, collected_at: datetime
