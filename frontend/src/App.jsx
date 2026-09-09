@@ -205,7 +205,15 @@ export default function App() {
       syncPendingInteractions(catalog, interactionMetadata()).catch(() => undefined);
     };
     window.addEventListener("online", retryPending);
-    return () => window.removeEventListener("online", retryPending);
+    const retryIntervalMs = Number.isFinite(appConfig.interaction.pendingRetryIntervalMs)
+      && appConfig.interaction.pendingRetryIntervalMs > 0
+      ? appConfig.interaction.pendingRetryIntervalMs
+      : 30000;
+    const interval = window.setInterval(retryPending, retryIntervalMs);
+    return () => {
+      window.removeEventListener("online", retryPending);
+      window.clearInterval(interval);
+    };
   }, [authReady, catalog, interactionMetadata]);
 
   useEffect(() => {
@@ -363,7 +371,7 @@ export default function App() {
         else delete next[item.id];
         return next;
       });
-      if (error.status === 401 || error.status === 403) {
+      if (error.authRequired || error.status === 401) {
         setModalItem(null);
         setAuthPrompt({ action: "rating", title: item.title });
         return;
@@ -400,7 +408,7 @@ export default function App() {
         if (kind === "favorites") setFavorites((current) => shouldAdd ? current.filter((itemId) => itemId !== id) : [...new Set([...current, id])]);
         else setWatchlist((current) => shouldAdd ? current.filter((itemId) => itemId !== id) : [...new Set([...current, id])]);
       }
-      if (error.status === 401 || error.status === 403) {
+      if (error.authRequired || error.status === 401) {
         setAuthPrompt({ action: "preference", title: record.title });
       } else {
         setToast(translate(language, "preferenceSaveError"));

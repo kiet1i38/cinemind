@@ -157,7 +157,7 @@ class CatalogRepository:
                 ), ARRAY[]::TEXT[]) AS directors
             FROM catalog.titles t
             {where_sql}
-            ORDER BY t.release_year DESC NULLS LAST, t.title ASC
+            ORDER BY t.release_year DESC NULLS LAST, t.title ASC, t.show_id ASC
             LIMIT %s OFFSET %s
             """,
             (*params, limit, offset),
@@ -316,8 +316,9 @@ class CatalogRepository:
         }
         if (table_name, column_name) not in allowed:
             raise ValueError("Unsupported catalog relation")
+        order_sql = "cast_order, person_name" if table_name == "title_cast" else column_name
         rows = self.connection.execute(
-            f"SELECT {column_name} FROM catalog.{table_name} WHERE title_id = %s ORDER BY {column_name}",
+            f"SELECT {column_name} FROM catalog.{table_name} WHERE title_id = %s ORDER BY {order_sql}",
             (title_id,),
         ).fetchall()
         return [row[column_name] for row in rows]
@@ -327,8 +328,11 @@ class CatalogRepository:
         clauses = ["t.is_active = TRUE"]
         params = []
         if query:
-            clauses.append("(t.title ILIKE %s OR COALESCE(t.description, '') ILIKE %s)")
-            pattern = f"%{query}%"
+            clauses.append(
+                "(t.title ILIKE %s ESCAPE '!' "
+                "OR COALESCE(t.description, '') ILIKE %s ESCAPE '!')"
+            )
+            pattern = f"%{CatalogRepository._escape_like(query)}%"
             params.extend((pattern, pattern))
         if content_type:
             clauses.append("t.content_type = %s")
@@ -343,3 +347,9 @@ class CatalogRepository:
             clauses.append("t.release_year = %s")
             params.append(release_year)
         return ("WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        """Escape LIKE wildcards while using ``!`` as the SQL escape char."""
+
+        return str(value).replace("!", "!!").replace("%", "!%").replace("_", "!_")

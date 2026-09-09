@@ -1,9 +1,14 @@
 """Focused tests for bounded request and runtime security primitives."""
 
 from types import SimpleNamespace
+from dataclasses import replace
 import unittest
 
+from fastapi import HTTPException
+
 from cinemind.config import Settings
+from cinemind.config import get_settings
+from cinemind.auth import routes as auth_routes
 from cinemind.interaction.limits import normalize_filters
 from cinemind.middleware import _interaction_principal
 from cinemind.middleware import InteractionRateLimitMiddleware
@@ -167,6 +172,48 @@ class SecurityPrimitiveTests(unittest.TestCase):
                 reset_enabled=False,
                 full_reset_enabled=False,
             )
+
+    def test_runtime_settings_reject_invalid_database_connect_limits(self):
+        for field_name, value in (
+            ("db_connect_retries", 0),
+            ("db_connect_timeout_seconds", 0),
+        ):
+            with self.subTest(field=field_name):
+                with self.assertRaisesRegex(ValueError, field_name):
+                    replace(get_settings(), **{field_name: value})
+
+        with self.assertRaisesRegex(ValueError, "db_connect_retry_delay_seconds"):
+            replace(get_settings(), db_connect_retry_delay_seconds=-1)
+
+    def test_auth_success_does_not_clear_ip_failure_bucket(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.40"),
+            headers={},
+        )
+        auth_routes.auth_rate_limiter.clear()
+        auth_routes.auth_ip_rate_limiter.clear()
+        identifier_key = auth_routes._auth_rate_limit_key(request, "user@example.com", "login")
+        ip_key = auth_routes._auth_ip_key(request, "login")
+        for _ in range(auth_routes.auth_ip_rate_limiter.max_attempts):
+            auth_routes.auth_ip_rate_limiter.record_failure(ip_key)
+
+        auth_routes._record_auth_success(request, identifier_key)
+
+        self.assertFalse(auth_routes.auth_ip_rate_limiter.check(ip_key).allowed)
+        self.assertTrue(auth_routes.auth_rate_limiter.check(identifier_key).allowed)
+
+    def test_registration_attempts_consume_a_success_independent_bucket(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.41"),
+            headers={},
+        )
+        auth_routes.auth_registration_rate_limiter.clear()
+        for _ in range(auth_routes.auth_registration_rate_limiter.max_attempts):
+            auth_routes._record_registration_attempt(request)
+
+        with self.assertRaises(HTTPException) as context:
+            auth_routes._enforce_registration_rate_limit(request)
+        self.assertEqual(context.exception.status_code, 429)
 
 
 class InteractionRateLimitMiddlewareTests(unittest.IsolatedAsyncioTestCase):

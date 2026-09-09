@@ -33,6 +33,8 @@ class FakeTransaction:
             copy.deepcopy(self.repository.preferences),
             copy.deepcopy(self.repository.watch_mutations),
             copy.deepcopy(self.repository.rating_mutations),
+            copy.deepcopy(self.repository.preference_rows),
+            copy.deepcopy(self.repository.preference_mutations),
         )
         return self
 
@@ -45,6 +47,8 @@ class FakeTransaction:
                 self.repository.preferences,
                 self.repository.watch_mutations,
                 self.repository.rating_mutations,
+                self.repository.preference_rows,
+                self.repository.preference_mutations,
             ) = self.snapshot
         else:
             self.repository.transactions_committed += 1
@@ -81,6 +85,8 @@ class FakeInteractionRepository:
         self.fail_rating = False
         self.watch_mutations = {}
         self.rating_mutations = {}
+        self.preference_rows = {"favorites": [], "watchlist_items": []}
+        self.preference_mutations = {}
 
     def transaction(self):
         return FakeTransaction(self)
@@ -158,24 +164,53 @@ class FakeInteractionRepository:
             self.rating_mutations[mutation_key] = row
         return row
 
-    def add_preference(self, table_name, session_id, title_id):
+    def add_preference(self, table_name, session_id, title_id, _user_id=None, client_mutation_id=None):
+        mutation_key = (session_id, client_mutation_id)
+        if client_mutation_id is not None and mutation_key in self.preference_mutations:
+            return self.preference_mutations[mutation_key]
+        now = datetime.now(timezone.utc)
+        for existing in self.preference_rows[table_name]:
+            if existing["session_id"] == session_id and existing["title_id"] == title_id and existing["removed_at"] is None:
+                existing["removed_at"] = now
+                self.preferences[table_name].discard((session_id, title_id))
+        row = {
+            "session_id": session_id,
+            "title_id": title_id,
+            "changed_at": now,
+            "removed_at": None,
+        }
+        self.preference_rows[table_name].append(row)
         self.preferences[table_name].add((session_id, title_id))
-        return {
-            "session_id": session_id,
-            "title_id": title_id,
-            "changed_at": datetime.now(timezone.utc),
-        }
+        if client_mutation_id is not None:
+            self.preference_mutations[mutation_key] = row
+        return row
 
-    def remove_preference(self, table_name, session_id, title_id):
+    def remove_preference(self, table_name, session_id, title_id, _user_id=None, client_mutation_id=None):
+        mutation_key = (session_id, client_mutation_id)
+        if client_mutation_id is not None and mutation_key in self.preference_mutations:
+            return self.preference_mutations[mutation_key]
         key = (session_id, title_id)
-        if key not in self.preferences[table_name]:
+        now = datetime.now(timezone.utc)
+        active = next(
+            (row for row in self.preference_rows[table_name]
+             if row["session_id"] == session_id and row["title_id"] == title_id and row["removed_at"] is None),
+            None,
+        )
+        if active is None and client_mutation_id is None:
             return None
-        self.preferences[table_name].remove(key)
-        return {
+        if active is not None:
+            active["removed_at"] = now
+            self.preferences[table_name].discard(key)
+        row = {
             "session_id": session_id,
             "title_id": title_id,
-            "changed_at": datetime.now(timezone.utc),
+            "changed_at": now,
+            "removed_at": now,
         }
+        if client_mutation_id is not None:
+            self.preference_rows[table_name].append(row)
+            self.preference_mutations[mutation_key] = row
+        return row
 
     def interaction_state(self, _session_id, _user_id=None):
         return {"ratings": tuple(), "favorites": tuple(), "watchlist_items": tuple()}
@@ -317,6 +352,33 @@ class InteractionServiceTests(unittest.TestCase):
         self.assertTrue(second["active"])
         self.assertFalse(removed["active"])
         self.assertFalse(removed_again["active"])
+
+    def test_authenticated_preference_mutations_keep_add_history(self):
+        account_id = uuid4()
+        self.repository.sessions[self.session_id]["user_id"] = account_id
+        add_mutation = uuid4()
+        remove_mutation = uuid4()
+
+        self.service.add_preference(
+            "favorites", self.session_id, "movie-1", user_id=account_id,
+            client_mutation_id=add_mutation,
+        )
+        removed = self.service.remove_preference(
+            "favorites", self.session_id, "movie-1", user_id=account_id,
+            client_mutation_id=remove_mutation,
+        )
+
+        self.assertFalse(removed["active"])
+        with self.assertRaises(InteractionConflictError):
+            self.service.add_preference(
+                "favorites", self.session_id, "movie-1", user_id=account_id,
+                client_mutation_id=add_mutation,
+            )
+        replayed_remove = self.service.remove_preference(
+            "favorites", self.session_id, "movie-1", user_id=account_id,
+            client_mutation_id=remove_mutation,
+        )
+        self.assertFalse(replayed_remove["active"])
 
 
 class InteractionSchemaTests(unittest.TestCase):

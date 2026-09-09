@@ -13,6 +13,7 @@ import {
 
 const interactionConfig = appConfig.interaction;
 let sessionRequest = null;
+let pendingSyncRequest = null;
 const mutationChains = new Map();
 
 async function request(path, options = {}) {
@@ -77,7 +78,12 @@ export async function getInteractionState(metadata = {}) {
     if (error.status !== 404 && error.status !== 401) throw error;
     interactionSessionStore.write(null);
     sessionId = await ensureInteractionSession(metadata);
-    return request(`/state/${encodeURIComponent(sessionId)}`);
+    try {
+      return await request(`/state/${encodeURIComponent(sessionId)}`);
+    } catch (retryError) {
+      if (retryError.status === 401) markAuthRequired(retryError);
+      throw retryError;
+    }
   }
 }
 
@@ -151,7 +157,7 @@ export function removeWatchlistItem(record, metadata) {
 }
 
 export function isRetryableInteractionError(error) {
-  return !error?.status || error.status === 401 || error.status === 403 || error.status === 408 || error.status === 429 || error.status >= 500;
+  return !error?.status || error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
 export function setFavoritePreference(record, active, metadata = {}) {
@@ -166,8 +172,18 @@ async function withFreshInteractionSession(metadata, operation) {
     if (error.status !== 401 && error.status !== 404) throw error;
     interactionSessionStore.write(null);
     const freshSessionId = await ensureInteractionSession(metadata);
-    return operation(freshSessionId);
+    try {
+      return await operation(freshSessionId);
+    } catch (retryError) {
+      if (retryError.status === 401) markAuthRequired(retryError);
+      throw retryError;
+    }
   }
+}
+
+function markAuthRequired(error) {
+  if (error && typeof error === "object") error.authRequired = true;
+  return error;
 }
 
 export function setWatchlistPreference(record, active, metadata = {}) {
@@ -192,6 +208,16 @@ async function setPreference(kind, record, active, metadata) {
 }
 
 export async function syncPendingInteractions(records, metadata = {}) {
+  if (pendingSyncRequest) return pendingSyncRequest;
+
+  pendingSyncRequest = syncPendingInteractionsOnce(records, metadata)
+    .finally(() => {
+      pendingSyncRequest = null;
+    });
+  return pendingSyncRequest;
+}
+
+async function syncPendingInteractionsOnce(records, metadata) {
   const recordsById = new Map((records || []).map((record) => [String(record.id), record]));
   const pending = readPendingInteractions();
   const tasks = [];

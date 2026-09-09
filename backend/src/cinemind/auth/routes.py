@@ -38,6 +38,10 @@ auth_ip_rate_limiter = SlidingWindowRateLimiter(
     max_attempts=get_settings().auth_rate_limit_max_attempts,
     window_seconds=get_settings().auth_rate_limit_window_seconds,
 )
+auth_registration_rate_limiter = SlidingWindowRateLimiter(
+    max_attempts=get_settings().auth_rate_limit_max_attempts,
+    window_seconds=get_settings().auth_rate_limit_window_seconds,
+)
 
 
 def get_auth_service() -> Iterator[AuthService]:
@@ -61,6 +65,7 @@ def register(
     _require_secure_transport(request, settings)
     rate_key = _auth_rate_limit_key(request, payload.email, "register")
     _enforce_auth_rate_limit(request, rate_key)
+    _enforce_registration_rate_limit(request)
     try:
         result = service.register(
             payload.email,
@@ -80,6 +85,10 @@ def register(
     except psycopg.errors.UniqueViolation as error:
         _record_auth_failure(request, rate_key)
         raise HTTPException(status_code=409, detail="An account with these details already exists") from error
+    finally:
+        # Count every registration attempt, including successful ones.  A
+        # success must not create a loophole for automated account creation.
+        _record_registration_attempt(request)
     _record_auth_success(request, rate_key)
     return _complete_auth_response(response, request, result, settings)
 
@@ -253,6 +262,19 @@ def _enforce_auth_rate_limit(request: Request, identifier_key: str) -> None:
     )
 
 
+def _enforce_registration_rate_limit(request: Request) -> None:
+    """Bound total account-creation attempts from one client address."""
+
+    decision = auth_registration_rate_limiter.check(_auth_ip_key(request, "register"))
+    if decision.allowed:
+        return
+    raise HTTPException(
+        status_code=429,
+        detail="Too many registration attempts. Please try again later.",
+        headers={"Retry-After": str(decision.retry_after_seconds)},
+    )
+
+
 def _record_auth_failure(request: Request, identifier_key: str) -> None:
     auth_rate_limiter.record_failure(identifier_key)
     auth_ip_rate_limiter.record_failure(_auth_ip_key(request, identifier_key.split(":", 1)[0]))
@@ -260,4 +282,7 @@ def _record_auth_failure(request: Request, identifier_key: str) -> None:
 
 def _record_auth_success(request: Request, identifier_key: str) -> None:
     auth_rate_limiter.record_success(identifier_key)
-    auth_ip_rate_limiter.record_success(_auth_ip_key(request, identifier_key.split(":", 1)[0]))
+
+
+def _record_registration_attempt(request: Request) -> None:
+    auth_registration_rate_limiter.record_failure(_auth_ip_key(request, "register"))

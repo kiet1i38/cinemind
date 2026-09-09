@@ -166,7 +166,7 @@ function candidateTypeScore(candidateType, rowType) {
 }
 
 function candidateYearScore(candidateYear, releaseYear) {
-  const year = toNumber(candidateYear);
+  const year = toStrictInteger(candidateYear);
   if (!year || !releaseYear) return 0.35;
 
   const difference = Math.abs(year - releaseYear);
@@ -183,7 +183,7 @@ function tmdbCandidateTitle(candidate) {
 function tmdbCandidateYear(candidate, rowType) {
   const candidateIsMovie = candidate?.media_type ? candidate.media_type === "movie" : rowType === movieType;
   const date = candidateIsMovie ? candidate?.release_date : candidate?.first_air_date;
-  return toNumber(String(date ?? "").slice(0, 4));
+  return toStrictInteger(String(date ?? "").slice(0, 4));
 }
 
 function tmdbSearchVariants(title) {
@@ -201,7 +201,7 @@ function chooseTmdbCandidate(row, candidates, { allowTypeMismatch = false, allow
   const candidatePool = compatibleCandidates.length ? compatibleCandidates : allowTypeMismatch
     ? candidates.filter((candidate) => candidate?.media_type === "movie" || candidate?.media_type === "tv")
     : [];
-  const releaseYear = toNumber(row.releaseYear ?? row.release_year);
+  const releaseYear = toStrictInteger(row.releaseYear ?? row.release_year);
   const scoredCandidates = candidatePool
     .filter((candidate) => !requirePoster || candidate?.poster_path)
     .map((candidate, index) => {
@@ -271,7 +271,7 @@ async function resolveTmdbCandidate(row, candidates, options = {}) {
 }
 
 function chooseCandidate(row, candidates) {
-  const releaseYear = toNumber(row.releaseYear ?? row.release_year);
+  const releaseYear = toStrictInteger(row.releaseYear ?? row.release_year);
   const scoredCandidates = candidates
     .map((candidate, index) => ({
       candidate,
@@ -304,7 +304,7 @@ function chooseCandidate(row, candidates) {
       posterUrl: best.candidate.i.imageUrl,
       imdbId: best.candidate.id || null,
       matchTitle: best.candidate.l || null,
-      matchYear: toNumber(best.candidate.y),
+      matchYear: toStrictInteger(best.candidate.y),
       matchType: best.candidate.q || null,
       matchScore: Number(best.score.toFixed(4)),
       matchMethod: exactTitle ? (reliableYear ? "exact" : "exact-title") : onlyRelevantSearchHit ? "top-year-type" : "fuzzy"
@@ -321,6 +321,13 @@ function toList(value) {
 function toNumber(value) {
   const number = Number.parseInt(value, 10);
   return Number.isFinite(number) ? number : null;
+}
+
+function toStrictInteger(value) {
+  const text = String(value ?? "").trim();
+  if (!/^[+-]?\d+$/u.test(text)) return null;
+  const number = Number(text);
+  return Number.isSafeInteger(number) ? number : null;
 }
 
 function dateValue(value) {
@@ -413,7 +420,7 @@ function normalizeRow(row, posterEntry = null) {
     cast: toList(row.cast).slice(0, catalogConfig.normalization.castLimit),
     country: toList(row.country).slice(0, catalogConfig.normalization.countryLimit),
     dateAdded: row.date_added,
-    releaseYear: toNumber(row.release_year),
+    releaseYear: toStrictInteger(row.release_year),
     rating: row.rating || null,
     seasons: isMovie ? null : durationNumber,
     runtimeMinutes: isMovie ? durationNumber : catalogConfig.tvEpisodeRuntimeMinutes,
@@ -513,7 +520,7 @@ async function fetchTmdbCandidates(row, queryTitle, includeYear = true, searchKi
   if (!hasTmdbCredentials) return [];
 
   const isMovie = row.type === movieType;
-  const releaseYear = toNumber(row.releaseYear ?? row.release_year);
+  const releaseYear = toStrictInteger(row.releaseYear ?? row.release_year);
   const params = new URLSearchParams({
     query: queryTitle,
     include_adult: String(Boolean(tmdbConfig.includeAdult)),
@@ -544,7 +551,7 @@ async function fetchTmdbCandidates(row, queryTitle, includeYear = true, searchKi
 
 async function lookupTmdbPoster(row) {
   const title = row.title.replace(/\s+/g, " ").trim();
-  const releaseYear = toNumber(row.releaseYear ?? row.release_year);
+  const releaseYear = toStrictInteger(row.releaseYear ?? row.release_year);
   const queries = releaseYear ? [{ query: title, includeYear: true }, { query: title, includeYear: false }] : [{ query: title, includeYear: false }];
 
   for (const { query, includeYear } of queries) {
@@ -588,7 +595,7 @@ async function fetchTvmazeCandidates(queryTitle) {
 }
 
 function chooseTvmazeCandidate(row, candidates, queryTitle) {
-  const releaseYear = toNumber(row.releaseYear ?? row.release_year);
+  const releaseYear = toStrictInteger(row.releaseYear ?? row.release_year);
   const scoredCandidates = candidates
     .filter((candidate) => candidate?.show?.image?.[tvmazeConfig.imageKey] || candidate?.show?.image?.original)
     .map((candidate, index) => {
@@ -619,7 +626,7 @@ function chooseTvmazeCandidate(row, candidates, queryTitle) {
     posterProvider: "TVmaze",
     tvmazeId: best.candidate.show.id || null,
     matchTitle: best.candidate.show.name || null,
-    matchYear: toNumber(String(best.candidate.show.premiered ?? "").slice(0, 4)),
+    matchYear: toStrictInteger(String(best.candidate.show.premiered ?? "").slice(0, 4)),
     matchScore: Number(best.score.toFixed(4)),
     matchMethod: exactTitle ? (reliableYear ? "exact" : "exact-title") : onlyRelevantSearchHit ? "top-year" : "fuzzy"
   };
@@ -637,7 +644,7 @@ async function lookupTvmazePoster(row) {
 
 async function lookupPoster(row) {
   const title = row.title.replace(/\s+/g, " ").trim();
-  const releaseYear = toNumber(row.releaseYear ?? row.release_year);
+  const releaseYear = toStrictInteger(row.releaseYear ?? row.release_year);
   const queries = releaseYear ? [`${title} ${releaseYear}`, title] : [title];
 
   if (hasTmdbCredentials) {
@@ -672,7 +679,14 @@ async function readJson(path) {
 async function loadPosterCache() {
   const cache = new Map();
   const savedCache = await readJson(cachePath);
-  const savedEntries = savedCache?.entries && typeof savedCache.entries === "object" ? savedCache.entries : {};
+  const cacheMatchesConfig = Boolean(
+    savedCache
+    && savedCache.cacheVersion === posterConfig.cacheVersion
+    && savedCache.provider === posterConfig.provider
+  );
+  const savedEntries = cacheMatchesConfig && savedCache.entries && typeof savedCache.entries === "object"
+    ? savedCache.entries
+    : {};
   Object.entries(savedEntries).forEach(([id, entry]) => {
     const isObject = entry && typeof entry === "object";
     const hasPosterField = isObject && Object.prototype.hasOwnProperty.call(entry, "posterUrl");
@@ -680,7 +694,7 @@ async function loadPosterCache() {
   });
 
   const previousCatalog = await readJson(outputPath);
-  if (!hasTmdbCredentials && Array.isArray(previousCatalog)) {
+  if ((!savedCache || cacheMatchesConfig) && !hasTmdbCredentials && Array.isArray(previousCatalog)) {
     previousCatalog.forEach((record) => {
       if (record?.id && record.posterUrl && record.posterKind !== "generated" && !cache.has(record.id)) {
         cache.set(record.id, {
@@ -705,11 +719,22 @@ async function writePosterCache(cache) {
   }), "utf8");
 }
 
-const csv = await readFile(sourcePath, "utf8");
+let csv;
+try {
+  csv = await readFile(sourcePath, "utf8");
+} catch (error) {
+  if (error?.code === "ENOENT") {
+    throw new Error(
+      `Catalog source CSV is missing at ${sourcePath}. `
+      + "Download netflix_titles.csv from the configured data source and place it in frontend/public/data/raw before running data:prepare."
+    );
+  }
+  throw error;
+}
 const rows = parseCsv(csv);
 const eligibleRows = rows
-  .filter((row) => row.title && row.release_year)
-  .sort((left, right) => Number(right.release_year) - Number(left.release_year)
+  .filter((row) => row.title && toStrictInteger(row.release_year) !== null)
+  .sort((left, right) => (toStrictInteger(right.release_year) ?? 0) - (toStrictInteger(left.release_year) ?? 0)
     || dateValue(right.date_added) - dateValue(left.date_added)
     || left.title.localeCompare(right.title));
 const candidateLimit = Number.isInteger(posterConfig.candidateLimit) && posterConfig.candidateLimit > 0

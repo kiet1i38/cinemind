@@ -302,20 +302,23 @@ class InteractionRepository:
         rows = self.connection.execute(
             f"""
             UPDATE interaction.{table} AS p
-            SET removed_at = CURRENT_TIMESTAMP, client_mutation_id = %s
+            SET removed_at = CURRENT_TIMESTAMP
             FROM interaction.sessions AS s
             WHERE p.session_id = s.session_id
               AND p.title_id = %s AND p.removed_at IS NULL
               AND {scope_clause}
             RETURNING p.session_id, p.title_id, p.removed_at AS changed_at
             """,
-            (client_mutation_id, title_id, *scope_values),
+            (title_id, *scope_values),
         ).fetchall()
         row = next((candidate for candidate in rows if candidate["session_id"] == session_id), None)
         if row is None and rows:
             row = rows[0]
-        if row is None and client_mutation_id is not None:
-            row = self.connection.execute(
+        if client_mutation_id is not None:
+            # Keep the original add mutation attached to the historical row
+            # and record this removal as a separate tombstone.  Overwriting
+            # the add ID made a delayed add replay resurrect a preference.
+            tombstone = self.connection.execute(
                 f"""
                 INSERT INTO interaction.{table} (
                     session_id, title_id, removed_at, client_mutation_id
@@ -327,6 +330,10 @@ class InteractionRepository:
                 """,
                 (session_id, title_id, client_mutation_id),
             ).fetchone()
+            if tombstone is not None:
+                row = tombstone
+        elif row is None:
+            return None
         return dict(row) if row else None
 
     def interaction_state(

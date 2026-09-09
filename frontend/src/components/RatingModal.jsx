@@ -22,7 +22,7 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
     setWatchDuration(existingSignal ? String(existingSignal.watchMinutes) : "");
     setErrors({});
     setIsSaving(false);
-  }, [existingSignal, item]);
+  }, [item?.id]);
 
   if (!item) return null;
 

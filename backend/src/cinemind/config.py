@@ -86,6 +86,8 @@ class Settings:
             "db_pool_min_size": self.db_pool_min_size,
             "db_pool_max_size": self.db_pool_max_size,
             "db_pool_timeout_seconds": self.db_pool_timeout_seconds,
+            "db_connect_retries": self.db_connect_retries,
+            "db_connect_timeout_seconds": self.db_connect_timeout_seconds,
             "max_request_body_bytes": self.max_request_body_bytes,
             "max_watch_minutes": self.max_watch_minutes,
             "auth_session_ttl_days": self.auth_session_ttl_days,
@@ -98,6 +100,8 @@ class Settings:
         invalid = [name for name, value in positive_limits.items() if value < 1]
         if invalid:
             raise ValueError(f"Runtime limits must be positive: {', '.join(invalid)}")
+        if self.db_connect_retry_delay_seconds < 0:
+            raise ValueError("db_connect_retry_delay_seconds must be non-negative")
         if self.db_pool_min_size > self.db_pool_max_size:
             raise ValueError("db_pool_min_size must not exceed db_pool_max_size")
         if self.auth_password_iterations < 10_000:

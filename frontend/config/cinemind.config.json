@@ -115,7 +115,8 @@
     "watchlistStorageKey": "cinemind-watchlist",
     "outboxStorageKey": "cinemind-interaction-outbox",
     "maxWatchMinutes": 10080,
-    "searchDebounceMs": 700
+    "searchDebounceMs": 700,
+    "pendingRetryIntervalMs": 30000
   },
   "runtime": {
     "frontendPathPrefix": "/cinemind/",

@@ -1,7 +1,7 @@
 const path = require("path");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 
-module.exports = {
+module.exports = (_, argv = {}) => ({
   entry: {
     app: path.resolve(__dirname, "src/index.jsx"),
     reset: path.resolve(__dirname, "src/adminReset.jsx"),
@@ -78,5 +78,7 @@ module.exports = {
       }
     ]
   },
-  devtool: "source-map"
-};
+  // Keep source maps in development for debugging, but do not publish the
+  // source tree alongside the production bundle.
+  devtool: argv.mode === "production" ? false : "source-map"
+});

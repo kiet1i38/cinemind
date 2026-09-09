@@ -8,9 +8,10 @@
     "build": "webpack --mode production",
     "data:prepare": "node scripts/prepare-catalog.mjs",
     "data:check-posters": "node scripts/check-posters.mjs",
+    "data:check-catalog": "node scripts/check-catalog.mjs",
     "lint:syntax": "node scripts/check-syntax.mjs",
     "check:architecture": "node scripts/check-architecture.mjs",
-    "check": "npm run lint:syntax && npm run check:architecture && npm run build"
+    "check": "npm run lint:syntax && npm run check:architecture && npm run data:check-catalog && npm run build"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.7",
