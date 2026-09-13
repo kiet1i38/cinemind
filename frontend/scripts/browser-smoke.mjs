@@ -19,6 +19,34 @@ export default async (page) => {
     return raw.owners[owner] ?? fallbackValue;
   }, { storageKey: key, fallbackValue: fallback });
 
+  const fulfillLocalSignal = async (route) => {
+    const payload = route.request().postDataJSON() || {};
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        watch_session: {
+          watch_session_id: "00000000-0000-4000-8000-000000000004",
+          session_id: localSessionId,
+          show_id: payload.show_id,
+          watch_seconds: Number(payload.watch_minutes || 0) * 60,
+          runtime_seconds: null,
+          completion_rate: null,
+          duration_basis: "tv_seasons",
+          recorded_at: new Date().toISOString()
+        },
+        rating: {
+          rating_id: 1,
+          session_id: localSessionId,
+          show_id: payload.show_id,
+          rating: Number(payload.rating),
+          watch_session_id: "00000000-0000-4000-8000-000000000004",
+          rated_at: new Date().toISOString()
+        }
+      })
+    });
+  };
+
   if (useLocalMocks) {
     await page.route("**/api/auth/me", (route) => route.fulfill({
       status: localAuthenticated ? 200 : 401,
@@ -61,33 +89,7 @@ export default async (page) => {
       contentType: "application/json",
       body: JSON.stringify({ search_event_id: 1 })
     }));
-    await page.route("**/api/interaction/signals", async (route) => {
-      const payload = route.request().postDataJSON() || {};
-      await route.fulfill({
-        status: 201,
-        contentType: "application/json",
-        body: JSON.stringify({
-          watch_session: {
-            watch_session_id: "00000000-0000-4000-8000-000000000004",
-            session_id: localSessionId,
-            show_id: payload.show_id,
-            watch_seconds: Number(payload.watch_minutes || 0) * 60,
-            runtime_seconds: null,
-            completion_rate: null,
-            duration_basis: "tv_seasons",
-            recorded_at: new Date().toISOString()
-          },
-          rating: {
-            rating_id: 1,
-            session_id: localSessionId,
-            show_id: payload.show_id,
-            rating: Number(payload.rating),
-            watch_session_id: "00000000-0000-4000-8000-000000000004",
-            rated_at: new Date().toISOString()
-          }
-        })
-      });
-    });
+    await page.route("**/api/interaction/signals", fulfillLocalSignal);
   }
 
   page.on("console", onConsole);
@@ -268,6 +270,7 @@ export default async (page) => {
   });
   report.failureFallbackNotice = await page.getByRole("status").textContent();
   await page.unroute("**/api/interaction/signals");
+  if (useLocalMocks) await page.route("**/api/interaction/signals", fulfillLocalSignal);
   page.on("console", onConsole);
   page.on("pageerror", onPageError);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
