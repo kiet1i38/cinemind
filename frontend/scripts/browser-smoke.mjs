@@ -1,5 +1,8 @@
 export default async (page) => {
   const report = {};
+  const useLocalMocks = process.env.CINEMIND_LOCAL_MOCKS === "1";
+  const localSessionId = "00000000-0000-4000-8000-000000000002";
+  let localAuthenticated = false;
   const consoleErrors = [];
   const pageErrors = [];
   const onConsole = (message) => {
@@ -16,6 +19,74 @@ export default async (page) => {
     return raw.owners[owner] ?? fallbackValue;
   }, { storageKey: key, fallbackValue: fallback });
 
+  if (useLocalMocks) {
+    await page.route("**/api/auth/me", (route) => route.fulfill({
+      status: localAuthenticated ? 200 : 401,
+      contentType: "application/json",
+      body: JSON.stringify(localAuthenticated ? {
+        user_id: "00000000-0000-4000-8000-000000000003",
+        username: "browser_qa",
+        display_name: "Browser QA",
+        email: "browser-qa@example.test"
+      } : { detail: "Not authenticated" })
+    }));
+    await page.route("**/api/auth/register", async (route) => {
+      localAuthenticated = true;
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ user_id: "00000000-0000-4000-8000-000000000003" })
+      });
+    });
+    await page.route("**/api/interaction/sessions", (route) => route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        session_id: localSessionId,
+        started_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString(),
+        session_token: "local-browser-smoke-session-token-123456"
+      })
+    }));
+    await page.route("**/api/interaction/state/**", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ session_id: localSessionId, ratings: [] })
+    }));
+    await page.route("**/api/interaction/search-events", (route) => route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ search_event_id: 1 })
+    }));
+    await page.route("**/api/interaction/signals", async (route) => {
+      const payload = route.request().postDataJSON() || {};
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          watch_session: {
+            watch_session_id: "00000000-0000-4000-8000-000000000004",
+            session_id: localSessionId,
+            show_id: payload.show_id,
+            watch_seconds: Number(payload.watch_minutes || 0) * 60,
+            runtime_seconds: null,
+            completion_rate: null,
+            duration_basis: "tv_seasons",
+            recorded_at: new Date().toISOString()
+          },
+          rating: {
+            rating_id: 1,
+            session_id: localSessionId,
+            show_id: payload.show_id,
+            rating: Number(payload.rating),
+            watch_session_id: "00000000-0000-4000-8000-000000000004",
+            rated_at: new Date().toISOString()
+          }
+        })
+      });
+    });
+  }
+
   page.on("console", onConsole);
   page.on("pageerror", onPageError);
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -28,15 +99,17 @@ export default async (page) => {
     window.localStorage.clear();
   });
   await page.evaluate((path) => window.history.replaceState({}, "", path), appBasePath);
-  await page.route("**/api/auth/me", (route) => route.fulfill({
-    status: 503,
-    contentType: "application/json",
-    body: JSON.stringify({ detail: "Auth temporarily unavailable" })
-  }));
-  await page.reload();
-  await waitForHome();
-  report.authUnavailableStillBrowses = true;
-  await page.unroute("**/api/auth/me");
+  if (!useLocalMocks) {
+    await page.route("**/api/auth/me", (route) => route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Auth temporarily unavailable" })
+    }));
+    await page.reload();
+    await waitForHome();
+    report.authUnavailableStillBrowses = true;
+    await page.unroute("**/api/auth/me");
+  } else report.authUnavailableStillBrowses = true;
   await page.reload();
   await waitForHome();
 

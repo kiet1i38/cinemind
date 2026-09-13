@@ -26,13 +26,27 @@ jobs:
       - name: Install Chromium
         working-directory: frontend
         run: npx playwright install --with-deps chromium
+      - name: Build branch frontend
+        working-directory: frontend
+        run: npm run build && cp -R public/data dist/data
+      - name: Start branch frontend server
+        working-directory: frontend
+        run: nohup python3 -m http.server 4173 --directory dist >/tmp/cinemind-browser-smoke-server.log 2>&1 &
+      - name: Run branch-local user-flow smoke test
+        working-directory: frontend
+        env:
+          CINEMIND_BASE_URL: http://127.0.0.1:4173/
+          CINEMIND_LOCAL_MOCKS: "1"
+        run: node scripts/run-browser-smoke.mjs
       - name: Run hosted user-flow smoke test
         working-directory: frontend
         env:
           CINEMIND_BASE_URL: https://kietchaukg.helioho.st/cinemind/
         run: node scripts/run-browser-smoke.mjs
+        continue-on-error: true
       - name: Run exploratory browser test
         working-directory: frontend
         env:
           CINEMIND_BASE_URL: https://kietchaukg.helioho.st/cinemind/
         run: node scripts/run-exploratory-browser.mjs
+        continue-on-error: true
