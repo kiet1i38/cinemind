@@ -6,7 +6,6 @@ from uuid import UUID
 _SESSION_TABLES = (
     "interaction.ratings",
     "interaction.watch_sessions",
-    "interaction.favorites",
     "interaction.search_events",
     "interaction.sessions",
 )

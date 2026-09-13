@@ -27,8 +27,8 @@ const englishCopy = JSON.parse(await readFile(resolve(sourceRoot, "locales/en.js
 if (!Object.keys(englishCopy).length) violations.push("locales: the English copy must not be empty.");
 
 const interactionService = await readFile(interactionServicePath, "utf8");
-if (!/changePreference\(path,\s*"(?:POST|DELETE)",\s*record,\s*\{\s*\.\.\.metadata,\s*mutationId\s*\}\)/su.test(interactionService)) {
-  violations.push("services/interactionService.js: preference retries must reuse the queued mutationId.");
+if (/favorites|changePreference|queuePendingPreference/u.test(interactionService)) {
+  violations.push("services/interactionService.js: removed favorite preference APIs must not return.");
 }
 
 const nginxConfig = await readFile(nginxConfigPath, "utf8");

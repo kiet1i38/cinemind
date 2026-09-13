@@ -127,23 +127,18 @@ export default async (page) => {
   await page.getByRole("button", { name: "Rate this title", exact: true }).click();
   await page.getByTestId("rating-modal").waitFor();
   report.tvRuntimeAssumption = (await page.getByText("TV shows use a 45 minute per episode assumption in this prototype.", { exact: true }).count()) > 0;
+  const ratingStars = page.locator(".rating-star-hit");
+  report.ratingStarCount = await ratingStars.count();
+  report.halfStarAvailable = await page.getByRole("button", { name: "Rate 0.5 out of 10", exact: true }).count() === 1;
+  await page.getByRole("button", { name: "Rate 8.5 out of 10", exact: true }).click();
+  report.halfStarSelection = await page.locator("#rating-value").textContent() === "8.5 / 10";
   await page.getByRole("button", { name: "Save signal" }).click();
   report.requiredErrors = await page.locator("[role=alert]").count();
 
-  const ratingInput = page.getByRole("spinbutton", { name: "Your rating" });
   const durationInput = page.getByRole("spinbutton", { name: "Watch duration" });
-  await ratingInput.fill("10.1");
-  await durationInput.fill("10");
-  await page.getByRole("button", { name: "Save signal" }).click();
-  report.invalidRatingRejected = (await page.locator("[role=alert]").first().textContent()).includes("increments");
-
-  await ratingInput.fill("-0.5");
-  await page.getByRole("button", { name: "Save signal" }).click();
-  report.negativeRatingRejected = await page.locator("[role=alert]").count() > 0;
-  await ratingInput.fill("0.1");
-  await page.getByRole("button", { name: "Save signal" }).click();
-  report.ratingStepRejected = (await page.locator("[role=alert]").first().textContent()).includes("increments");
-  await ratingInput.fill("10");
+  report.ratingUiValidation = await page.locator(".rating-star-hit").count() === 20
+    && await page.locator("#rating-input").count() === 0;
+  await page.getByRole("button", { name: "Rate 10 out of 10", exact: true }).click();
   await durationInput.fill("-1");
   await page.getByRole("button", { name: "Save signal" }).click();
   report.negativeDurationRejected = await page.locator("[role=alert]").count() > 0;
@@ -154,7 +149,7 @@ export default async (page) => {
   await page.getByRole("button", { name: "Save signal" }).click();
   report.durationUpperBoundRejected = (await page.locator("[role=alert]").first().textContent()).includes("10080");
 
-  await ratingInput.fill("0");
+  await page.getByRole("button", { name: "Rate 0.5 out of 10", exact: true }).click();
   await durationInput.fill("0");
   await page.getByRole("button", { name: "Save signal" }).click();
   await page.getByTestId("rating-modal").waitFor({ state: "detached" });
@@ -164,7 +159,7 @@ export default async (page) => {
 
   await page.getByRole("button", { name: "Rate this title", exact: true }).click();
   await page.getByTestId("rating-modal").waitFor();
-  await ratingInput.fill("10");
+  await page.getByRole("button", { name: "Rate 10 out of 10", exact: true }).click();
   await durationInput.fill("0");
   await page.getByRole("button", { name: "Save signal" }).click();
   await page.getByTestId("rating-modal").waitFor({ state: "detached" });
@@ -175,7 +170,7 @@ export default async (page) => {
 
   await page.getByRole("button", { name: "Rate this title", exact: true }).click();
   await page.getByTestId("rating-modal").waitFor();
-  report.signalPrefill = { rating: await ratingInput.inputValue(), watchMinutes: await durationInput.inputValue() };
+  report.signalPrefill = { rating: await page.locator("#rating-value").textContent(), watchMinutes: await durationInput.inputValue() };
   await durationInput.fill("46");
   report.runtimeWarning = await page.locator(".field-warning").count();
   await page.getByRole("button", { name: "Cancel" }).click();
@@ -185,7 +180,7 @@ export default async (page) => {
   await page.route("**/api/interaction/signals", (route) => route.abort());
   await page.getByRole("button", { name: "Rate this title", exact: true }).click();
   await page.getByTestId("rating-modal").waitFor();
-  await ratingInput.fill("7");
+  await page.getByRole("button", { name: "Rate 7 out of 10", exact: true }).click();
   await durationInput.fill("5");
   await page.getByRole("button", { name: "Save signal" }).click();
   await page.getByTestId("rating-modal").waitFor({ state: "detached" });
@@ -208,14 +203,7 @@ export default async (page) => {
   });
   report.pendingSignalReconciled = true;
 
-  const firstFavoriteButton = page.locator(".catalog-card").first().locator("button.catalog-card-action").first();
-  await firstFavoriteButton.click();
-  await firstFavoriteButton.click();
-  await page.waitForFunction(() => {
-    const button = document.querySelector(".catalog-card button.catalog-card-action");
-    return button?.getAttribute("aria-pressed") === "false";
-  });
-  report.rapidPreferenceFinalState = "inactive";
+  report.favoriteUiRemoved = await page.locator(".catalog-card-action, .preference-button, [aria-label*='favorite' i]").count() === 0;
 
   await page.getByRole("button", { name: "More info" }).click();
   await page.locator(".detail-page h1").waitFor();

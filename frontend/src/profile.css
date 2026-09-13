@@ -21,7 +21,7 @@
 .ghost-danger-button { display: inline-flex; align-items: center; gap: 7px; padding: 0 11px; border: 1px solid rgba(229, 9, 20, 0.28); border-radius: 8px; color: #d9868a; background: rgba(229, 9, 20, 0.06); font-size: 11px; }
 .ghost-danger-button:hover { border-color: rgba(229, 9, 20, 0.55); color: #ffadb1; background: rgba(229, 9, 20, 0.12); }
 .profile-feedback { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; padding: 11px 13px; border: 1px solid rgba(229, 9, 20, 0.3); border-radius: 9px; color: #ef9ba0; background: rgba(229, 9, 20, 0.08); font-size: 12px; }
-.profile-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.profile-stats { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .profile-stats > div, .profile-account-card, .profile-list-card { border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px; background: rgba(22, 22, 22, 0.86); }
 .profile-stats > div { display: flex; min-height: 108px; flex-direction: column; justify-content: space-between; padding: 17px; }
 .profile-stats span { display: inline-flex; align-items: center; gap: 7px; color: #8c8c8c; font-size: 11px; }
@@ -35,7 +35,7 @@
 .profile-account-grid span { margin-bottom: 8px; color: #777; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
 .profile-account-grid strong { overflow: hidden; color: #d8d8d4; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .profile-activity { padding: 50px 0 20px; }
-.profile-activity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }
+.profile-activity-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 22px; }
 .profile-list-card { min-width: 0; padding: 21px; }
 .profile-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .profile-list-heading h3 { margin: 0; color: #e6e6e1; font-size: 16px; letter-spacing: -0.04em; }

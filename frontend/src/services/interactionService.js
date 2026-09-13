@@ -2,13 +2,11 @@
 
 import { appConfig, resolveApiBaseUrl } from "../config/appConfig";
 import {
-  acknowledgePendingPreference,
   acknowledgePendingSearch,
   acknowledgePendingSignal,
   createMutationId,
   getInteractionOwner,
   interactionSessionStore,
-  queuePendingPreference,
   queuePendingSearch,
   queuePendingSignal,
   readPendingInteractions
@@ -164,35 +162,8 @@ export async function submitSignal({ record, rating, watchMinutes, ...metadata }
   });
 }
 
-async function changePreference(path, method, record, metadata = {}) {
-  const mutationId = metadata.mutationId || createMutationId();
-  return withFreshInteractionSession(metadata, async (sessionId) => {
-    const options = { method, headers: {} };
-    options.headers["X-Cinemind-Mutation-Id"] = mutationId;
-    let requestPath = path;
-    if (method === "POST") {
-      options.body = JSON.stringify({ session_id: sessionId, show_id: record.id, client_mutation_id: mutationId });
-    } else {
-      requestPath += `/${encodeURIComponent(record.id)}/${encodeURIComponent(sessionId)}`;
-    }
-    return request(requestPath, options);
-  });
-}
-
-export function addFavorite(record, metadata) {
-  return changePreference("/favorites", "POST", record, metadata);
-}
-
-export function removeFavorite(record, metadata) {
-  return changePreference("/favorites", "DELETE", record, metadata);
-}
-
 export function isRetryableInteractionError(error) {
   return !error?.status || error.status === 408 || error.status === 429 || error.status >= 500;
-}
-
-export function setFavoritePreference(record, active, metadata = {}) {
-  return setPreference(record, active, metadata);
 }
 
 async function withFreshInteractionSession(metadata, operation) {
@@ -219,24 +190,6 @@ async function withFreshInteractionSession(metadata, operation) {
 function markAuthRequired(error) {
   if (error && typeof error === "object") error.authRequired = true;
   return error;
-}
-
-async function setPreference(record, active, metadata) {
-  const mutationId = queuePendingPreference(record.id, active, metadata.mutationId);
-  const path = "/favorites";
-  const owner = getInteractionOwner();
-  return enqueueMutation(`${owner}:favorites:${record.id}`, async () => {
-    try {
-      const result = active
-        ? await changePreference(path, "POST", record, { ...metadata, mutationId })
-        : await changePreference(path, "DELETE", record, { ...metadata, mutationId });
-      acknowledgePendingPreference(record.id, mutationId);
-      return result;
-    } catch (error) {
-      if (!isRetryableInteractionError(error)) acknowledgePendingPreference(record.id, mutationId);
-      throw error;
-    }
-  });
 }
 
 export async function syncPendingInteractions(records, metadata = {}) {
@@ -271,12 +224,6 @@ async function syncPendingInteractionsOnce(records, metadata) {
     const record = recordsById.get(showId);
     if (record) {
       tasks.push(submitSignal({ record, ...signal, ...metadata, mutationId: signal.mutationId }));
-    }
-  }
-  for (const [showId, preference] of Object.entries(pending.preferences.favorites)) {
-    const record = recordsById.get(showId);
-    if (record) {
-      tasks.push(setFavoritePreference(record, preference.active, { ...metadata, mutationId: preference.mutationId }));
     }
   }
   return Promise.allSettled(tasks);

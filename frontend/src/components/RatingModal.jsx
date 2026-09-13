@@ -7,6 +7,39 @@ import { isDurationLongerThanRuntime, validateSignalInput } from "../lib/signalV
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import { PosterImage } from "./PosterImage";
 
+function formatRatingValue(value) {
+  return Number(value).toFixed(1).replace(/\.0$/, "");
+}
+
+function RatingStar({ value, rating, language, onSelect, initialFocus = false }) {
+  const numericRating = Number(rating || 0);
+  const fill = Math.max(0, Math.min(1, numericRating - (value - 1)));
+  const halfValue = value - 0.5;
+  return (
+    <span className="rating-star">
+      <Star className="rating-star-icon" size={27} weight="regular" aria-hidden="true" />
+      {fill > 0 ? <span className="rating-star-fill" style={{ width: `${fill * 100}%` }} aria-hidden="true"><Star size={27} weight="fill" /></span> : null}
+      <button
+        type="button"
+        className="rating-star-hit rating-star-hit-half"
+        onClick={() => onSelect(halfValue)}
+        aria-label={translate(language, "ratingStarAria", { value: formatRatingValue(halfValue) })}
+        aria-pressed={numericRating === halfValue}
+        data-rating-value={halfValue}
+        data-dialog-initial-focus={initialFocus ? true : undefined}
+      />
+      <button
+        type="button"
+        className="rating-star-hit rating-star-hit-full"
+        onClick={() => onSelect(value)}
+        aria-label={translate(language, "ratingStarAria", { value })}
+        aria-pressed={numericRating === value}
+        data-rating-value={value}
+      />
+    </span>
+  );
+}
+
 export function RatingModal({ item, language, existingSignal, onClose, onSave }) {
   const [rating, setRating] = useState("");
   const [watchDuration, setWatchDuration] = useState("");
@@ -57,12 +90,17 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
           <p className="modal-title">{item.title}</p>
           <p className="modal-description">{translate(language, "rateDescription")}</p>
           <form onSubmit={submit} noValidate>
-            <div className="form-field">
-              <label htmlFor="rating-input"><Star size={17} weight="fill" aria-hidden="true" />{translate(language, "ratingLabel")}</label>
-              <input id="rating-input" name="rating" type="number" min={signalConfig.rating.min} max={signalConfig.rating.max} step={signalConfig.rating.step} inputMode="decimal" value={rating} onChange={(event) => setRating(event.target.value)} placeholder={translate(language, "ratingPlaceholder", ratingErrorVariables)} aria-invalid={Boolean(errors.rating)} aria-describedby="rating-helper rating-error" data-dialog-initial-focus />
+            <fieldset className="form-field rating-star-fieldset" aria-invalid={Boolean(errors.rating)} aria-describedby="rating-helper rating-error">
+              <legend><Star size={17} weight="fill" aria-hidden="true" />{translate(language, "ratingLabel")}</legend>
+              <div className="rating-star-picker" role="radiogroup" aria-label={translate(language, "ratingLabel")}>
+                {Array.from({ length: 10 }, (_, index) => <RatingStar key={index + 1} value={index + 1} rating={rating} language={language} onSelect={(value) => setRating(String(value))} initialFocus={index === 0} />)}
+              </div>
+              <output id="rating-value" className="rating-value" aria-live="polite">
+                {rating ? translate(language, "ratingValue", { value: formatRatingValue(rating) }) : translate(language, "ratingEmpty")}
+              </output>
               <span id="rating-helper" className="field-helper">{translate(language, "ratingHelper", ratingErrorVariables)}</span>
               {errors.rating ? <span id="rating-error" className="field-error" role="alert"><WarningCircle size={15} aria-hidden="true" />{translate(language, errors.rating, ratingErrorVariables)}</span> : null}
-            </div>
+            </fieldset>
             <div className="form-field">
               <label htmlFor="watch-duration-input"><Clock size={17} weight="bold" aria-hidden="true" />{translate(language, "watchDurationLabel")}</label>
               <input id="watch-duration-input" name="watchDuration" type="number" min={signalConfig.watchMinutes.min} max={signalConfig.watchMinutes.max} step={signalConfig.watchMinutes.step} inputMode="numeric" value={watchDuration} onChange={(event) => setWatchDuration(event.target.value)} placeholder={translate(language, "watchDurationPlaceholder")} aria-invalid={Boolean(errors.watchMinutes)} aria-describedby="duration-helper duration-error" />

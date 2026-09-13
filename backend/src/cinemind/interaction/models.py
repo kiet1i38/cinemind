@@ -33,4 +33,3 @@ class InteractionState:
     """Latest user-facing state for an anonymous session."""
 
     ratings: tuple[dict, ...]
-    favorites: tuple[dict, ...]

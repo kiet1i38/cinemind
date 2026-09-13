@@ -37,7 +37,6 @@ REQUIRED_TABLES = (
     ("interaction", "search_events"),
     ("interaction", "watch_sessions"),
     ("interaction", "ratings"),
-    ("interaction", "favorites"),
     ("auth", "users"),
     ("auth", "sessions"),
 )

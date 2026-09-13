@@ -44,8 +44,8 @@ try {
   check("homeRenders", await visible('[data-testid="home-page"]'));
   check("homeSearchVisible", await visible('input[aria-label="Search the catalog"]'));
   check("homeFilterBarVisible", await visible('[data-testid="filter-bar"]'));
-  const watchlistAttributeCount = await page.locator("[aria-label], [data-testid]").evaluateAll((elements) => elements.filter((element) => [element.getAttribute("aria-label"), element.getAttribute("data-testid")].some((value) => /watchlist/i.test(value || ""))).length);
-  check("watchlistUiRemoved", watchlistAttributeCount === 0 && await page.getByText(/\bwatchlist\b/i).count() === 0);
+  const removedPreferenceAttributeCount = await page.locator("[aria-label], [data-testid]").evaluateAll((elements) => elements.filter((element) => [element.getAttribute("aria-label"), element.getAttribute("data-testid")].some((value) => /watchlist|favorite/i.test(value || ""))).length);
+  check("preferenceUiRemoved", removedPreferenceAttributeCount === 0 && await page.getByText(/^(?:watchlist|favorites?)$/i).count() === 0);
 
   const moreInfo = page.getByRole("button", { name: "More info" }).first();
   check("detailActionAvailable", await moreInfo.count() === 1);
@@ -89,12 +89,13 @@ try {
   }
   await page.getByTestId("filter-bar").getByRole("button", { name: "Clear filters" }).click();
 
-  const firstPreference = page.locator(".catalog-card-action").first();
-  check("anonymousPreferenceActionAvailable", await firstPreference.count() === 1);
-  if (await firstPreference.count()) {
-    await firstPreference.click();
+  const firstRatingAction = page.getByRole("button", { name: /Rate this title/ }).first();
+  check("anonymousRatingActionAvailable", await firstRatingAction.count() === 1);
+  check("favoriteUiRemoved", await page.locator(".catalog-card-action, .preference-button, [aria-label*='favorite' i]").count() === 0);
+  if (await firstRatingAction.count()) {
+    await firstRatingAction.click();
     const authDialog = page.getByRole("dialog");
-    check("anonymousPreferenceShowsAuthGate", await authDialog.count() === 1);
+    check("anonymousRatingShowsAuthGate", await authDialog.count() === 1);
     check("authGateReceivesFocus", await page.evaluate(() => document.activeElement?.closest('[role="dialog"]') !== null));
     await page.keyboard.press("Escape");
     check("authGateEscapeCloses", await page.getByRole("dialog").count() === 0);

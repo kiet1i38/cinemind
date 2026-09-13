@@ -1,4 +1,4 @@
-"""Application services for anonymous session and preference interactions."""
+"""Application services for anonymous session interactions."""
 
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -283,73 +283,6 @@ class InteractionService:
             "rating": rating_row | {"show_id": title["show_id"], "rating": rating_value},
         }
 
-    def add_preference(
-        self,
-        table_name: str,
-        session_id: UUID,
-        show_id: str,
-        user_id: UUID | None = None,
-        session_token: str | None = None,
-        client_mutation_id: UUID | None = None,
-    ) -> dict:
-        with self.repository.transaction():
-            self._require_session(session_id, user_id, session_token)
-            title = self._require_title(show_id)
-            self.repository.touch_session(session_id)
-            if user_id is None and client_mutation_id is None:
-                row = self.repository.add_preference(table_name, session_id, title["title_id"])
-            else:
-                row = self.repository.add_preference(
-                    table_name,
-                    session_id,
-                    title["title_id"],
-                    user_id,
-                    client_mutation_id,
-                )
-                self._require_idempotent_match(row, title_id=title["title_id"])
-                if row.get("removed_at") is not None:
-                    raise InteractionConflictError(
-                        "client_mutation_id was already used for a removal"
-                    )
-        return row | {"show_id": title["show_id"], "active": True}
-
-    def remove_preference(
-        self,
-        table_name: str,
-        session_id: UUID,
-        show_id: str,
-        user_id: UUID | None = None,
-        session_token: str | None = None,
-        client_mutation_id: UUID | None = None,
-    ) -> dict:
-        with self.repository.transaction():
-            self._require_session(session_id, user_id, session_token)
-            title = self._require_title(show_id)
-            self.repository.touch_session(session_id)
-            if user_id is None and client_mutation_id is None:
-                row = self.repository.remove_preference(table_name, session_id, title["title_id"])
-            else:
-                row = self.repository.remove_preference(
-                    table_name,
-                    session_id,
-                    title["title_id"],
-                    user_id,
-                    client_mutation_id,
-                )
-                if row is not None:
-                    self._require_idempotent_match(row, title_id=title["title_id"])
-                    if row.get("changed_at") is None:
-                        raise InteractionConflictError(
-                            "client_mutation_id was already used for an addition"
-                        )
-        changed_at = row["changed_at"] if row else datetime.now(timezone.utc)
-        return {
-            "session_id": session_id,
-            "show_id": title["show_id"],
-            "active": False,
-            "changed_at": changed_at,
-        }
-
     def get_state(
         self,
         session_id: UUID,
@@ -373,7 +306,6 @@ class InteractionService:
                 }
                 for row in state["ratings"]
             ),
-            "favorites": state["favorites"],
         }
 
     @staticmethod

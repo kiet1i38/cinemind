@@ -6,7 +6,7 @@ This backend implements the `ops`, `catalog`, `interaction`, and cookie-session 
 
 - `ops`: registers the Kaggle catalog source, records ingestion runs, and stores data-quality issues.
 - `catalog`: stores normalized title records plus genre, cast, country, and director relations.
-- `interaction`: stores anonymous sessions, search events, watch sessions, ratings, and favorites.
+- `interaction`: stores anonymous sessions, search events, watch sessions, and ratings.
 - `auth`: stores account records and hashed opaque sessions; account sessions can own and aggregate interaction sessions.
 - Catalog input: `frontend/public/data/catalog.json`, which currently contains the normalized 8,807-title catalog. The source CSV is external and is only needed when regenerating the catalog.
 - Database: PostgreSQL.

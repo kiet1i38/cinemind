@@ -102,7 +102,6 @@
     "apiBaseUrl": "/api/interaction",
     "sessionStorageKey": "cinemind-interaction-session-id",
     "ownerStorageKey": "cinemind-interaction-owner",
-    "favoritesStorageKey": "cinemind-favorites",
     "outboxStorageKey": "cinemind-interaction-outbox",
     "maxWatchMinutes": 10080,
     "searchDebounceMs": 700,

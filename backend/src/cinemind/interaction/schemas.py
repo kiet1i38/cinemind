@@ -126,23 +126,6 @@ class SignalResponse(BaseModel):
     rating: RatingResponse
 
 
-class PreferenceCreateRequest(BaseModel):
-    """Request to add or restore a favorite item."""
-
-    session_id: UUID
-    show_id: str = Field(..., min_length=1, max_length=32)
-    client_mutation_id: UUID | None = None
-
-
-class PreferenceResponse(BaseModel):
-    """Current state of a favorite item."""
-
-    session_id: UUID
-    show_id: str
-    active: bool
-    changed_at: datetime
-
-
 class RatingStateResponse(BaseModel):
     """Latest rating for a title in a session."""
 
@@ -152,16 +135,8 @@ class RatingStateResponse(BaseModel):
     rated_at: datetime
 
 
-class TitleStateResponse(BaseModel):
-    """Active favorite title reference."""
-
-    show_id: str
-    changed_at: datetime
-
-
 class InteractionStateResponse(BaseModel):
     """All persisted state needed to restore the frontend session."""
 
     session_id: UUID
     ratings: list[RatingStateResponse] = Field(default_factory=list)
-    favorites: list[TitleStateResponse] = Field(default_factory=list)

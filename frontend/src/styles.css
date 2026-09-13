@@ -329,17 +329,6 @@ img {
   margin-top: 30px;
 }
 
-.preference-button.active,
-.catalog-card-action.active {
-  border-color: rgba(229, 9, 20, 0.7);
-  color: #fff;
-  background: rgba(229, 9, 20, 0.18);
-}
-
-.preference-button svg {
-  color: #f15a62;
-}
-
 .primary-button,
 .secondary-button,
 .back-button,
@@ -686,38 +675,6 @@ img {
   color: inherit;
   background: transparent;
   text-align: left;
-}
-
-.catalog-card-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.catalog-card-action {
-  display: inline-flex;
-  min-width: 0;
-  min-height: 36px;
-  flex: 1;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 0 5px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 7px;
-  color: #898989;
-  background: rgba(255, 255, 255, 0.04);
-  font-size: 9px;
-  line-height: 1;
-  white-space: nowrap;
-  transition: border-color 180ms ease, color 180ms ease, background 180ms ease;
-}
-
-.catalog-card-action:hover,
-.catalog-card-action:focus-visible {
-  border-color: rgba(255, 255, 255, 0.32);
-  color: #f5f5f1;
-  background: rgba(255, 255, 255, 0.1);
 }
 
 .catalog-card-art {
@@ -1076,6 +1033,79 @@ img {
 
 .form-field {
   margin-top: 18px;
+}
+
+.rating-star-fieldset {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+.rating-star-fieldset legend {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  padding: 0;
+  color: #e7e7e7;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.rating-star-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.rating-star {
+  position: relative;
+  display: block;
+  width: 29px;
+  height: 29px;
+  color: #656565;
+}
+
+.rating-star-icon,
+.rating-star-fill {
+  position: absolute;
+  inset: 1px;
+}
+
+.rating-star-fill {
+  overflow: hidden;
+  color: #f5c518;
+  pointer-events: none;
+}
+
+.rating-star-fill svg {
+  display: block;
+  max-width: none;
+}
+
+.rating-star-hit {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 50%;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.rating-star-hit-half { left: 0; }
+.rating-star-hit-full { right: 0; }
+.rating-star-hit:focus-visible { outline: 2px solid #f5f5f1; outline-offset: 2px; }
+
+.rating-value {
+  display: block;
+  margin-top: 8px;
+  color: #f5f5f1;
+  font-size: 15px;
+  font-weight: 700;
 }
 
 .form-field label {
@@ -1702,13 +1732,6 @@ img {
   .rail-controls button {
     width: 40px;
     height: 40px;
-  }
-
-  .catalog-card-action {
-    min-height: 36px;
-    gap: 3px;
-    padding: 0 4px;
-    font-size: 9px;
   }
 
   .header-auth-button {

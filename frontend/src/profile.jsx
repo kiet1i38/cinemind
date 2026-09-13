@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, CheckCircle, Heart, ShieldCheck, Star, UserCircle } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowRight, CheckCircle, ShieldCheck, Star, UserCircle } from "@phosphor-icons/react";
 import { createRoot } from "react-dom/client";
 import { useEffect, useMemo, useState } from "react";
 import { appConfig, appLanguage } from "./config/appConfig";
@@ -8,7 +8,7 @@ import { translate } from "./lib/i18n";
 import { getCurrentUser, getAuthPageUrl, logout, logoutAll } from "./services/authService";
 import { loadCatalog } from "./services/catalogService";
 import { getInteractionState, syncPendingInteractions } from "./services/interactionService";
-import { clearInteractionState, favoriteStore, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
+import { clearInteractionState, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./styles.css";
 import "./profile.css";
@@ -46,7 +46,7 @@ export default function ProfilePage() {
   const language = appLanguage;
   const [user, setUser] = useState(null);
   const [catalog, setCatalog] = useState([]);
-  const [state, setState] = useState({ ratings: {}, favorites: [] });
+  const [state, setState] = useState({ ratings: {} });
   const [loadState, setLoadState] = useState("loading");
   const [message, setMessage] = useState("");
 
@@ -57,8 +57,7 @@ export default function ProfilePage() {
       platform: typeof navigator !== "undefined" ? String(navigator.platform || "web").slice(0, 32) : "web"
     };
     const localInteractionState = () => ({
-      ratings: signalStore.read(),
-      favorites: favoriteStore.read()
+      ratings: signalStore.read()
     });
     const mergeProfileState = (remoteState) => mergeInteractionState(remoteState, localInteractionState());
 
@@ -100,7 +99,6 @@ export default function ProfilePage() {
 
   const recordsById = useMemo(() => new Map(catalog.map((record) => [String(record.id), record])), [catalog]);
   const ratedRecords = useMemo(() => Object.entries(state.ratings || {}).map(([showId, item]) => ({ record: recordsById.get(String(showId)), rating: item?.rating })).filter((item) => item.record), [recordsById, state.ratings]);
-  const favoriteRecords = useMemo(() => (state.favorites || []).map((showId) => recordsById.get(String(showId))).filter(Boolean), [recordsById, state.favorites]);
 
   async function signOut(allDevices = false) {
     const confirmed = window.confirm(translate(language, allDevices ? "logoutAllConfirm" : "logoutConfirm"));
@@ -147,14 +145,12 @@ export default function ProfilePage() {
         {message ? <div className="profile-feedback" role="alert"><CheckCircle size={17} aria-hidden="true" />{message}</div> : null}
         <section className="profile-stats" aria-label={translate(language, "accountActivity")}>
           <div><span><Star size={16} aria-hidden="true" />{translate(language, "ratingHistory")}</span><strong>{ratedRecords.length}</strong></div>
-          <div><span><Heart size={16} aria-hidden="true" />{translate(language, "favoriteTitles")}</span><strong>{favoriteRecords.length}</strong></div>
         </section>
 
         <section className="profile-account-card" aria-labelledby="account-details-heading"><div className="profile-section-heading"><p className="profile-eyebrow">01 / Identity</p><h2 id="account-details-heading">{translate(language, "accountDetails")}</h2></div><div className="profile-account-grid"><div><span>{translate(language, "profileEmail")}</span><strong>{user?.email}</strong></div><div><span>{translate(language, "profileUsername")}</span><strong>{user?.username}</strong></div><div><span>{translate(language, "memberSince")}</span><strong>{formatDate(user?.created_at, language)}</strong></div></div></section>
 
-        <section className="profile-activity" aria-labelledby="activity-heading"><div className="profile-section-heading"><p className="profile-eyebrow">02 / Library</p><h2 id="activity-heading">{translate(language, "accountActivity")}</h2></div><div className="profile-activity-grid">
+        <section className="profile-activity" aria-labelledby="activity-heading"><div className="profile-section-heading"><p className="profile-eyebrow">02 / Ratings</p><h2 id="activity-heading">{translate(language, "accountActivity")}</h2></div><div className="profile-activity-grid">
           <div className="profile-list-card"><div className="profile-list-heading"><h3>{translate(language, "ratingHistory")}</h3><span>{ratedRecords.length}</span></div>{ratedRecords.length ? <div className="profile-title-grid">{ratedRecords.map(({ record, rating }) => <TitleTile key={record.id} record={record} language={language} rating={rating} />)}</div> : <EmptyProfileState language={language}>{translate(language, "noRatings")}</EmptyProfileState>}</div>
-          <div className="profile-list-card"><div className="profile-list-heading"><h3>{translate(language, "favoriteTitles")}</h3><span>{favoriteRecords.length}</span></div>{favoriteRecords.length ? <div className="profile-title-grid">{favoriteRecords.map((record) => <TitleTile key={record.id} record={record} language={language} />)}</div> : <EmptyProfileState language={language}>{translate(language, "noFavorites")}</EmptyProfileState>}</div>
         </div></section>
         <footer className="profile-footer"><span>{translate(language, "authSecureNote")}</span><a href="./">{translate(language, "backToCineMind")} <ArrowRight size={14} aria-hidden="true" /></a></footer>
       </div>

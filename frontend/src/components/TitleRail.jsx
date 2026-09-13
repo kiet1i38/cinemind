@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { translate } from "../lib/i18n";
 import { CatalogCard } from "./CatalogCard";
 
-export function TitleRail({ id, title, description, items, language, onSelect, onToggleFavorite, favoriteIds = [] }) {
+export function TitleRail({ id, title, description, items, language, onSelect }) {
   const railRef = useRef(null);
   const [scrollState, setScrollState] = useState({ canScrollPrev: false, canScrollNext: false });
 
@@ -60,7 +60,7 @@ export function TitleRail({ id, title, description, items, language, onSelect, o
         </div>
       </div>
       <div ref={railRef} className="title-rail" id={`rail-${id}`} data-rail={id} data-testid={`rail-${id}`}>
-        {items.map((record) => <CatalogCard key={record.id} record={record} language={language} onSelect={onSelect} onToggleFavorite={onToggleFavorite} isFavorite={favoriteIds.includes(String(record.id))} />)}
+        {items.map((record) => <CatalogCard key={record.id} record={record} language={language} onSelect={onSelect} />)}
       </div>
     </section>
   );

@@ -1,9 +1,9 @@
-import { ArrowUpRight, Check, Clock, Heart, Star } from "@phosphor-icons/react";
+import { ArrowUpRight, Clock, Star } from "@phosphor-icons/react";
 import { getRuntimeLabel, getTypeLabel } from "../lib/catalog";
 import { translate } from "../lib/i18n";
 import { PosterImage } from "./PosterImage";
 
-export function CatalogCard({ record, language, onSelect, onToggleFavorite, isFavorite = false }) {
+export function CatalogCard({ record, language, onSelect }) {
   return (
     <article className="catalog-card" data-testid="catalog-card">
       <button
@@ -32,18 +32,6 @@ export function CatalogCard({ record, language, onSelect, onToggleFavorite, isFa
           </div>
         </div>
       </button>
-      <div className="catalog-card-actions">
-        <button
-          type="button"
-          className={`catalog-card-action${isFavorite ? " active" : ""}`}
-          onClick={() => onToggleFavorite?.(record, !isFavorite)}
-          aria-pressed={isFavorite}
-          aria-label={translate(language, isFavorite ? "removeFavorite" : "addFavorite", { title: record.title })}
-        >
-          {isFavorite ? <Check size={13} weight="bold" aria-hidden="true" /> : <Heart size={13} weight="bold" aria-hidden="true" />}
-          <span>{translate(language, isFavorite ? "removeFavoriteShort" : "addFavoriteShort")}</span>
-        </button>
-      </div>
     </article>
   );
 }

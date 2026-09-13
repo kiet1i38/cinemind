@@ -15,7 +15,7 @@ const scopeCards = [
     value: "interaction",
     eyebrow: "Level 1",
     title: "Current session",
-    description: "Delete ratings, watch sessions, favorites, and search events for this browser.",
+    description: "Delete ratings, watch sessions, and search events for this browser.",
     warning: "The catalog is preserved."
   },
   {
