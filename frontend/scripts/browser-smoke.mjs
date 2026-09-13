@@ -24,10 +24,13 @@ export default async (page) => {
       status: localAuthenticated ? 200 : 401,
       contentType: "application/json",
       body: JSON.stringify(localAuthenticated ? {
-        user_id: "00000000-0000-4000-8000-000000000003",
-        username: "browser_qa",
-        display_name: "Browser QA",
-        email: "browser-qa@example.test"
+        authenticated: true,
+        user: {
+          user_id: "00000000-0000-4000-8000-000000000003",
+          username: "browser_qa",
+          display_name: "Browser QA",
+          email: "browser-qa@example.test"
+        }
       } : { detail: "Not authenticated" })
     }));
     await page.route("**/api/auth/register", async (route) => {
