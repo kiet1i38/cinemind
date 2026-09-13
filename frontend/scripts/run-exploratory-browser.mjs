@@ -44,6 +44,10 @@ try {
   check("homeRenders", await visible('[data-testid="home-page"]'));
   check("homeSearchVisible", await visible('input[aria-label="Search the catalog"]'));
   check("homeFilterBarVisible", await visible('[data-testid="filter-bar"]'));
+  check(
+    "watchlistUiRemoved",
+    await page.locator('[aria-label*="watchlist" i], [data-testid*="watchlist" i], text=/\\bwatchlist\\b/i').count() === 0
+  );
 
   const moreInfo = page.getByRole("button", { name: "More info" }).first();
   check("detailActionAvailable", await moreInfo.count() === 1);

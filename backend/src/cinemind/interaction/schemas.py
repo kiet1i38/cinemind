@@ -127,7 +127,7 @@ class SignalResponse(BaseModel):
 
 
 class PreferenceCreateRequest(BaseModel):
-    """Request to add or restore a favorite/watchlist item."""
+    """Request to add or restore a favorite item."""
 
     session_id: UUID
     show_id: str = Field(..., min_length=1, max_length=32)
@@ -135,7 +135,7 @@ class PreferenceCreateRequest(BaseModel):
 
 
 class PreferenceResponse(BaseModel):
-    """Current state of a favorite or watchlist item."""
+    """Current state of a favorite item."""
 
     session_id: UUID
     show_id: str
@@ -153,7 +153,7 @@ class RatingStateResponse(BaseModel):
 
 
 class TitleStateResponse(BaseModel):
-    """Active favorite/watchlist title reference."""
+    """Active favorite title reference."""
 
     show_id: str
     changed_at: datetime
@@ -165,4 +165,3 @@ class InteractionStateResponse(BaseModel):
     session_id: UUID
     ratings: list[RatingStateResponse] = Field(default_factory=list)
     favorites: list[TitleStateResponse] = Field(default_factory=list)
-    watchlist_items: list[TitleStateResponse] = Field(default_factory=list)

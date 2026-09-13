@@ -223,46 +223,6 @@ def remove_favorite_by_path(
     return _remove_preference_response(service, "favorites", session_id, show_id, auth.user_id, session_token, client_mutation_id)
 
 
-@router.post("/watchlist-items", response_model=PreferenceResponse, status_code=status.HTTP_201_CREATED)
-def add_watchlist_item(
-    payload: PreferenceCreateRequest,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
-    auth: AuthContext = Depends(require_auth_context),
-    service: InteractionService = Depends(get_interaction_service),
-) -> PreferenceResponse:
-    """Add or restore a watchlist title."""
-
-    return _preference_response(service, "watchlist_items", payload, auth.user_id, session_token)
-
-
-@router.delete("/watchlist-items/{show_id}", response_model=PreferenceResponse)
-def remove_watchlist_item(
-    show_id: str,
-    session_id: UUID = Query(...),
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
-    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id", max_length=64),
-    auth: AuthContext = Depends(require_auth_context),
-    service: InteractionService = Depends(get_interaction_service),
-) -> PreferenceResponse:
-    """Soft-remove a watchlist title; repeated removal is safe."""
-
-    return _remove_preference_response(service, "watchlist_items", session_id, show_id, auth.user_id, session_token, client_mutation_id)
-
-
-@router.delete("/watchlist-items/{show_id}/{session_id}", response_model=PreferenceResponse)
-def remove_watchlist_item_by_path(
-    show_id: str,
-    session_id: UUID,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
-    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id", max_length=64),
-    auth: AuthContext = Depends(require_auth_context),
-    service: InteractionService = Depends(get_interaction_service),
-) -> PreferenceResponse:
-    """Path-based watchlist removal for hosts that filter session query keys."""
-
-    return _remove_preference_response(service, "watchlist_items", session_id, show_id, auth.user_id, session_token, client_mutation_id)
-
-
 @router.get("/state", response_model=InteractionStateResponse)
 def get_interaction_state(
     session_id: UUID = Query(...),

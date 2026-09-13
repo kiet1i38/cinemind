@@ -78,14 +78,14 @@ class FakeInteractionRepository:
         }
         self.watch_sessions = {}
         self.ratings = []
-        self.preferences = {"favorites": set(), "watchlist_items": set()}
+        self.preferences = {"favorites": set()}
         self.transactions_started = 0
         self.transactions_committed = 0
         self.transactions_rolled_back = 0
         self.fail_rating = False
         self.watch_mutations = {}
         self.rating_mutations = {}
-        self.preference_rows = {"favorites": [], "watchlist_items": []}
+        self.preference_rows = {"favorites": []}
         self.preference_mutations = {}
 
     def transaction(self):
@@ -213,7 +213,7 @@ class FakeInteractionRepository:
         return row
 
     def interaction_state(self, _session_id, _user_id=None):
-        return {"ratings": tuple(), "favorites": tuple(), "watchlist_items": tuple()}
+        return {"ratings": tuple(), "favorites": tuple()}
 
 
 class InteractionServiceTests(unittest.TestCase):

@@ -187,20 +187,12 @@ export function removeFavorite(record, metadata) {
   return changePreference("/favorites", "DELETE", record, metadata);
 }
 
-export function addWatchlistItem(record, metadata) {
-  return changePreference("/watchlist-items", "POST", record, metadata);
-}
-
-export function removeWatchlistItem(record, metadata) {
-  return changePreference("/watchlist-items", "DELETE", record, metadata);
-}
-
 export function isRetryableInteractionError(error) {
   return !error?.status || error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
 export function setFavoritePreference(record, active, metadata = {}) {
-  return setPreference("favorites", record, active, metadata);
+  return setPreference(record, active, metadata);
 }
 
 async function withFreshInteractionSession(metadata, operation) {
@@ -229,23 +221,19 @@ function markAuthRequired(error) {
   return error;
 }
 
-export function setWatchlistPreference(record, active, metadata = {}) {
-  return setPreference("watchlist", record, active, metadata);
-}
-
-async function setPreference(kind, record, active, metadata) {
-  const mutationId = queuePendingPreference(kind, record.id, active, metadata.mutationId);
-  const path = kind === "favorites" ? "/favorites" : "/watchlist-items";
+async function setPreference(record, active, metadata) {
+  const mutationId = queuePendingPreference(record.id, active, metadata.mutationId);
+  const path = "/favorites";
   const owner = getInteractionOwner();
-  return enqueueMutation(`${owner}:${kind}:${record.id}`, async () => {
+  return enqueueMutation(`${owner}:favorites:${record.id}`, async () => {
     try {
       const result = active
         ? await changePreference(path, "POST", record, { ...metadata, mutationId })
         : await changePreference(path, "DELETE", record, { ...metadata, mutationId });
-      acknowledgePendingPreference(kind, record.id, mutationId);
+      acknowledgePendingPreference(record.id, mutationId);
       return result;
     } catch (error) {
-      if (!isRetryableInteractionError(error)) acknowledgePendingPreference(kind, record.id, mutationId);
+      if (!isRetryableInteractionError(error)) acknowledgePendingPreference(record.id, mutationId);
       throw error;
     }
   });
@@ -289,12 +277,6 @@ async function syncPendingInteractionsOnce(records, metadata) {
     const record = recordsById.get(showId);
     if (record) {
       tasks.push(setFavoritePreference(record, preference.active, { ...metadata, mutationId: preference.mutationId }));
-    }
-  }
-  for (const [showId, preference] of Object.entries(pending.preferences.watchlist)) {
-    const record = recordsById.get(showId);
-    if (record) {
-      tasks.push(setWatchlistPreference(record, preference.active, { ...metadata, mutationId: preference.mutationId }));
     }
   }
   return Promise.allSettled(tasks);

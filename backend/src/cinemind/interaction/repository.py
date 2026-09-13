@@ -233,7 +233,7 @@ class InteractionRepository:
         client_mutation_id: UUID | None = None,
     ) -> dict:
         table = self._preference_table(table_name)
-        id_column = "favorite_id" if table_name == "favorites" else "watchlist_item_id"
+        id_column = "favorite_id"
         if client_mutation_id is not None:
             existing = self.connection.execute(
                 f"""
@@ -360,11 +360,9 @@ class InteractionRepository:
             (session_parameter,),
         ).fetchall()
         favorites = self._active_preferences("favorites", session_id, user_id)
-        watchlist_items = self._active_preferences("watchlist_items", session_id, user_id)
         return {
             "ratings": tuple(dict(row) for row in ratings),
             "favorites": favorites,
-            "watchlist_items": watchlist_items,
         }
 
     def _active_preferences(
@@ -374,7 +372,7 @@ class InteractionRepository:
         user_id: UUID | None = None,
     ) -> tuple[dict, ...]:
         table = self._preference_table(table_name)
-        id_column = "favorite_id" if table_name == "favorites" else "watchlist_item_id"
+        id_column = "favorite_id"
         session_clause = "s.user_id = %s" if user_id is not None else "s.session_id = %s"
         session_parameter = user_id if user_id is not None else session_id
         rows = self.connection.execute(
@@ -399,7 +397,7 @@ class InteractionRepository:
 
     @staticmethod
     def _preference_table(table_name: str) -> str:
-        allowed = {"favorites", "watchlist_items"}
+        allowed = {"favorites"}
         if table_name not in allowed:
             raise ValueError("Unsupported interaction preference table")
         return table_name

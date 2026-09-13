@@ -103,7 +103,6 @@
     "sessionStorageKey": "cinemind-interaction-session-id",
     "ownerStorageKey": "cinemind-interaction-owner",
     "favoritesStorageKey": "cinemind-favorites",
-    "watchlistStorageKey": "cinemind-watchlist",
     "outboxStorageKey": "cinemind-interaction-outbox",
     "maxWatchMinutes": 10080,
     "searchDebounceMs": 700,

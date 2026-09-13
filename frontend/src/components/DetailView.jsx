@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowUpRight, BookmarkSimple, Check, Clock, Heart, Star } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowUpRight, Check, Clock, Heart, Star } from "@phosphor-icons/react";
 import { getRuntimeHelper, getRuntimeLabel, getTypeLabel } from "../lib/catalog";
 import { translate } from "../lib/i18n";
 import { PosterImage } from "./PosterImage";
@@ -8,7 +8,7 @@ function detailValue(value, fallback) {
   return value?.length ? value.join(", ") : fallback;
 }
 
-export function DetailView({ item, related, language, onBack, onRate, onSelect, onToggleFavorite, onToggleWatchlist, isFavorite = false, isInWatchlist = false, favoriteIds = [], watchlistIds = [] }) {
+export function DetailView({ item, related, language, onBack, onRate, onSelect, onToggleFavorite, isFavorite = false, favoriteIds = [] }) {
   if (!item) {
     return (
       <main className="detail-page not-found-page">
@@ -41,10 +41,6 @@ export function DetailView({ item, related, language, onBack, onRate, onSelect, 
                 {isFavorite ? <Check size={16} weight="bold" aria-hidden="true" /> : <Heart size={16} weight="bold" aria-hidden="true" />}
                 {translate(language, isFavorite ? "removeFavoriteShort" : "addFavoriteShort")}
               </button>
-              <button type="button" className={`secondary-button preference-button${isInWatchlist ? " active" : ""}`} onClick={() => onToggleWatchlist?.(item, !isInWatchlist)} aria-pressed={isInWatchlist} aria-label={translate(language, isInWatchlist ? "removeFromWatchlist" : "addToWatchlist", { title: item.title })}>
-                {isInWatchlist ? <Check size={16} weight="bold" aria-hidden="true" /> : <BookmarkSimple size={16} weight="bold" aria-hidden="true" />}
-                {translate(language, isInWatchlist ? "removeFromWatchlistShort" : "addToWatchlistShort")}
-              </button>
             </div>
             <p className="detail-runtime-note">{getRuntimeHelper(item, language)}</p>
           </div>
@@ -62,7 +58,7 @@ export function DetailView({ item, related, language, onBack, onRate, onSelect, 
           <p className="provenance-note">{translate(language, "provenance")}</p>
         </section>
 
-        <TitleRail id="related-detail" title={translate(language, "previewPicks")} description={translate(language, "previewPicksDescription")} items={related} language={language} onSelect={onSelect} onToggleFavorite={onToggleFavorite} onToggleWatchlist={onToggleWatchlist} favoriteIds={favoriteIds} watchlistIds={watchlistIds} />
+        <TitleRail id="related-detail" title={translate(language, "previewPicks")} description={translate(language, "previewPicksDescription")} items={related} language={language} onSelect={onSelect} onToggleFavorite={onToggleFavorite} favoriteIds={favoriteIds} />
       </div>
     </main>
   );

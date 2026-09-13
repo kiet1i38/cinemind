@@ -34,4 +34,3 @@ class InteractionState:
 
     ratings: tuple[dict, ...]
     favorites: tuple[dict, ...]
-    watchlist_items: tuple[dict, ...]

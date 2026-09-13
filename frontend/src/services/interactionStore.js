@@ -9,11 +9,21 @@ const sessionStoreBase = createJsonStore(interactionConfig.sessionStorageKey, nu
 const sessionTokenStoreBase = createJsonStore(`${interactionConfig.sessionStorageKey}:token`, null);
 const signalStoreBase = createJsonStore(appConfig.signals.storageKey, {});
 const favoriteStoreBase = createJsonStore(interactionConfig.favoritesStorageKey, []);
-const watchlistStoreBase = createJsonStore(interactionConfig.watchlistStorageKey, []);
 const outboxStoreBase = createJsonStore(interactionConfig.outboxStorageKey, () => ({
   signals: {},
-  preferences: { favorites: {}, watchlist: {} }
+  preferences: { favorites: {} }
 }));
+
+function clearLegacyWatchlistStorage() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem("cinemind-watchlist");
+  } catch {
+    // Ignore storage failures; the feature has already been removed.
+  }
+}
+
+clearLegacyWatchlistStorage();
 
 export function getInteractionOwner() {
   const owner = ownerStoreBase.read();
@@ -102,15 +112,6 @@ export const favoriteStore = {
   }
 };
 
-export const watchlistStore = {
-  read() {
-    return readIdList(watchlistStoreBase);
-  },
-  write(value) {
-    writeScopedValue(watchlistStoreBase, [...new Set((value || []).map(String))]);
-  }
-};
-
 export function createMutationId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
@@ -132,8 +133,7 @@ function normalizeOutbox(value) {
     signals: source.signals && typeof source.signals === "object" ? source.signals : {},
     searches: source.searches && typeof source.searches === "object" ? source.searches : {},
     preferences: {
-      favorites: preferences.favorites && typeof preferences.favorites === "object" ? preferences.favorites : {},
-      watchlist: preferences.watchlist && typeof preferences.watchlist === "object" ? preferences.watchlist : {}
+      favorites: preferences.favorites && typeof preferences.favorites === "object" ? preferences.favorites : {}
     }
   };
 }
@@ -142,7 +142,7 @@ export function readPendingInteractions() {
   return normalizeOutbox(scopedValue(outboxStoreBase, {
     signals: {},
     searches: {},
-    preferences: { favorites: {}, watchlist: {} }
+    preferences: { favorites: {} }
   }));
 }
 
@@ -196,11 +196,10 @@ export function acknowledgePendingSearch(mutationId) {
   writePendingInteractions(outbox);
 }
 
-export function queuePendingPreference(kind, showId, active, mutationId = createMutationId()) {
+export function queuePendingPreference(showId, active, mutationId = createMutationId()) {
   const outbox = readPendingInteractions();
   const key = String(showId);
-  if (!outbox.preferences[kind]) outbox.preferences[kind] = {};
-  outbox.preferences[kind][key] = {
+  outbox.preferences.favorites[key] = {
     active: Boolean(active),
     queuedAt: new Date().toISOString(),
     mutationId
@@ -209,11 +208,11 @@ export function queuePendingPreference(kind, showId, active, mutationId = create
   return mutationId;
 }
 
-export function acknowledgePendingPreference(kind, showId, mutationId) {
+export function acknowledgePendingPreference(showId, mutationId) {
   const outbox = readPendingInteractions();
   const key = String(showId);
-  if (outbox.preferences[kind]?.[key]?.mutationId !== mutationId) return;
-  delete outbox.preferences[kind][key];
+  if (outbox.preferences.favorites[key]?.mutationId !== mutationId) return;
+  delete outbox.preferences.favorites[key];
   writePendingInteractions(outbox);
 }
 
@@ -250,8 +249,7 @@ export function mergeInteractionState(remoteState, localState = {}) {
 
   return {
     ratings,
-    favorites: mergeIds(localState.favorites, remoteState?.favorites, pending.preferences.favorites),
-    watchlist_items: mergeIds(localState.watchlist, remoteState?.watchlist_items, pending.preferences.watchlist)
+    favorites: mergeIds(localState.favorites, remoteState?.favorites, pending.preferences.favorites)
   };
 }
 
@@ -259,7 +257,7 @@ export function clearInteractionState({ preserveSession = false, clearPending = 
   if (!preserveSession) interactionSessionStore.write(null);
   removeOwnerScopedSignalState();
   removeScopedValue(favoriteStoreBase);
-  removeScopedValue(watchlistStoreBase);
+  clearLegacyWatchlistStorage();
   if (clearPending) removeScopedValue(outboxStoreBase);
   if (resetOwner) ownerStoreBase.write("anonymous");
 }

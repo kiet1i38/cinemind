@@ -374,7 +374,6 @@ class InteractionService:
                 for row in state["ratings"]
             ),
             "favorites": state["favorites"],
-            "watchlist_items": state["watchlist_items"],
         }
 
     @staticmethod

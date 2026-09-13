@@ -13,7 +13,7 @@ CineMind is a Netflix-inspired catalog and Data Mining prototype for the midterm
 - Search, type, genre and release-year filters
 - Title detail page and rating/watch-duration modal
 - Cookie-session account flow with email/username login, registration, logout, and account profile
-- Anonymous interaction persistence that can merge into an account: sessions, search events, watch signals, ratings, favorites, and watchlist items
+- Anonymous interaction persistence that can merge into an account: sessions, search events, watch signals, ratings, and favorites
 - Backend `ops`, `catalog`, `interaction`, and `auth` schemas with PostgreSQL migrations, catalog ingestion, data-quality audit, and API endpoints
 - Protected three-scope database reset console for local and demo maintenance
 
