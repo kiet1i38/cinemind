@@ -29,6 +29,7 @@ from cinemind.interaction.service import (
     InteractionUnauthorizedError,
     InteractionValidationError,
 )
+from cinemind.security import is_trusted_proxy
 
 
 def enforce_interaction_rate_limit(request: Request) -> None:
@@ -43,7 +44,10 @@ def _require_secure_transport(request: Request) -> None:
     settings = get_settings()
     if request.url.scheme == "https":
         return
-    if settings.trust_proxy_headers:
+    if settings.trust_proxy_headers and is_trusted_proxy(
+        request.client.host if request.client else None,
+        settings.trusted_proxy_networks,
+    ):
         forwarded = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().casefold()
         if forwarded == "https":
             return
@@ -103,7 +107,10 @@ def create_search_event(
             payload.client_mutation_id,
         ))
     except InteractionNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        raise HTTPException(
+            status_code=404,
+            detail={"code": getattr(error, "code", "INTERACTION_NOT_FOUND"), "message": str(error)},
+        ) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
     except InteractionConflictError as error:
@@ -131,7 +138,10 @@ def create_watch_session(
             payload.client_mutation_id,
         ))
     except InteractionNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        raise HTTPException(
+            status_code=404,
+            detail={"code": getattr(error, "code", "INTERACTION_NOT_FOUND"), "message": str(error)},
+        ) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
     except InteractionConflictError as error:
@@ -160,7 +170,10 @@ def create_rating(
             payload.client_mutation_id,
         ))
     except InteractionNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        raise HTTPException(
+            status_code=404,
+            detail={"code": getattr(error, "code", "INTERACTION_NOT_FOUND"), "message": str(error)},
+        ) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
     except InteractionConflictError as error:
@@ -189,7 +202,10 @@ def create_signal(
             payload.client_mutation_id,
         ))
     except InteractionNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        raise HTTPException(
+            status_code=404,
+            detail={"code": getattr(error, "code", "INTERACTION_NOT_FOUND"), "message": str(error)},
+        ) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
     except InteractionConflictError as error:
@@ -210,7 +226,10 @@ def get_interaction_state(
     try:
         return InteractionStateResponse(**service.get_state(session_id, auth.user_id if auth else None, session_token))
     except InteractionNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        raise HTTPException(
+            status_code=404,
+            detail={"code": getattr(error, "code", "INTERACTION_NOT_FOUND"), "message": str(error)},
+        ) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
 
@@ -227,6 +246,9 @@ def get_interaction_state_by_path(
     try:
         return InteractionStateResponse(**service.get_state(session_id, auth.user_id if auth else None, session_token))
     except InteractionNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        raise HTTPException(
+            status_code=404,
+            detail={"code": getattr(error, "code", "INTERACTION_NOT_FOUND"), "message": str(error)},
+        ) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error

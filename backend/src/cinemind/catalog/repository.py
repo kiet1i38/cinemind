@@ -263,12 +263,20 @@ class CatalogRepository:
                 COUNT(*) FILTER (WHERE content_type = 'Movie') AS movies,
                 COUNT(*) FILTER (WHERE content_type = 'TV Show') AS tv_shows,
                 COUNT(*) FILTER (WHERE poster_status = 'available') AS public_posters,
-                COUNT(*) FILTER (WHERE poster_status = 'fallback') AS fallback_posters
+                COUNT(*) FILTER (WHERE poster_status = 'fallback') AS fallback_posters,
+                MAX(source_checksum_sha256) AS source_checksum_sha256
             FROM catalog.titles
             WHERE is_active = TRUE
             """
         ).fetchone()
-        return {key: int(value) for key, value in row.items()}
+        summary = {
+            key: int(value)
+            for key, value in row.items()
+            if key != "source_checksum_sha256"
+        }
+        checksum = row.get("source_checksum_sha256")
+        summary["source_checksum_sha256"] = str(checksum).strip() if checksum else None
+        return summary
 
     @staticmethod
     def _title_values(record: CatalogRecord, source_id, source_checksum: str | None) -> tuple:

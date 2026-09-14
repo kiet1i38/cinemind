@@ -30,11 +30,13 @@ export function createJsonStore(key, fallback) {
     write(value) {
       memoryValues.set(key, value);
       const storage = getStorage();
-      if (!storage) return;
+      if (!storage) return true;
       try {
         storage.setItem(key, JSON.stringify(value));
+        return true;
       } catch {
         // Browser storage can be unavailable or full. The UI remains usable in memory.
+        return false;
       }
     },
     remove() {

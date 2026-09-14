@@ -12,7 +12,7 @@ from cinemind.auth import routes as auth_routes
 from cinemind.interaction.limits import normalize_filters
 from cinemind.middleware import _interaction_principal
 from cinemind.middleware import InteractionRateLimitMiddleware
-from cinemind.security import SlidingWindowRateLimiter
+from cinemind.security import SlidingWindowRateLimiter, client_address_from_headers
 
 
 class SecurityPrimitiveTests(unittest.TestCase):
@@ -35,6 +35,41 @@ class SecurityPrimitiveTests(unittest.TestCase):
 
         self.assertTrue(limiter.check("one", now=10).allowed)
         self.assertFalse(limiter.check("two", now=10).allowed)
+
+    def test_forwarded_ip_is_ignored_from_an_untrusted_direct_peer(self):
+        headers = {"x-forwarded-for": "198.51.100.44", "x-real-ip": "198.51.100.45"}
+
+        self.assertEqual(
+            client_address_from_headers(
+                "203.0.113.10",
+                headers,
+                trust_proxy_headers=True,
+                trusted_proxy_networks=("10.0.0.0/8",),
+            ),
+            "203.0.113.10",
+        )
+
+    def test_forwarded_ip_is_accepted_only_from_a_configured_proxy_network(self):
+        self.assertEqual(
+            client_address_from_headers(
+                "10.20.30.40",
+                {"x-forwarded-for": "198.51.100.44, 10.20.30.40"},
+                trust_proxy_headers=True,
+                trusted_proxy_networks=("10.0.0.0/8",),
+            ),
+            "198.51.100.44",
+        )
+
+    def test_append_style_forwarded_chain_ignores_client_supplied_leftmost_ip(self):
+        self.assertEqual(
+            client_address_from_headers(
+                "10.20.30.40",
+                {"x-forwarded-for": "203.0.113.99, 198.51.100.44"},
+                trust_proxy_headers=True,
+                trusted_proxy_networks=("10.0.0.0/8",),
+            ),
+            "198.51.100.44",
+        )
 
     def test_interaction_principal_uses_the_configured_auth_cookie_name(self):
         custom_headers = {"cookie": "custom_auth=secret-token"}

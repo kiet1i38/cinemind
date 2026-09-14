@@ -25,8 +25,8 @@ import {
 } from "./services/interactionService";
 import { getDiscoverableTitles, getRecentTitles, getRelatedTitles, getTitlesByType } from "./services/recommendationService";
 import { catalogPageSizeStore } from "./services/catalogPreferencesStore";
-import { getAuthPageUrl, getCurrentUser } from "./services/authService";
-import { mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
+import { AUTH_EVENT_STORAGE_KEY, getAuthPageUrl, getCurrentUser } from "./services/authService";
+import { clearInteractionState, getInteractionOwner, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./authGate.css";
 
@@ -54,6 +54,8 @@ export default function App() {
   const authRequestRef = useRef(null);
   const authRetryRef = useRef(null);
   const catalogRequestRef = useRef({ requestId: 0, controller: null });
+  const authUserRef = useRef(null);
+  authUserRef.current = authUser;
 
   const authReady = authStatus === "authenticated" || authStatus === "anonymous";
   const authResolved = authStatus !== "checking";
@@ -147,13 +149,34 @@ export default function App() {
       clearRetry();
       checkAuth();
     };
+    const handleAuthStorage = (event) => {
+      if (event.key !== AUTH_EVENT_STORAGE_KEY || !event.newValue) return;
+      let authEvent;
+      try {
+        authEvent = JSON.parse(event.newValue);
+      } catch {
+        return;
+      }
+      if (authEvent?.type === "logout") {
+        interactionRevisionRef.current += 1;
+        clearInteractionState({ ownerId: authUserRef.current?.user_id || getInteractionOwner() });
+        setAuthUser(null);
+        setRatings({});
+        setAuthPrompt(null);
+        setAuthStatus("anonymous");
+        return;
+      }
+      if (authEvent?.type === "login") checkAuth();
+    };
 
     checkAuth();
     window.addEventListener("online", retryWhenOnline);
+    window.addEventListener("storage", handleAuthStorage);
     return () => {
       cancelled = true;
       clearRetry();
       window.removeEventListener("online", retryWhenOnline);
+      window.removeEventListener("storage", handleAuthStorage);
     };
   }, []);
 
@@ -344,16 +367,20 @@ export default function App() {
     const item = modalItem;
     if (!item || !authUser) return;
     interactionRevisionRef.current += 1;
+    const requestRevision = interactionRevisionRef.current;
+    const requestOwner = getInteractionOwner();
     const previousSignal = ratings[item.id];
     setRatings((current) => ({ ...current, [item.id]: { ...signal, savedAt: new Date().toISOString() } }));
     try {
       await submitSignal({ record: item, ...signal, ...interactionMetadata() });
+      if (requestRevision !== interactionRevisionRef.current || requestOwner !== getInteractionOwner()) return;
       setModalItem(null);
       setToast(translate(language, "savedSignal"));
     } catch (error) {
+      if (requestRevision !== interactionRevisionRef.current || requestOwner !== getInteractionOwner()) return;
       if (isRetryableInteractionError(error)) {
         setModalItem(null);
-        setToast(translate(language, "savedSignalLocally"));
+        setToast(translate(language, error.pendingPersisted === false ? "savedSignalSessionOnly" : "savedSignalLocally"));
         return;
       }
       setRatings((current) => {

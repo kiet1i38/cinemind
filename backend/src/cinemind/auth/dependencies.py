@@ -56,6 +56,6 @@ def require_auth_context(
     if context is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
+            detail={"code": "AUTH_REQUIRED", "message": "Authentication required"},
         )
     return context

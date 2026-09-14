@@ -28,6 +28,9 @@
     "sourcePath": "public/data/raw/netflix_titles.csv",
     "outputPath": "public/data/catalog.json",
     "sourceUrl": "data/catalog.json",
+    "manifestPath": "public/data/catalog-manifest.json",
+    "manifestUrl": "data/catalog-manifest.json",
+    "versionCheckApiBaseUrl": "/api/catalog",
     "allValue": "all",
     "types": [
       { "key": "movie", "value": "Movie", "labelKey": "movie", "filterLabelKey": "moviesOnly", "navigationTarget": "movies" },
@@ -89,7 +92,7 @@
   "signals": {
     "storageKey": "cinemind-ratings",
     "rating": {
-      "min": 0,
+      "min": 0.5,
       "max": 10,
       "step": 0.5
     },
@@ -105,7 +108,9 @@
     "outboxStorageKey": "cinemind-interaction-outbox",
     "maxWatchMinutes": 10080,
     "searchDebounceMs": 700,
-    "pendingRetryIntervalMs": 30000
+    "pendingRetryIntervalMs": 30000,
+    "pendingSearchMaxItems": 100,
+    "pendingSearchTtlMs": 86400000
   },
   "runtime": {
     "frontendPathPrefix": "/cinemind/",
@@ -119,7 +124,8 @@
     "usernameMaxLength": 32,
     "displayNameMaxLength": 80,
     "passwordMinLength": 8,
-    "passwordMaxLength": 128
+    "passwordMaxLength": 128,
+    "eventsStorageKey": "cinemind-auth-event"
   },
   "adminReset": {
     "apiBaseUrl": "/api/admin",

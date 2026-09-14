@@ -22,7 +22,21 @@ class InteractionConflictError(InteractionValidationError):
 
 
 class InteractionNotFoundError(LookupError):
-    """Raised when a session or catalog title cannot be found."""
+    """Raised when an interaction resource cannot be found."""
+
+    code = "INTERACTION_NOT_FOUND"
+
+
+class InteractionSessionNotFoundError(InteractionNotFoundError):
+    """Raised when the browser interaction session is missing or expired."""
+
+    code = "SESSION_NOT_FOUND"
+
+
+class InteractionTitleNotFoundError(InteractionNotFoundError):
+    """Raised when a title is missing or no longer active in the catalog."""
+
+    code = "TITLE_NOT_FOUND"
 
 
 class InteractionUnauthorizedError(PermissionError):
@@ -357,10 +371,10 @@ class InteractionService:
     ) -> dict:
         session = self.repository.get_session(session_id)
         if session is None or session.get("ended_at") is not None:
-            raise InteractionNotFoundError(f"Interaction session not found: {session_id}")
+            raise InteractionSessionNotFoundError(f"Interaction session not found: {session_id}")
         expires_at = session.get("expires_at")
         if expires_at is not None and expires_at <= datetime.now(timezone.utc):
-            raise InteractionNotFoundError(f"Interaction session expired: {session_id}")
+            raise InteractionSessionNotFoundError(f"Interaction session expired: {session_id}")
         session_user_id = session.get("user_id")
         if session_user_id is not None and user_id is None:
             raise InteractionUnauthorizedError("Authentication required")
@@ -381,7 +395,7 @@ class InteractionService:
             raise InteractionValidationError("show_id must be at most 32 characters")
         title = self.repository.get_title(normalized)
         if title is None:
-            raise InteractionNotFoundError(f"Catalog title not found: {normalized}")
+            raise InteractionTitleNotFoundError(f"Catalog title not found: {normalized}")
         return title
 
     @staticmethod
@@ -400,8 +414,8 @@ class InteractionService:
     @staticmethod
     def _normalize_rating(value: Decimal) -> Decimal:
         rating = Decimal(value)
-        if not rating.is_finite() or rating < 0 or rating > 10:
-            raise InteractionValidationError("rating must be between 0 and 10")
+        if not rating.is_finite() or rating < Decimal("0.5") or rating > 10:
+            raise InteractionValidationError("rating must be between 0.5 and 10")
         if (rating * 2) != (rating * 2).to_integral_value():
             raise InteractionValidationError("rating must use increments of 0.5")
         return rating.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
@@ -410,7 +424,7 @@ class InteractionService:
         try:
             self.repository.touch_session(session_id)
         except LookupError as error:
-            raise InteractionNotFoundError(f"Interaction session expired: {session_id}") from error
+            raise InteractionSessionNotFoundError(f"Interaction session expired: {session_id}") from error
 
     def _session_ttl_days(self) -> int:
         value = int(getattr(self.settings, "interaction_session_ttl_days", 30))

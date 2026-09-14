@@ -1,7 +1,9 @@
 // Cookie-session client for the account API. No token is stored in JavaScript.
 
 import { authConfig, resolveApiBaseUrl } from "../config/appConfig";
-import { interactionSessionStore } from "./interactionStore";
+import { interactionSessionStore, promoteAuthenticatedInteraction } from "./interactionStore";
+
+export const AUTH_EVENT_STORAGE_KEY = authConfig.eventsStorageKey || "cinemind-auth-event";
 
 async function request(path, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -21,9 +23,12 @@ async function request(path, options = {}) {
     }
   }
   if (!response.ok) {
-    const detail = typeof payload?.detail === "string" ? payload.detail : `Authentication request failed with ${response.status}`;
+    const detail = typeof payload?.detail === "string"
+      ? payload.detail
+      : payload?.detail?.message || `Authentication request failed with ${response.status}`;
     const error = new Error(detail);
     error.status = response.status;
+    error.code = payload?.detail?.code || payload?.code;
     throw error;
   }
   return payload;
@@ -48,15 +53,18 @@ export async function getCurrentUser() {
   }
 }
 
-export function login({ identifier, password }) {
-  return request("/login", {
+export async function login({ identifier, password }) {
+  const result = await request("/login", {
     method: "POST",
     body: JSON.stringify({ identifier, password, ...interactionSessionPayload() })
   });
+  promoteAuthenticatedInteraction(result?.user?.user_id, result?.interaction_session_id);
+  broadcastAuthEvent("login");
+  return result;
 }
 
-export function register({ email, username, displayName, password }) {
-  return request("/register", {
+export async function register({ email, username, displayName, password }) {
+  const result = await request("/register", {
     method: "POST",
     body: JSON.stringify({
       email,
@@ -66,22 +74,40 @@ export function register({ email, username, displayName, password }) {
       ...interactionSessionPayload()
     })
   });
+  promoteAuthenticatedInteraction(result?.user?.user_id, result?.interaction_session_id);
+  broadcastAuthEvent("login");
+  return result;
 }
 
-export function logout() {
+export async function logout() {
   const sessionId = interactionSessionStore.read();
   const sessionToken = interactionSessionStore.readToken();
-  return request("/logout", {
+  const result = await request("/logout", {
     method: "POST",
     body: JSON.stringify({
       interaction_session_id: sessionId,
       interaction_session_token: sessionToken
     })
   });
+  broadcastAuthEvent("logout");
+  return result;
 }
 
-export function logoutAll() {
-  return request("/logout-all", { method: "POST" });
+export async function logoutAll() {
+  const result = await request("/logout-all", { method: "POST" });
+  broadcastAuthEvent("logout");
+  return result;
+}
+
+function broadcastAuthEvent(type) {
+  try {
+    const eventId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    window.localStorage.setItem(AUTH_EVENT_STORAGE_KEY, JSON.stringify({ type, eventId, occurredAt: Date.now() }));
+  } catch {
+    // Storage is optional; the current tab still completes its auth flow.
+  }
 }
 
 function currentReturnTo() {

@@ -46,6 +46,7 @@ class CatalogSummaryResponse(BaseModel):
     tv_shows: int
     public_posters: int
     fallback_posters: int
+    source_checksum_sha256: str | None = None
 
 
 class ReadinessResponse(BaseModel):

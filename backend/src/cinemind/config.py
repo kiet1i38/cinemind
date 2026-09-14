@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from functools import lru_cache
+import ipaddress
 import os
 from pathlib import Path
 
@@ -18,6 +19,17 @@ def _int_from_environment(name: str, default: int) -> int:
         return int(value)
     except ValueError as error:
         raise ValueError(f"{name} must be an integer") from error
+
+
+def _float_from_environment(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    try:
+        return float(value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be a number") from error
 
 
 def _list_from_environment(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -79,6 +91,10 @@ class Settings:
     reset_enabled: bool
     full_reset_enabled: bool
     interaction_session_ttl_days: int = 30
+    trusted_proxy_networks: tuple[str, ...] = ("127.0.0.1/32", "::1/128")
+    catalog_min_valid_ratio: float = 0.95
+    catalog_min_valid_records: int = 1
+    catalog_max_error_issues: int = 0
 
     def __post_init__(self) -> None:
         """Reject unsafe or internally inconsistent runtime limits early."""
@@ -98,6 +114,7 @@ class Settings:
             "auth_rate_limit_max_attempts": self.auth_rate_limit_max_attempts,
             "interaction_rate_limit_window_seconds": self.interaction_rate_limit_window_seconds,
             "interaction_rate_limit_max_attempts": self.interaction_rate_limit_max_attempts,
+            "catalog_min_valid_records": self.catalog_min_valid_records,
         }
         invalid = [name for name, value in positive_limits.items() if value < 1]
         if invalid:
@@ -110,6 +127,15 @@ class Settings:
             raise ValueError("auth_password_iterations must be at least 10000")
         if self.auth_session_ttl_days > 365:
             raise ValueError("auth_session_ttl_days must not exceed 365")
+        if not 0 < self.catalog_min_valid_ratio <= 1:
+            raise ValueError("catalog_min_valid_ratio must be greater than 0 and at most 1")
+        if self.catalog_max_error_issues < 0:
+            raise ValueError("catalog_max_error_issues must be non-negative")
+        for network in self.trusted_proxy_networks:
+            try:
+                ipaddress.ip_network(network, strict=False)
+            except ValueError as error:
+                raise ValueError(f"trusted_proxy_networks contains an invalid network: {network}") from error
 
 
 @lru_cache(maxsize=1)
@@ -199,4 +225,10 @@ def get_settings() -> Settings:
         # explicitly opt in. A missing secret never exposes the endpoint.
         reset_enabled=_bool_from_environment("RESET_ENABLED", environment != "production"),
         full_reset_enabled=_bool_from_environment("FULL_RESET_ENABLED", False),
+        trusted_proxy_networks=_list_from_environment(
+            "TRUSTED_PROXY_NETWORKS", ("127.0.0.1/32", "::1/128")
+        ),
+        catalog_min_valid_ratio=_float_from_environment("CATALOG_MIN_VALID_RATIO", 0.95),
+        catalog_min_valid_records=_int_from_environment("CATALOG_MIN_VALID_RECORDS", 1),
+        catalog_max_error_issues=_int_from_environment("CATALOG_MAX_ERROR_ISSUES", 0),
     )

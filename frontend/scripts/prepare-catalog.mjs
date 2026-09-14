@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { Resolver } from "node:dns/promises";
 import { Agent, request as httpsRequest } from "node:https";
 import { dirname, resolve } from "node:path";
@@ -780,12 +781,19 @@ for (let index = 0; index < pendingRows.length; index += effectiveBatchSize) {
 
 if (!pendingRows.length) await writePosterCache(posterMap);
 const catalog = rows.map((row) => normalizeRow(row, posterMap.get(row.show_id) || null));
+const catalogJson = JSON.stringify(catalog);
+const manifestPath = resolve(frontendDir, catalogConfig.manifestPath);
 await mkdir(generatedPosterDir, { recursive: true });
 for (let index = 0; index < rows.length; index += 128) {
   const batch = rows.slice(index, index + 128);
   await Promise.all(batch.map((row) => writeFile(resolve(generatedPosterDir, generatedPosterFileName(row.show_id)), generatedPosterSvg(row), "utf8")));
 }
-await writeFile(outputPath, JSON.stringify(catalog), "utf8");
+await writeFile(outputPath, catalogJson, "utf8");
+await writeFile(manifestPath, JSON.stringify({
+  version: 1,
+  total: catalog.length,
+  sha256: createHash("sha256").update(catalogJson, "utf8").digest("hex")
+}), "utf8");
 console.log(`Prepared ${catalog.length} catalog records at ${outputPath}`);
 console.log(`Attached ${catalog.filter((record) => record.posterKind === "public").length} public poster URLs to the catalog`);
 console.log(`Generated ${catalog.filter((record) => record.posterKind === "generated").length} data-driven local poster fallbacks`);

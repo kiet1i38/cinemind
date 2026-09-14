@@ -14,19 +14,18 @@ const ratingOptions = Array.from(
 const starValues = Array.from({ length: Math.round(signalConfig.rating.max) }, (_, index) => index + 1);
 
 function ratingLabel(value, language) {
-  if (value === 0) return translate(language, "ratingNone");
   return translate(language, "ratingStars", { value: value.toFixed(1) });
 }
 
 function StarRatingPicker({ value, language, onChange, disabled, error }) {
   const selected = Number(value);
-  const selectedIndex = selected > 0 ? ratingOptions.indexOf(selected) + 1 : 0;
-  const choices = [0, ...ratingOptions];
+  const selectedIndex = selected > 0 ? ratingOptions.indexOf(selected) : -1;
+  const choices = ratingOptions;
 
   const handleKeyDown = (event) => {
     const focusedValue = Number(event.target?.dataset?.ratingValue);
-    const focusedIndex = Number.isFinite(focusedValue) ? ratingOptions.indexOf(focusedValue) + 1 : 0;
-    const currentIndex = focusedIndex > 0 ? focusedIndex : (selectedIndex >= 0 ? selectedIndex : 0);
+    const focusedIndex = Number.isFinite(focusedValue) ? ratingOptions.indexOf(focusedValue) : -1;
+    const currentIndex = focusedIndex >= 0 ? focusedIndex : (selectedIndex >= 0 ? selectedIndex : 0);
     let nextIndex = currentIndex;
     if (event.key === "ArrowRight" || event.key === "ArrowUp") nextIndex = Math.min(choices.length - 1, currentIndex + 1);
     if (event.key === "ArrowLeft" || event.key === "ArrowDown") nextIndex = Math.max(0, currentIndex - 1);
@@ -36,24 +35,19 @@ function StarRatingPicker({ value, language, onChange, disabled, error }) {
       event.preventDefault();
       onChange(String(choices[nextIndex]));
       const nextValue = choices[nextIndex];
-      const focusId = nextIndex === 0
-        ? "rating-none"
-        : Number.isInteger(nextValue)
-          ? `rating-star-${nextValue - 1}-full`
-          : `rating-star-${Math.floor(nextValue)}`;
+      const focusId = Number.isInteger(nextValue)
+        ? `rating-star-${nextValue - 1}-full`
+        : `rating-star-${Math.floor(nextValue)}`;
       document.getElementById(focusId)?.focus();
     }
   };
 
   return (
     <div className="rating-star-picker" role="radiogroup" aria-label={translate(language, "ratingLabel")} aria-invalid={error ? "true" : "false"} aria-describedby="rating-helper rating-error" onKeyDown={handleKeyDown}>
-      <button id="rating-none" type="button" className="rating-none-hit" role="radio" aria-checked={selectedIndex === 0} aria-label={ratingLabel(0, language)} tabIndex={selectedIndex === 0 ? 0 : -1} disabled={disabled} onClick={() => onChange("0")}>
-        {translate(language, "ratingNone")}
-      </button>
       {starValues.map((fullValue, index) => {
         const halfValue = fullValue - 0.5;
-        const halfChoiceIndex = ratingOptions.indexOf(halfValue) + 1;
-        const fullChoiceIndex = ratingOptions.indexOf(fullValue) + 1;
+        const halfChoiceIndex = ratingOptions.indexOf(halfValue);
+        const fullChoiceIndex = ratingOptions.indexOf(fullValue);
         const fillWidth = selected >= fullValue ? "100%" : selected >= halfValue ? "50%" : "0%";
         return (
           <span key={fullValue} className="rating-star-cell">
@@ -61,8 +55,8 @@ function StarRatingPicker({ value, language, onChange, disabled, error }) {
               <Star size={24} weight="regular" />
               <span className="rating-star-fill" style={{ width: fillWidth }}><Star size={24} weight="fill" /></span>
             </span>
-            <button id={`rating-star-${index}`} type="button" className="rating-star-hit half" role="radio" aria-checked={selected === halfValue} aria-label={ratingLabel(halfValue, language)} tabIndex={selectedIndex === halfChoiceIndex ? 0 : -1} disabled={disabled} onClick={() => onChange(String(halfValue))} data-rating-value={halfValue}><span className="sr-only">{ratingLabel(halfValue, language)}</span></button>
-            <button id={`rating-star-${index}-full`} type="button" className="rating-star-hit full" role="radio" aria-checked={selected === fullValue} aria-label={ratingLabel(fullValue, language)} tabIndex={selectedIndex === fullChoiceIndex ? 0 : -1} disabled={disabled} onClick={() => onChange(String(fullValue))} data-rating-value={fullValue}><span className="sr-only">{ratingLabel(fullValue, language)}</span></button>
+            <button id={`rating-star-${index}`} type="button" className="rating-star-hit half" role="radio" aria-checked={selected === halfValue} aria-label={ratingLabel(halfValue, language)} tabIndex={selectedIndex === halfChoiceIndex || (selectedIndex < 0 && halfChoiceIndex === 0) ? 0 : -1} disabled={disabled} onClick={() => onChange(String(halfValue))} data-rating-value={halfValue}><span className="sr-only">{ratingLabel(halfValue, language)}</span></button>
+            <button id={`rating-star-${index}-full`} type="button" className="rating-star-hit full" role="radio" aria-checked={selected === fullValue} aria-label={ratingLabel(fullValue, language)} tabIndex={selectedIndex === fullChoiceIndex || (selectedIndex < 0 && fullChoiceIndex === 0) ? 0 : -1} disabled={disabled} onClick={() => onChange(String(fullValue))} data-rating-value={fullValue}><span className="sr-only">{ratingLabel(fullValue, language)}</span></button>
           </span>
         );
       })}
@@ -85,7 +79,7 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
     setWatchDuration(existingSignal ? String(existingSignal.watchMinutes) : "");
     setErrors({});
     setIsSaving(false);
-  }, [existingSignal, item?.id]);
+  }, [item?.id]);
 
   if (!item) return null;
 

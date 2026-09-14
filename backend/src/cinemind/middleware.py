@@ -87,10 +87,12 @@ class InteractionRateLimitMiddleware:
         window_seconds: int,
         trust_proxy_headers: bool = False,
         auth_cookie_name: str = "cinemind_auth",
+        trusted_proxy_networks: tuple[str, ...] = (),
     ):
         self.app = app
         self.trust_proxy_headers = trust_proxy_headers
         self.auth_cookie_name = auth_cookie_name
+        self.trusted_proxy_networks = trusted_proxy_networks
         self.session_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
         self.client_limiter = SlidingWindowRateLimiter(
             max(max_attempts * 5, max_attempts), window_seconds
@@ -112,6 +114,7 @@ class InteractionRateLimitMiddleware:
             _scope_direct_client(scope),
             headers,
             trust_proxy_headers=self.trust_proxy_headers,
+            trusted_proxy_networks=self.trusted_proxy_networks,
         )
         principal = _interaction_principal(
             headers,

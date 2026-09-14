@@ -93,5 +93,5 @@ export function openTitleRoute(id) {
 }
 
 export function closeTitleRoute() {
-  if (window.location.hash) window.history.pushState({}, "", window.location.pathname + window.location.search);
+  if (window.location.hash) window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
 }

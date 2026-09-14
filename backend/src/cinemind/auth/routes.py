@@ -25,7 +25,7 @@ from cinemind.auth.service import (
 )
 from cinemind.config import Settings, get_settings
 from cinemind.db.connection import connection_scope
-from cinemind.security import SlidingWindowRateLimiter
+from cinemind.security import SlidingWindowRateLimiter, is_trusted_proxy
 from fastapi import HTTPException
 
 
@@ -225,7 +225,10 @@ def _request_is_secure(request: Request, settings: Settings) -> bool:
 
     if request.url.scheme == "https":
         return True
-    if not settings.trust_proxy_headers:
+    if not settings.trust_proxy_headers or not is_trusted_proxy(
+        request.client.host if request.client else None,
+        settings.trusted_proxy_networks,
+    ):
         return False
     forwarded = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().casefold()
     return forwarded == "https"
@@ -262,6 +265,7 @@ def client_address_from_request(request: Request, settings: Settings) -> str:
         request.client.host if request.client else None,
         {key.casefold(): value for key, value in request.headers.items()},
         trust_proxy_headers=settings.trust_proxy_headers,
+        trusted_proxy_networks=settings.trusted_proxy_networks,
     )
 
 

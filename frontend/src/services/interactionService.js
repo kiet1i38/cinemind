@@ -7,6 +7,7 @@ import {
   createMutationId,
   getInteractionOwner,
   interactionSessionStore,
+  pendingInteractionsPersisted,
   queuePendingSearch,
   queuePendingSignal,
   readPendingInteractions
@@ -53,8 +54,12 @@ async function request(path, options = {}) {
   }
 
   if (!response.ok) {
-    const error = new Error(payload?.detail || `Interaction request failed with ${response.status}`);
+    const detail = typeof payload?.detail === "string"
+      ? payload.detail
+      : payload?.detail?.message || `Interaction request failed with ${response.status}`;
+    const error = new Error(detail);
     error.status = response.status;
+    error.code = payload?.detail?.code || payload?.code;
     throw error;
   }
   return payload;
@@ -95,7 +100,7 @@ export async function getInteractionState(metadata = {}) {
     assertOwner(owner);
     return result;
   } catch (error) {
-    if (error.status !== 404 && error.status !== 401) throw error;
+    if (error.code !== "SESSION_NOT_FOUND") throw error;
     assertOwner(owner);
     interactionSessionStore.write(null);
     sessionId = await ensureInteractionSession(metadata);
@@ -105,7 +110,7 @@ export async function getInteractionState(metadata = {}) {
       assertOwner(owner);
       return result;
     } catch (retryError) {
-      if (retryError.status === 401) markAuthRequired(retryError);
+      if (retryError.code === "AUTH_REQUIRED" || retryError.status === 401) markAuthRequired(retryError);
       throw retryError;
     }
   }
@@ -116,6 +121,7 @@ export async function recordSearchEvent({ query, resultCount, filters, ...metada
     { query, resultCount, filters },
     metadata.mutationId || createMutationId()
   );
+  const pendingPersisted = pendingInteractionsPersisted();
   const owner = getInteractionOwner();
   return enqueueMutation(`${owner}:search:${mutationId}`, async () => {
     try {
@@ -132,7 +138,8 @@ export async function recordSearchEvent({ query, resultCount, filters, ...metada
       acknowledgePendingSearch(mutationId);
       return result;
     } catch (error) {
-      if (!isRetryableInteractionError(error)) acknowledgePendingSearch(mutationId);
+      error.pendingPersisted = pendingPersisted;
+      if (!shouldKeepPendingInteraction(error)) acknowledgePendingSearch(mutationId);
       throw error;
     }
   });
@@ -140,6 +147,7 @@ export async function recordSearchEvent({ query, resultCount, filters, ...metada
 
 export async function submitSignal({ record, rating, watchMinutes, ...metadata }) {
   const mutationId = queuePendingSignal(record.id, { rating, watchMinutes }, metadata.mutationId);
+  const pendingPersisted = pendingInteractionsPersisted();
   const owner = getInteractionOwner();
   return enqueueMutation(`${owner}:signal:${record.id}`, async () => {
     try {
@@ -156,17 +164,29 @@ export async function submitSignal({ record, rating, watchMinutes, ...metadata }
       acknowledgePendingSignal(record.id, mutationId);
       return result;
     } catch (error) {
-      if (!isRetryableInteractionError(error)) acknowledgePendingSignal(record.id, mutationId);
+      error.pendingPersisted = pendingPersisted;
+      if (!shouldKeepPendingInteraction(error)) acknowledgePendingSignal(record.id, mutationId);
       throw error;
     }
   });
 }
 
 export function isRetryableInteractionError(error) {
-  // Keep the outbox for transport/session failures, but discard payloads the
-  // API has definitively rejected.  Retrying 409/422 forever would leave a
-  // stale mutation in localStorage and could block logout indefinitely.
-  return !error?.status || [401, 404, 408, 429].includes(error.status) || error.status >= 500;
+  // Only a confirmed expired session may trigger a fresh session. A title 404
+  // or an expired auth cookie is a definitive response and must reach the UI.
+  return !error?.status
+    || error.code === "SESSION_NOT_FOUND"
+    || [408, 429].includes(error.status)
+    || error.status >= 500;
+}
+
+function shouldKeepPendingInteraction(error) {
+  // Auth-required payloads belong to the signed-in owner. Keep them paused so
+  // re-authentication can retry them, without presenting the current save as
+  // a successful local-only write.
+  return isRetryableInteractionError(error)
+    || error?.code === "AUTH_REQUIRED"
+    || error?.status === 401;
 }
 
 async function withFreshInteractionSession(metadata, operation) {
@@ -176,7 +196,7 @@ async function withFreshInteractionSession(metadata, operation) {
   try {
     return await operation(sessionId);
   } catch (error) {
-    if (error.status !== 401 && error.status !== 404) throw error;
+    if (error.code !== "SESSION_NOT_FOUND") throw error;
     assertOwner(owner);
     interactionSessionStore.write(null);
     const freshSessionId = await ensureInteractionSession(metadata);
@@ -184,7 +204,7 @@ async function withFreshInteractionSession(metadata, operation) {
     try {
       return await operation(freshSessionId);
     } catch (retryError) {
-      if (retryError.status === 401) markAuthRequired(retryError);
+      if (retryError.code === "AUTH_REQUIRED" || retryError.status === 401) markAuthRequired(retryError);
       throw retryError;
     }
   }

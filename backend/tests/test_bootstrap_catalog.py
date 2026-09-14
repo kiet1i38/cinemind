@@ -63,6 +63,32 @@ class _FakeCatalogRepository:
 
 
 class BootstrapCatalogTests(unittest.TestCase):
+    def test_partial_seed_is_rejected_before_catalog_replacement(self):
+        settings = SimpleNamespace(
+            catalog_min_valid_ratio=0.95,
+            catalog_min_valid_records=1,
+            catalog_max_error_issues=0,
+        )
+        load_result = SimpleNamespace(records=[object(), object()], issues=(), rows_read=10)
+
+        with self.assertRaisesRegex(
+            bootstrap_catalog.CatalogSafetyError,
+            "safety threshold rejected replacement",
+        ):
+            bootstrap_catalog.ensure_safe_catalog_load(load_result, settings)
+
+    def test_seed_with_error_issue_is_rejected_even_when_ratio_is_high(self):
+        settings = SimpleNamespace(
+            catalog_min_valid_ratio=0.95,
+            catalog_min_valid_records=1,
+            catalog_max_error_issues=0,
+        )
+        issue = SimpleNamespace(severity="error")
+        load_result = SimpleNamespace(records=[object()] * 99, issues=(issue,), rows_read=100)
+
+        with self.assertRaises(bootstrap_catalog.CatalogSafetyError):
+            bootstrap_catalog.ensure_safe_catalog_load(load_result, settings)
+
     def test_failed_replacement_does_not_publish_checksum_and_retries_next_run(self):
         source_id = uuid4()
         ops = _FakeOpsRepository(source_id)

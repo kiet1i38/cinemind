@@ -5,6 +5,7 @@ flag.md
 hướng dẫn.html
 now.html
 QA-REPORT-*.md
+qa-*.js
 # Local secrets and environment files
 **/.env
 **/.env.*

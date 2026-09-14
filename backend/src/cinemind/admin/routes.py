@@ -112,4 +112,5 @@ def _admin_client_address(request: Request | None, settings: Settings) -> str:
         request.client.host if request.client else None,
         headers,
         trust_proxy_headers=settings.trust_proxy_headers,
+        trusted_proxy_networks=settings.trusted_proxy_networks,
     )

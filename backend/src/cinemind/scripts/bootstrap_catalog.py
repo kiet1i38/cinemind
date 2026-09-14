@@ -18,6 +18,10 @@ from cinemind.ops.models import DataQualityIssue, DatasetSource
 from cinemind.ops.repository import OpsRepository
 
 
+class CatalogSafetyError(RuntimeError):
+    """Raised when a seed is too incomplete to replace the active catalog."""
+
+
 def bootstrap_catalog(settings: Settings) -> dict:
     """Migrate the database, load records and return an audit summary."""
 
@@ -86,8 +90,7 @@ def bootstrap_catalog(settings: Settings) -> dict:
                 )
             if load_error is not None:
                 raise load_error
-            if not load_result.records:
-                raise ValueError("Catalog contains no valid records")
+            ensure_safe_catalog_load(load_result, settings)
 
             with connection.transaction():
                 rows_loaded = catalog_repository.replace_catalog(
@@ -129,6 +132,30 @@ def bootstrap_catalog(settings: Settings) -> dict:
             "quality_issues": len(load_result.issues),
             "catalog_summary": summary,
         }
+
+
+def ensure_safe_catalog_load(load_result: CatalogLoadResult, settings: Settings) -> None:
+    """Reject partial seeds before replacement can deactivate missing titles."""
+
+    valid_records = len(load_result.records)
+    rows_read = max(0, int(load_result.rows_read))
+    valid_ratio = valid_records / rows_read if rows_read else 0.0
+    minimum_ratio = float(getattr(settings, "catalog_min_valid_ratio", 0.95))
+    minimum_records = max(1, int(getattr(settings, "catalog_min_valid_records", 1)))
+    maximum_errors = max(0, int(getattr(settings, "catalog_max_error_issues", 0)))
+    error_issues = sum(
+        1
+        for issue in getattr(load_result, "issues", ())
+        if str(getattr(issue, "severity", "")).casefold() == "error"
+    )
+    if valid_records < minimum_records or valid_ratio < minimum_ratio or error_issues > maximum_errors:
+        raise CatalogSafetyError(
+            "Catalog safety threshold rejected replacement: "
+            f"{valid_records}/{rows_read} valid records ({valid_ratio:.2%}), "
+            f"{error_issues} error issues; required at least "
+            f"{minimum_records} records, {minimum_ratio:.2%} valid, and "
+            f"at most {maximum_errors} error issues"
+        )
 
 
 def build_source(settings: Settings, checksum: str) -> DatasetSource:

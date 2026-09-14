@@ -96,26 +96,64 @@ def client_address_from_headers(
     headers: dict[str, str],
     *,
     trust_proxy_headers: bool,
+    trusted_proxy_networks: tuple[str, ...] = (),
 ) -> str:
     """Return a stable, validated client address for request-scoped limits.
 
     Forwarded headers are attacker-controlled unless the deployment explicitly
-    opts in.  Even when enabled, only the first valid address is accepted so a
-    malformed header cannot collapse all traffic into one shared bucket.
+    opts in.  When enabled, walk the chain from the trusted proxy inward and
+    use the first valid address outside the trusted proxy networks.  This keeps
+    append-style proxy headers from allowing a client-supplied leftmost value
+    to rotate the limiter bucket.
     """
 
-    if trust_proxy_headers:
+    if trust_proxy_headers and is_trusted_proxy(direct_address, trusted_proxy_networks):
+        trusted_networks = tuple(trusted_proxy_networks)
         forwarded = headers.get("x-forwarded-for", "")
-        for candidate in forwarded.split(","):
+        for candidate in reversed(forwarded.split(",")):
             normalized = _normalize_ip(candidate.strip())
-            if normalized:
-                return normalized
+            if not normalized:
+                continue
+            address = ipaddress.ip_address(normalized)
+            if any(
+                address in ipaddress.ip_network(network, strict=False)
+                for network in trusted_networks
+                if _valid_network(network)
+            ):
+                continue
+            return normalized
 
         forwarded_for = _normalize_ip(headers.get("x-real-ip", ""))
-        if forwarded_for:
+        if forwarded_for and not any(
+            ipaddress.ip_address(forwarded_for) in ipaddress.ip_network(network, strict=False)
+            for network in trusted_networks
+            if _valid_network(network)
+        ):
             return forwarded_for
 
     return _normalize_ip(direct_address or "") or "unknown"
+
+
+def is_trusted_proxy(
+    direct_address: str | None,
+    trusted_proxy_networks: tuple[str, ...] = (),
+) -> bool:
+    """Return whether forwarded headers came from an explicitly trusted peer."""
+
+    normalized_peer = _normalize_ip(direct_address or "")
+    if not normalized_peer:
+        return False
+
+    peer = ipaddress.ip_address(normalized_peer)
+    for network in trusted_proxy_networks:
+        try:
+            if peer in ipaddress.ip_network(network, strict=False):
+                return True
+        except ValueError:
+            # Settings validates configured networks at startup. Ignore a bad
+            # value here as a fail-closed guard for direct callers and tests.
+            continue
+    return False
 
 
 def _normalize_ip(value: str) -> str | None:
@@ -125,3 +163,13 @@ def _normalize_ip(value: str) -> str | None:
         return str(ipaddress.ip_address(value))
     except ValueError:
         return None
+
+
+def _valid_network(value: str) -> bool:
+    """Return whether one configured proxy network can be parsed safely."""
+
+    try:
+        ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        return False
+    return True

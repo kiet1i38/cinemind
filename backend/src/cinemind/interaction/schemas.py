@@ -153,11 +153,11 @@ class InteractionStateResponse(BaseModel):
 
 
 def _validate_rating(value: Decimal) -> Decimal:
-    """Accept finite ratings from 0 to 10 in exact half-point steps."""
+    """Accept finite ratings from 0.5 to 10 in exact half-point steps."""
 
     rating = Decimal(value)
-    if not rating.is_finite() or rating < Decimal("0") or rating > Decimal("10"):
-        raise ValueError("rating must be between 0 and 10")
+    if not rating.is_finite() or rating < Decimal("0.5") or rating > Decimal("10"):
+        raise ValueError("rating must be between 0.5 and 10")
     if (rating * 2) != (rating * 2).to_integral_value():
         raise ValueError("rating must use increments of 0.5")
     return rating.quantize(Decimal("0.1"))

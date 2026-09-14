@@ -11,6 +11,7 @@ const signalStoreBase = createJsonStore(appConfig.signals.storageKey, {});
 const outboxStoreBase = createJsonStore(interactionConfig.outboxStorageKey, () => ({ signals: {}, searches: {} }));
 const legacyFavoriteStore = createJsonStore("cinemind-favorites", null);
 const legacyWatchlistStore = createJsonStore("cinemind-watchlist", null);
+let lastPendingWritePersisted = true;
 
 // Remove obsolete preference data as soon as the new bundle loads.
 legacyFavoriteStore.remove();
@@ -33,11 +34,11 @@ function writeScopedValueForOwner(store, owner, value) {
   const raw = store.read();
   const owners = raw && typeof raw === "object" && !Array.isArray(raw) && raw.owners ? { ...raw.owners } : {};
   owners[owner] = value;
-  store.write({ version: 2, owners });
+  return store.write({ version: 2, owners });
 }
 
 function writeScopedValue(store, value) {
-  writeScopedValueForOwner(store, getInteractionOwner(), value);
+  return writeScopedValueForOwner(store, getInteractionOwner(), value);
 }
 
 function removeScopedValue(store) {
@@ -62,13 +63,30 @@ function isUuid(value) {
 
 function normalizeOutbox(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const signals = source.signals && typeof source.signals === "object" && !Array.isArray(source.signals) ? source.signals : {};
+  const searches = source.searches && typeof source.searches === "object" && !Array.isArray(source.searches) ? source.searches : {};
+  const now = Date.now();
+  const ttlMs = Number.isFinite(interactionConfig.pendingSearchTtlMs) && interactionConfig.pendingSearchTtlMs > 0
+    ? interactionConfig.pendingSearchTtlMs
+    : 86400000;
+  const maxItems = Number.isInteger(interactionConfig.pendingSearchMaxItems) && interactionConfig.pendingSearchMaxItems > 0
+    ? interactionConfig.pendingSearchMaxItems
+    : 100;
+  const retainedSearches = Object.entries(searches)
+    .filter(([, entry]) => entry && typeof entry === "object" && !Array.isArray(entry) && entry.mutationId)
+    .filter(([, entry]) => {
+      const queuedAt = Date.parse(entry.queuedAt || "");
+      return !Number.isFinite(queuedAt) || now - queuedAt <= ttlMs;
+    })
+    .sort(([, left], [, right]) => Date.parse(right.queuedAt || "") - Date.parse(left.queuedAt || ""))
+    .slice(0, maxItems);
   return {
-    signals: source.signals && typeof source.signals === "object" && !Array.isArray(source.signals) ? source.signals : {},
-    searches: source.searches && typeof source.searches === "object" && !Array.isArray(source.searches) ? source.searches : {}
+    signals,
+    searches: Object.fromEntries(retainedSearches)
   };
 }
 
-export function setInteractionOwner(userId) {
+export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null } = {}) {
   const nextOwner = userId ? String(userId) : "anonymous";
   const previousOwner = getInteractionOwner();
   if (previousOwner === nextOwner) return { previousOwner, nextOwner, changed: false };
@@ -78,30 +96,32 @@ export function setInteractionOwner(userId) {
     const anonymousToken = ownerScopedValue(sessionTokenStoreBase, previousOwner, null);
     const accountSession = ownerScopedValue(sessionStoreBase, nextOwner, null);
     const accountToken = ownerScopedValue(sessionTokenStoreBase, nextOwner, null);
-    // Login/registration attaches the anonymous session server-side. Prefer
-    // its proof even if an older account namespace already exists.
-    if (isUuid(anonymousSession) || !isUuid(accountSession)) {
+    const canMergeAnonymousSession = isUuid(acceptedAnonymousSessionId)
+      && isUuid(anonymousSession)
+      && String(acceptedAnonymousSessionId).toLowerCase() === String(anonymousSession).toLowerCase();
+    if (canMergeAnonymousSession) {
       writeScopedValueForOwner(sessionStoreBase, nextOwner, isUuid(anonymousSession) ? String(anonymousSession).toLowerCase() : accountSession);
+      if (typeof anonymousToken === "string" && anonymousToken.trim().length >= 20 && anonymousToken.trim().length <= 256) {
+        writeScopedValueForOwner(sessionTokenStoreBase, nextOwner, anonymousToken.trim());
+      } else if (accountToken !== null && accountToken !== undefined) {
+        writeScopedValueForOwner(sessionTokenStoreBase, nextOwner, accountToken);
+      }
+      const anonymousSignals = ownerScopedValue(signalStoreBase, previousOwner, {});
+      const accountSignals = ownerScopedValue(signalStoreBase, nextOwner, {});
+      writeScopedValueForOwner(signalStoreBase, nextOwner, {
+        ...(accountSignals && typeof accountSignals === "object" && !Array.isArray(accountSignals) ? accountSignals : {}),
+        ...(anonymousSignals && typeof anonymousSignals === "object" && !Array.isArray(anonymousSignals) ? anonymousSignals : {})
+      });
+      const anonymousOutbox = normalizeOutbox(ownerScopedValue(outboxStoreBase, previousOwner, {}));
+      const accountOutbox = normalizeOutbox(ownerScopedValue(outboxStoreBase, nextOwner, {}));
+      writeScopedValueForOwner(outboxStoreBase, nextOwner, {
+        signals: { ...accountOutbox.signals, ...anonymousOutbox.signals },
+        searches: { ...accountOutbox.searches, ...anonymousOutbox.searches }
+      });
     }
-    if (typeof anonymousToken === "string" && anonymousToken.trim().length >= 20 && anonymousToken.trim().length <= 256) {
-      writeScopedValueForOwner(sessionTokenStoreBase, nextOwner, anonymousToken.trim());
-    } else if (accountToken !== null && accountToken !== undefined) {
-      writeScopedValueForOwner(sessionTokenStoreBase, nextOwner, accountToken);
-    }
-    const anonymousSignals = ownerScopedValue(signalStoreBase, previousOwner, {});
-    const accountSignals = ownerScopedValue(signalStoreBase, nextOwner, {});
-    writeScopedValueForOwner(signalStoreBase, nextOwner, {
-      ...(accountSignals && typeof accountSignals === "object" && !Array.isArray(accountSignals) ? accountSignals : {}),
-      ...(anonymousSignals && typeof anonymousSignals === "object" && !Array.isArray(anonymousSignals) ? anonymousSignals : {})
-    });
-    const anonymousOutbox = normalizeOutbox(ownerScopedValue(outboxStoreBase, previousOwner, {}));
-    const accountOutbox = normalizeOutbox(ownerScopedValue(outboxStoreBase, nextOwner, {}));
-    writeScopedValueForOwner(outboxStoreBase, nextOwner, {
-      signals: { ...accountOutbox.signals, ...anonymousOutbox.signals },
-      searches: { ...accountOutbox.searches, ...anonymousOutbox.searches }
-    });
-    // The anonymous namespace is now attached server-side. Remove its local
-    // copy so a later logout or another account cannot inherit private data.
+    // Anonymous data is copied only when the server explicitly confirms the
+    // exact session id. Otherwise discard it instead of offering it to a
+    // different account after a cross-tab logout or a failed attach.
     removeScopedValueForOwner(sessionStoreBase, previousOwner);
     removeScopedValueForOwner(sessionTokenStoreBase, previousOwner);
     removeScopedValueForOwner(signalStoreBase, previousOwner);
@@ -110,6 +130,10 @@ export function setInteractionOwner(userId) {
 
   ownerStoreBase.write(nextOwner);
   return { previousOwner, nextOwner, changed: true };
+}
+
+export function promoteAuthenticatedInteraction(userId, acceptedAnonymousSessionId) {
+  return setInteractionOwner(userId, { acceptedAnonymousSessionId });
 }
 
 export function readOwnerScopedSignalState() {
@@ -170,7 +194,12 @@ export function readPendingInteractions() {
 }
 
 function writePendingInteractions(value) {
-  writeScopedValue(outboxStoreBase, normalizeOutbox(value));
+  lastPendingWritePersisted = writeScopedValue(outboxStoreBase, normalizeOutbox(value));
+  return lastPendingWritePersisted;
+}
+
+export function pendingInteractionsPersisted() {
+  return lastPendingWritePersisted;
 }
 
 export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId = createMutationId()) {
@@ -225,14 +254,24 @@ export function mergeInteractionState(remoteState, localState = {}) {
 }
 
 function isValidRating(value) {
-  return Number.isFinite(value) && value >= 0 && value <= 10 && Math.abs(value * 2 - Math.round(value * 2)) < Number.EPSILON * 100;
+  return Number.isFinite(value) && value >= 0.5 && value <= 10 && Math.abs(value * 2 - Math.round(value * 2)) < Number.EPSILON * 100;
 }
 
-export function clearInteractionState({ preserveSession = false, clearPending = true, resetOwner = true } = {}) {
-  if (!preserveSession) interactionSessionStore.write(null);
-  removeOwnerScopedSignalState();
-  if (clearPending) removeScopedValue(outboxStoreBase);
+export function clearInteractionState({ preserveSession = false, clearPending = true, resetOwner = true, ownerId = null } = {}) {
+  const owner = ownerId ? String(ownerId) : getInteractionOwner();
+  if (!preserveSession) {
+    removeScopedValueForOwner(sessionStoreBase, owner);
+    removeScopedValueForOwner(sessionTokenStoreBase, owner);
+  }
+  removeScopedValueForOwner(signalStoreBase, owner);
+  if (clearPending) removeScopedValueForOwner(outboxStoreBase, owner);
   legacyFavoriteStore.remove();
   legacyWatchlistStore.remove();
+  if (resetOwner && owner !== "anonymous") {
+    removeScopedValueForOwner(sessionStoreBase, "anonymous");
+    removeScopedValueForOwner(sessionTokenStoreBase, "anonymous");
+    removeScopedValueForOwner(signalStoreBase, "anonymous");
+    if (clearPending) removeScopedValueForOwner(outboxStoreBase, "anonymous");
+  }
   if (resetOwner) ownerStoreBase.write("anonymous");
 }
