@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from cinemind.db.locks import acquire_write_lock
+from cinemind.db.locks import acquire_maintenance_lock
 
 
 _SESSION_TABLES = (
@@ -32,7 +32,7 @@ class ResetRepository:
     def acquire_write_lock(self) -> None:
         """Serialize reset deletes with every application write."""
 
-        acquire_write_lock(self.connection)
+        acquire_maintenance_lock(self.connection)
 
     def delete_session_interactions(self, session_id: UUID) -> dict[str, int]:
         """Delete all interaction rows belonging to one anonymous session."""

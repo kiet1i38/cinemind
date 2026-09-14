@@ -105,30 +105,132 @@ class CatalogRepository:
         source_id,
         source_checksum: str,
     ) -> bool:
-        """Verify that the active catalog still represents this seed file.
+        """Verify every active catalog value and relation against the seed."""
 
-        A source checksum alone is not enough to justify skipping a bootstrap:
-        rows may have been removed or changed by a manual repair.  Compare the
-        active show-id set and the provenance columns before treating a source
-        as unchanged.
-        """
-
-        expected_ids = {record.show_id for record in records}
+        expected = {
+            record.show_id: self._integrity_projection(record, source_id, source_checksum)
+            for record in records
+        }
         rows = self.connection.execute(
             """
-            SELECT show_id, source_id, source_checksum_sha256
-            FROM catalog.titles
-            WHERE is_active = TRUE
+            SELECT
+                t.show_id,
+                t.source_id,
+                t.content_type,
+                t.title,
+                t.description,
+                t.date_added,
+                t.release_year,
+                t.content_rating,
+                t.movie_duration_min,
+                t.season_count,
+                t.duration_basis,
+                t.poster_provider,
+                t.poster_path,
+                t.poster_url,
+                t.poster_status,
+                t.source_checksum_sha256,
+                COALESCE((
+                    SELECT array_agg(g.genre_name ORDER BY g.genre_name)
+                    FROM catalog.title_genres g
+                    WHERE g.title_id = t.title_id
+                ), ARRAY[]::TEXT[]) AS genres,
+                COALESCE((
+                    SELECT array_agg(c.person_name ORDER BY c.cast_order, c.person_name)
+                    FROM catalog.title_cast c
+                    WHERE c.title_id = t.title_id
+                ), ARRAY[]::TEXT[]) AS cast,
+                COALESCE((
+                    SELECT array_agg(c.country_name ORDER BY c.country_name)
+                    FROM catalog.title_countries c
+                    WHERE c.title_id = t.title_id
+                ), ARRAY[]::TEXT[]) AS countries,
+                COALESCE((
+                    SELECT array_agg(d.director_name ORDER BY d.director_name)
+                    FROM catalog.title_directors d
+                    WHERE d.title_id = t.title_id
+                ), ARRAY[]::TEXT[]) AS directors
+            FROM catalog.titles t
+            WHERE t.is_active = TRUE
+            ORDER BY t.show_id
             """
         ).fetchall()
-        if len(rows) != len(expected_ids):
+        if len(rows) != len(expected):
             return False
-        return all(
-            row["show_id"] in expected_ids
-            and str(row["source_id"]).strip() == str(source_id).strip()
-            and str(row["source_checksum_sha256"] or "").strip() == str(source_checksum).strip()
-            for row in rows
-        )
+        for row in rows:
+            show_id = str(row.get("show_id") or "").strip()
+            if show_id not in expected:
+                return False
+            actual = {
+                "show_id": show_id,
+                "source_id": str(row.get("source_id") or "").strip(),
+                "content_type": row.get("content_type"),
+                "title": row.get("title"),
+                "description": row.get("description"),
+                "date_added": (
+                    row["date_added"].isoformat()
+                    if row.get("date_added") is not None
+                    else None
+                ),
+                "release_year": (
+                    int(row["release_year"])
+                    if row.get("release_year") is not None
+                    else None
+                ),
+                "content_rating": row.get("content_rating"),
+                "movie_duration_min": (
+                    int(row["movie_duration_min"])
+                    if row.get("movie_duration_min") is not None
+                    else None
+                ),
+                "season_count": (
+                    int(row["season_count"])
+                    if row.get("season_count") is not None
+                    else None
+                ),
+                "duration_basis": row.get("duration_basis"),
+                "poster_provider": row.get("poster_provider"),
+                "poster_path": row.get("poster_path"),
+                "poster_url": row.get("poster_url"),
+                "poster_status": row.get("poster_status"),
+                "source_checksum_sha256": str(
+                    row.get("source_checksum_sha256") or ""
+                ).strip(),
+                "genres": tuple(str(value) for value in (row.get("genres") or ())),
+                "cast": tuple(str(value) for value in (row.get("cast") or ())),
+                "countries": tuple(str(value) for value in (row.get("countries") or ())),
+                "directors": tuple(str(value) for value in (row.get("directors") or ())),
+            }
+            if actual != expected[show_id]:
+                return False
+        return True
+
+    @staticmethod
+    def _integrity_projection(record: CatalogRecord, source_id, source_checksum: str) -> dict:
+        """Build the canonical representation used by the bootstrap guard."""
+
+        return {
+            "show_id": record.show_id,
+            "source_id": str(source_id).strip(),
+            "content_type": record.content_type,
+            "title": record.title,
+            "description": record.description,
+            "date_added": record.date_added.isoformat() if record.date_added else None,
+            "release_year": record.release_year,
+            "content_rating": record.content_rating,
+            "movie_duration_min": record.movie_duration_min,
+            "season_count": record.season_count,
+            "duration_basis": record.duration_basis,
+            "poster_provider": record.poster_provider,
+            "poster_path": record.poster_path,
+            "poster_url": record.poster_url,
+            "poster_status": record.poster_status,
+            "source_checksum_sha256": str(source_checksum or "").strip(),
+            "genres": tuple(sorted(record.genres)),
+            "cast": tuple(record.cast),
+            "countries": tuple(sorted(record.countries)),
+            "directors": tuple(sorted(record.directors)),
+        }
 
     def list_titles(
         self,

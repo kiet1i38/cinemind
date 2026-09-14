@@ -114,6 +114,12 @@ export default function App() {
       setRatings(signalStore.read());
       setAuthStatus(user ? "authenticated" : "anonymous");
     };
+    const invalidateAuthRequest = () => {
+      authRevisionRef.current += 1;
+      authRequestRef.current?.controller?.abort();
+      authRequestRef.current = null;
+      authCheckQueuedRef.current = false;
+    };
     const scheduleAuthRetry = () => {
       if (cancelled || authRetryRef.current !== null) return;
       authRetryRef.current = window.setTimeout(() => {
@@ -121,17 +127,24 @@ export default function App() {
         checkAuth();
       }, 3000);
     };
-    const checkAuth = () => {
-      if (cancelled || authRequestRef.current) return;
+    let checkAuth;
+    checkAuth = () => {
+      if (cancelled) return;
+      if (authRequestRef.current) {
+        authCheckQueuedRef.current = true;
+        return;
+      }
+      const revision = authRevisionRef.current;
       setAuthStatus((current) => current === "unavailable" ? current : "checking");
-      const request = getCurrentUser()
+      const controller = new AbortController();
+      const request = getCurrentUser({ signal: controller.signal })
         .then((user) => {
-          if (cancelled) return;
+          if (cancelled || revision !== authRevisionRef.current) return;
           clearRetry();
           applyConfirmedIdentity(user);
         })
         .catch((error) => {
-          if (cancelled) return;
+          if (cancelled || revision !== authRevisionRef.current || error?.name === "AbortError") return;
           if (error?.status === 401 || error?.status === 403) {
             clearRetry();
             applyConfirmedIdentity(null);
@@ -141,9 +154,14 @@ export default function App() {
           scheduleAuthRetry();
         })
         .finally(() => {
+          if (authRequestRef.current?.promise !== request) return;
           authRequestRef.current = null;
+          if (authCheckQueuedRef.current && !cancelled) {
+            authCheckQueuedRef.current = false;
+            checkAuth();
+          }
         });
-      authRequestRef.current = request;
+      authRequestRef.current = { promise: request, controller, revision };
     };
     const retryWhenOnline = () => {
       clearRetry();
@@ -158,6 +176,8 @@ export default function App() {
         return;
       }
       if (authEvent?.type === "logout") {
+        invalidateAuthRequest();
+        clearRetry();
         interactionRevisionRef.current += 1;
         clearInteractionState({ ownerId: authUserRef.current?.user_id || getInteractionOwner() });
         setAuthUser(null);
@@ -166,7 +186,10 @@ export default function App() {
         setAuthStatus("anonymous");
         return;
       }
-      if (authEvent?.type === "login") checkAuth();
+      if (authEvent?.type === "login") {
+        invalidateAuthRequest();
+        checkAuth();
+      }
     };
 
     checkAuth();
@@ -174,12 +197,15 @@ export default function App() {
     window.addEventListener("storage", handleAuthStorage);
     return () => {
       cancelled = true;
+      authRevisionRef.current += 1;
+      authRequestRef.current?.controller?.abort();
+      authRequestRef.current = null;
+      authCheckQueuedRef.current = false;
       clearRetry();
       window.removeEventListener("online", retryWhenOnline);
       window.removeEventListener("storage", handleAuthStorage);
     };
   }, []);
-
   useEffect(() => {
     signalStore.write(ratings);
   }, [ratings]);

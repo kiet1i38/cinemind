@@ -43,9 +43,9 @@ function interactionSessionPayload() {
     : {};
 }
 
-export async function getCurrentUser() {
+export async function getCurrentUser({ signal } = {}) {
   try {
-    const payload = await request("/me");
+    const payload = await request("/me", { signal });
     return payload?.authenticated ? payload.user : null;
   } catch (error) {
     // An expired or revoked cookie is an anonymous state, not an outage.
