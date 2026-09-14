@@ -8,6 +8,10 @@ function getStorage() {
   }
 }
 
+export function getBrowserStorage() {
+  return getStorage();
+}
+
 export function createJsonStore(key, fallback) {
   const getFallback = () => (typeof fallback === "function" ? fallback() : fallback);
 
@@ -17,11 +21,13 @@ export function createJsonStore(key, fallback) {
       if (!storage) return memoryValues.has(key) ? memoryValues.get(key) : getFallback();
       try {
         const value = storage.getItem(key);
-        if (value) {
-          const parsed = JSON.parse(value);
-          memoryValues.set(key, parsed);
-          return parsed;
+        if (value === null) {
+          memoryValues.delete(key);
+          return getFallback();
         }
+        const parsed = JSON.parse(value);
+        memoryValues.set(key, parsed);
+        return parsed;
       } catch {
         // Continue with the in-memory copy when the browser blocks storage.
       }

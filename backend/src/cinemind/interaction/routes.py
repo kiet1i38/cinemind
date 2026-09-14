@@ -105,6 +105,7 @@ def create_search_event(
             auth.user_id if auth else None,
             session_token,
             payload.client_mutation_id,
+            payload.client_occurred_at,
         ))
     except InteractionNotFoundError as error:
         raise HTTPException(
@@ -136,6 +137,7 @@ def create_watch_session(
             auth.user_id,
             session_token,
             payload.client_mutation_id,
+            payload.client_occurred_at,
         ))
     except InteractionNotFoundError as error:
         raise HTTPException(
@@ -168,6 +170,7 @@ def create_rating(
             auth.user_id,
             session_token,
             payload.client_mutation_id,
+            payload.client_occurred_at,
         ))
     except InteractionNotFoundError as error:
         raise HTTPException(
@@ -200,6 +203,7 @@ def create_signal(
             auth.user_id,
             session_token,
             payload.client_mutation_id,
+            payload.client_occurred_at,
         ))
     except InteractionNotFoundError as error:
         raise HTTPException(

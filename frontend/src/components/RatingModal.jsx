@@ -73,7 +73,11 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
   const dirtyFieldsRef = useRef({ rating: false, watchDuration: false });
   const initializedItemRef = useRef(null);
 
-  useDialogFocus(dialogRef, onClose, { enabled: Boolean(item) });
+  const handleClose = () => {
+    if (!isSaving) onClose();
+  };
+
+  useDialogFocus(dialogRef, handleClose, { enabled: Boolean(item) });
 
   useEffect(() => {
     if (!item) {
@@ -130,9 +134,9 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
   };
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && handleClose()}>
       <section ref={dialogRef} className="rating-modal" role="dialog" aria-modal="true" aria-labelledby="rating-modal-heading" data-testid="rating-modal">
-        <button type="button" className="modal-close" onClick={onClose} aria-label={translate(language, "close")}><X size={22} aria-hidden="true" /></button>
+        <button type="button" className="modal-close" onClick={handleClose} disabled={isSaving} aria-label={translate(language, "close")}><X size={22} aria-hidden="true" /></button>
         <div className="modal-poster"><PosterImage record={item} language={language} className="modal-poster-image" /></div>
         <div className="modal-content">
           <p className="modal-kicker">{getTypeLabel(item, language)} <span>/</span> {getRuntimeLabel(item, language)}</p>
@@ -156,7 +160,7 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
             {errors.form ? <div className="field-error form-error" role="alert"><WarningCircle size={15} aria-hidden="true" />{translate(language, errors.form)}</div> : null}
             <div className="modal-runtime-note">{getRuntimeHelper(item, language)}</div>
             <div className="modal-actions">
-              <button type="button" className="secondary-button" onClick={onClose} disabled={isSaving}>{translate(language, "cancel")}</button>
+              <button type="button" className="secondary-button" onClick={handleClose} disabled={isSaving}>{translate(language, "cancel")}</button>
               <button type="submit" className="primary-button" disabled={isSaving} aria-busy={isSaving}>{isSaving ? translate(language, "working") : translate(language, "saveSignal")}</button>
             </div>
           </form>

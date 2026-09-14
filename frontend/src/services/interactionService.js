@@ -120,9 +120,12 @@ export async function getInteractionState(metadata = {}) {
 export async function recordSearchEvent({ query, resultCount, filters, ...metadata }) {
   const mutationId = queuePendingSearch(
     { query, resultCount, filters },
-    metadata.mutationId || createMutationId()
+    metadata.mutationId || createMutationId(),
+    metadata.firstQueuedAt
   );
   const pendingPersisted = pendingInteractionsPersisted();
+  const pendingEntry = readPendingInteractions().searches[mutationId];
+  const clientOccurredAt = pendingEntry?.firstQueuedAt || new Date().toISOString();
   const owner = getInteractionOwner();
   return enqueueMutation(`${owner}:search:${mutationId}`, async () => {
     try {
@@ -133,6 +136,7 @@ export async function recordSearchEvent({ query, resultCount, filters, ...metada
           query,
           result_count: resultCount,
           filters,
+          client_occurred_at: clientOccurredAt,
           client_mutation_id: mutationId
         })
       }));
@@ -147,8 +151,10 @@ export async function recordSearchEvent({ query, resultCount, filters, ...metada
 }
 
 export async function submitSignal({ record, rating, watchMinutes, ...metadata }) {
-  const mutationId = queuePendingSignal(record.id, { rating, watchMinutes }, metadata.mutationId);
+  const mutationId = queuePendingSignal(record.id, { rating, watchMinutes }, metadata.mutationId, metadata.firstQueuedAt);
   const pendingPersisted = pendingInteractionsPersisted();
+  const pendingEntry = readPendingInteractions().signals[mutationId];
+  const clientOccurredAt = pendingEntry?.firstQueuedAt || new Date().toISOString();
   const owner = getInteractionOwner();
   return enqueueMutation(`${owner}:signal:${record.id}`, async () => {
     try {
@@ -159,6 +165,7 @@ export async function submitSignal({ record, rating, watchMinutes, ...metadata }
           show_id: record.id,
           rating,
           watch_minutes: watchMinutes,
+          client_occurred_at: clientOccurredAt,
           client_mutation_id: mutationId
         })
       }));
@@ -231,32 +238,58 @@ export async function syncPendingInteractions(records, metadata = {}) {
 async function syncPendingInteractionsOnce(records, metadata) {
   const recordsById = new Map((records || []).map((record) => [String(record.id), record]));
   const pending = readPendingInteractions();
-  const tasks = [];
+  const pendingEvents = [];
 
   for (const search of Object.values(pending.searches)) {
     if (!search || typeof search !== "object" || !search.mutationId) {
       if (search?.mutationId) acknowledgePendingSearch(search.mutationId);
       continue;
     }
-    tasks.push(recordSearchEvent({
-      query: search.query,
-      resultCount: search.resultCount,
-      filters: search.filters,
-      ...metadata,
-      mutationId: search.mutationId
-    }));
+    pendingEvents.push({ kind: "search", entry: search });
   }
 
-  for (const [, signal] of Object.entries(pending.signals)) {
+  for (const signal of Object.values(pending.signals)) {
     const showId = String(signal?.showId || "").trim();
     const record = recordsById.get(showId);
     if (!record || !signal || typeof signal !== "object" || !signal.mutationId) {
       if (signal?.mutationId) acknowledgePendingSignal(showId, signal.mutationId);
       continue;
     }
-    tasks.push(submitSignal({ record, ...signal, ...metadata, mutationId: signal.mutationId }));
+    pendingEvents.push({ kind: "signal", entry: signal, record });
   }
-  return Promise.allSettled(tasks);
+  // Preserve the historical event order during replay. Signals for the same
+  // title are serialized by enqueueMutation, but Promise.all would still let
+  // different titles/searches reach PostgreSQL in an arbitrary order.
+  const orderedPending = pendingEvents.sort((left, right) => {
+    const leftTime = Date.parse(left.entry?.firstQueuedAt || left.entry?.queuedAt || "") || 0;
+    const rightTime = Date.parse(right.entry?.firstQueuedAt || right.entry?.queuedAt || "") || 0;
+    return leftTime - rightTime || String(left.entry?.mutationId || "").localeCompare(String(right.entry?.mutationId || ""));
+  });
+  const results = [];
+  for (const { kind, entry, record } of orderedPending) {
+    try {
+      const task = kind === "search"
+        ? recordSearchEvent({
+          query: entry.query,
+          resultCount: entry.resultCount,
+          filters: entry.filters,
+          ...metadata,
+          mutationId: entry.mutationId,
+          firstQueuedAt: entry.firstQueuedAt
+        })
+        : submitSignal({
+          record,
+          ...entry,
+          ...metadata,
+          mutationId: entry.mutationId,
+          firstQueuedAt: entry.firstQueuedAt
+        });
+      results.push({ status: "fulfilled", value: await task });
+    } catch (reason) {
+      results.push({ status: "rejected", reason });
+    }
+  }
+  return results;
 }
 
 function enqueueMutation(key, operation) {

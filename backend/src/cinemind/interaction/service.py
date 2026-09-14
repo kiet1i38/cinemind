@@ -46,6 +46,8 @@ class InteractionUnauthorizedError(PermissionError):
 class InteractionService:
     """Coordinate interaction use cases and keep database writes atomic."""
 
+    client_event_clock_skew = timedelta(days=7)
+
     def __init__(self, repository: InteractionRepository, settings: Settings):
         self.repository = repository
         self.settings = settings
@@ -82,7 +84,9 @@ class InteractionService:
         user_id: UUID | None = None,
         session_token: str | None = None,
         client_mutation_id: UUID | None = None,
+        client_occurred_at: datetime | None = None,
     ) -> dict:
+        client_event_time = self._normalize_client_occurred_at(client_occurred_at)
         query_text = self._normalize_text(query, "query")
         if len(query_text) > MAX_SEARCH_QUERY_LENGTH:
             raise InteractionValidationError(
@@ -114,6 +118,7 @@ class InteractionService:
                     normalized_query,
                     authoritative_result_count,
                     normalized_filters,
+                    client_occurred_at=client_event_time,
                 )
             else:
                 row = self.repository.create_search_event(
@@ -123,6 +128,7 @@ class InteractionService:
                     authoritative_result_count,
                     normalized_filters,
                     client_mutation_id,
+                    client_occurred_at=client_event_time,
                 )
                 self._require_idempotent_match(
                     row,
@@ -130,6 +136,7 @@ class InteractionService:
                     normalized_query=normalized_query,
                     result_count=authoritative_result_count,
                     filters=normalized_filters,
+                    client_occurred_at=client_event_time,
                 )
             return row
 
@@ -141,7 +148,9 @@ class InteractionService:
         user_id: UUID | None = None,
         session_token: str | None = None,
         client_mutation_id: UUID | None = None,
+        client_occurred_at: datetime | None = None,
     ) -> dict:
+        client_event_time = self._normalize_client_occurred_at(client_occurred_at)
         watch_session_id = uuid4()
         with self.repository.transaction():
             self._acquire_write_lock()
@@ -157,6 +166,7 @@ class InteractionService:
                     metrics.runtime_seconds,
                     metrics.completion_rate,
                     metrics.duration_basis,
+                    client_occurred_at=client_event_time,
                 )
             else:
                 watch_session = self.repository.create_watch_session(
@@ -168,6 +178,7 @@ class InteractionService:
                     metrics.completion_rate,
                     metrics.duration_basis,
                     client_mutation_id,
+                    client_occurred_at=client_event_time,
                 )
                 self._require_idempotent_match(
                     watch_session,
@@ -176,6 +187,7 @@ class InteractionService:
                     runtime_seconds=metrics.runtime_seconds,
                     completion_rate=metrics.completion_rate,
                     duration_basis=metrics.duration_basis,
+                    client_occurred_at=client_event_time,
                 )
             self._touch_session(session_id)
         return watch_session | {"show_id": title["show_id"]}
@@ -189,7 +201,9 @@ class InteractionService:
         user_id: UUID | None = None,
         session_token: str | None = None,
         client_mutation_id: UUID | None = None,
+        client_occurred_at: datetime | None = None,
     ) -> dict:
+        client_event_time = self._normalize_client_occurred_at(client_occurred_at)
         rating_value = self._normalize_rating(rating)
         with self.repository.transaction():
             self._acquire_write_lock()
@@ -211,6 +225,7 @@ class InteractionService:
                     title["title_id"],
                     rating_value,
                     watch_session_id,
+                    client_occurred_at=client_event_time,
                 )
             else:
                 row = self.repository.create_rating(
@@ -219,12 +234,14 @@ class InteractionService:
                     rating_value,
                     watch_session_id,
                     client_mutation_id,
+                    client_occurred_at=client_event_time,
                 )
                 self._require_idempotent_match(
                     row,
                     title_id=title["title_id"],
                     rating_value=rating_value,
                     watch_session_id=watch_session_id,
+                    client_occurred_at=client_event_time,
                 )
             return row | {"show_id": title["show_id"], "rating": rating_value}
 
@@ -237,7 +254,9 @@ class InteractionService:
         user_id: UUID | None = None,
         session_token: str | None = None,
         client_mutation_id: UUID | None = None,
+        client_occurred_at: datetime | None = None,
     ) -> dict:
+        client_event_time = self._normalize_client_occurred_at(client_occurred_at)
         rating_value = self._normalize_rating(rating)
         watch_session_id = uuid4()
         with self.repository.transaction():
@@ -254,6 +273,7 @@ class InteractionService:
                     metrics.runtime_seconds,
                     metrics.completion_rate,
                     metrics.duration_basis,
+                    client_occurred_at=client_event_time,
                 )
             else:
                 watch_session = self.repository.create_watch_session(
@@ -265,6 +285,7 @@ class InteractionService:
                     metrics.completion_rate,
                     metrics.duration_basis,
                     client_mutation_id,
+                    client_occurred_at=client_event_time,
                 )
                 self._require_idempotent_match(
                     watch_session,
@@ -273,6 +294,7 @@ class InteractionService:
                     runtime_seconds=metrics.runtime_seconds,
                     completion_rate=metrics.completion_rate,
                     duration_basis=metrics.duration_basis,
+                    client_occurred_at=client_event_time,
                 )
             watch_session_id = watch_session["watch_session_id"]
             if client_mutation_id is None:
@@ -281,6 +303,7 @@ class InteractionService:
                     title["title_id"],
                     rating_value,
                     watch_session_id,
+                    client_occurred_at=client_event_time,
                 )
             else:
                 rating_row = self.repository.create_rating(
@@ -289,12 +312,14 @@ class InteractionService:
                     rating_value,
                     watch_session_id,
                     client_mutation_id,
+                    client_occurred_at=client_event_time,
                 )
                 self._require_idempotent_match(
                     rating_row,
                     title_id=title["title_id"],
                     rating_value=rating_value,
                     watch_session_id=watch_session_id,
+                    client_occurred_at=client_event_time,
                 )
             self._touch_session(session_id)
         return {
@@ -335,6 +360,11 @@ class InteractionService:
             actual_value = row.get(field_name)
             if field_name == "rating_value" and actual_value is None:
                 actual_value = row.get("rating")
+            if field_name == "client_occurred_at" and actual_value is None:
+                # Rows created before client timeline capture remain safely
+                # replayable; a later retry cannot retroactively add metadata
+                # to that already-acknowledged event.
+                continue
             if actual_value != expected_value:
                 raise InteractionConflictError(
                     "client_mutation_id was already used with a different payload"
@@ -443,6 +473,25 @@ class InteractionService:
             self.repository.touch_session(session_id)
         except LookupError as error:
             raise InteractionSessionNotFoundError(f"Interaction session expired: {session_id}") from error
+
+    @classmethod
+    def _normalize_client_occurred_at(cls, value: datetime | None) -> datetime | None:
+        """Keep a bounded, timezone-aware browser timestamp for mining.
+
+        The server's receipt columns remain authoritative. A client clock can
+        be wrong or malicious, so timestamps outside the seven-day tolerance
+        are discarded rather than allowed to reorder server state.
+        """
+
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise InteractionValidationError("client_occurred_at must include a timezone")
+        normalized = value.astimezone(timezone.utc)
+        now = datetime.now(timezone.utc)
+        if abs(now - normalized) > cls.client_event_clock_skew:
+            return None
+        return normalized
 
     def _session_ttl_days(self) -> int:
         value = int(getattr(self.settings, "interaction_session_ttl_days", 30))

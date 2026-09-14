@@ -26,7 +26,7 @@ import {
 import { getDiscoverableTitles, getRecentTitles, getRelatedTitles, getTitlesByType } from "./services/recommendationService";
 import { catalogPageSizeStore } from "./services/catalogPreferencesStore";
 import { AUTH_EVENT_STORAGE_KEY, getAuthPageUrl, getCurrentUser } from "./services/authService";
-import { clearInteractionState, getInteractionOwner, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
+import { clearInteractionState, getInteractionOwner, hasPendingInteractions, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./authGate.css";
 
@@ -51,13 +51,16 @@ export default function App() {
   const searchEventSignature = useRef("");
   const languageRef = useRef(language);
   const interactionRevisionRef = useRef(0);
+  const signalRequestRevisionsRef = useRef(new Map());
   const authRequestRef = useRef(null);
   const authRevisionRef = useRef(0);
   const authCheckQueuedRef = useRef(false);
   const authRetryRef = useRef(null);
   const catalogRequestRef = useRef({ requestId: 0, controller: null });
   const authUserRef = useRef(null);
+  const modalItemRef = useRef(null);
   authUserRef.current = authUser;
+  modalItemRef.current = modalItem;
 
   const authReady = authStatus === "authenticated" || authStatus === "anonymous";
   const authResolved = authStatus !== "checking";
@@ -181,7 +184,14 @@ export default function App() {
         invalidateAuthRequest();
         clearRetry();
         interactionRevisionRef.current += 1;
-        clearInteractionState({ ownerId: authUserRef.current?.user_id || getInteractionOwner() });
+        signalRequestRevisionsRef.current.clear();
+        const ownerId = authEvent.ownerId || authUserRef.current?.user_id || getInteractionOwner();
+        const preservePendingInteractions = authEvent.preservePendingInteractions === true
+          || hasPendingInteractions(ownerId);
+        clearInteractionState({
+          ownerId,
+          clearPending: !preservePendingInteractions
+        });
         setAuthUser(null);
         setRatings({});
         setAuthPrompt(null);
@@ -395,20 +405,27 @@ export default function App() {
     const item = modalItem;
     if (!item || !authUser) return;
     interactionRevisionRef.current += 1;
-    const requestRevision = interactionRevisionRef.current;
+    const showId = String(item.id);
+    const requestRevision = (signalRequestRevisionsRef.current.get(showId) || 0) + 1;
+    signalRequestRevisionsRef.current.set(showId, requestRevision);
     const requestOwner = getInteractionOwner();
     const previousSignal = ratings[item.id];
     setRatings((current) => ({ ...current, [item.id]: { ...signal, savedAt: new Date().toISOString() } }));
+    const isCurrentRequest = () => requestRevision === signalRequestRevisionsRef.current.get(showId)
+      && requestOwner === getInteractionOwner();
     try {
       await submitSignal({ record: item, ...signal, ...interactionMetadata() });
-      if (requestRevision !== interactionRevisionRef.current || requestOwner !== getInteractionOwner()) return;
+      if (!isCurrentRequest()) return;
+      if (String(modalItemRef.current?.id) !== showId) return;
       setModalItem(null);
       setToast(translate(language, "savedSignal"));
     } catch (error) {
-      if (requestRevision !== interactionRevisionRef.current || requestOwner !== getInteractionOwner()) return;
+      if (!isCurrentRequest()) return;
       if (isRetryableInteractionError(error)) {
-        setModalItem(null);
-        setToast(translate(language, error.pendingPersisted === false ? "savedSignalSessionOnly" : "savedSignalLocally"));
+        if (String(modalItemRef.current?.id) === showId) {
+          setModalItem(null);
+          setToast(translate(language, error.pendingPersisted === false ? "savedSignalSessionOnly" : "savedSignalLocally"));
+        }
         return;
       }
       setRatings((current) => {
@@ -418,10 +435,13 @@ export default function App() {
         return next;
       });
       if (error.authRequired || error.status === 401) {
-        setModalItem(null);
-        setAuthPrompt({ action: "rating", title: item.title });
+        if (String(modalItemRef.current?.id) === showId) {
+          setModalItem(null);
+          setAuthPrompt({ action: "rating", title: item.title });
+        }
         return;
       }
+      if (String(modalItemRef.current?.id) !== showId) return;
       throw Object.assign(error, { userMessage: "signalSaveError" });
     }
   }, [authUser, interactionMetadata, language, modalItem, ratings]);

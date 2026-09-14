@@ -29,11 +29,13 @@ export function matchesYear(record, year) {
 export function filterCatalog(catalog, { query = "", type = catalogConfig.allValue, genre = catalogConfig.allValue, year = catalogConfig.allValue } = {}) {
   const normalizedQuery = normalizeSearchTerm(query);
   return catalog.filter((record) => {
-    const searchable = [record.title, record.director, ...(record.cast || []), ...(record.listedIn || [])]
+    // Keep the browser query semantics aligned with the backend telemetry
+    // count: a query must match one catalog field, not text spanning the
+    // boundary between two unrelated fields.
+    const searchableFields = [record.title, record.director, ...(record.cast || []), ...(record.listedIn || [])]
       .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-    const queryMatches = !normalizedQuery || searchable.includes(normalizedQuery);
+      .map(normalizeSearchTerm);
+    const queryMatches = !normalizedQuery || searchableFields.some((field) => field.includes(normalizedQuery));
     const typeMatches = type === catalogConfig.allValue || record.type === type;
     const genreMatches = genre === catalogConfig.allValue || (record.listedIn || []).includes(genre);
     return queryMatches && typeMatches && genreMatches && matchesYear(record, year);

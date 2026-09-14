@@ -1,7 +1,7 @@
 // Cookie-session client for the account API. No token is stored in JavaScript.
 
 import { appConfig, authConfig, resolveApiBaseUrl } from "../config/appConfig";
-import { interactionSessionStore, promoteAuthenticatedInteraction } from "./interactionStore";
+import { getInteractionOwner, interactionSessionStore, promoteAuthenticatedInteraction } from "./interactionStore";
 import { fetchWithTimeout } from "./fetchWithTimeout";
 
 export const AUTH_EVENT_STORAGE_KEY = authConfig.eventsStorageKey || "cinemind-auth-event";
@@ -80,7 +80,7 @@ export async function register({ email, username, displayName, password }) {
   return result;
 }
 
-export async function logout() {
+export async function logout({ preservePendingInteractions = false } = {}) {
   const sessionId = interactionSessionStore.read();
   const sessionToken = interactionSessionStore.readToken();
   const result = await request("/logout", {
@@ -90,22 +90,28 @@ export async function logout() {
       interaction_session_token: sessionToken
     })
   });
-  broadcastAuthEvent("logout");
+  broadcastAuthEvent("logout", { preservePendingInteractions });
   return result;
 }
 
-export async function logoutAll() {
+export async function logoutAll({ preservePendingInteractions = false } = {}) {
   const result = await request("/logout-all", { method: "POST" });
-  broadcastAuthEvent("logout");
+  broadcastAuthEvent("logout", { preservePendingInteractions });
   return result;
 }
 
-function broadcastAuthEvent(type) {
+function broadcastAuthEvent(type, details = {}) {
   try {
     const eventId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    window.localStorage.setItem(AUTH_EVENT_STORAGE_KEY, JSON.stringify({ type, eventId, occurredAt: Date.now() }));
+    window.localStorage.setItem(AUTH_EVENT_STORAGE_KEY, JSON.stringify({
+      type,
+      eventId,
+      occurredAt: Date.now(),
+      ownerId: getInteractionOwner(),
+      ...details
+    }));
   } catch {
     // Storage is optional; the current tab still completes its auth flow.
   }

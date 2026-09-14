@@ -1,6 +1,6 @@
 """Unit and HTTP-contract tests for the interaction milestone."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import copy
 from types import SimpleNamespace
@@ -120,7 +120,7 @@ class FakeInteractionRepository:
     def catalog_genre_exists(self, _genre):
         return True
 
-    def create_search_event(self, session_id, query_text, normalized_query, result_count, filters):
+    def create_search_event(self, session_id, query_text, normalized_query, result_count, filters, client_mutation_id=None, client_occurred_at=None):
         return {
             "search_event_id": 1,
             "session_id": session_id,
@@ -129,9 +129,10 @@ class FakeInteractionRepository:
             "result_count": result_count,
             "filters": filters,
             "occurred_at": datetime.now(timezone.utc),
+            "client_occurred_at": client_occurred_at,
         }
 
-    def create_watch_session(self, watch_session_id, session_id, title_id, watch_seconds, runtime_seconds, completion_rate, duration_basis, client_mutation_id=None):
+    def create_watch_session(self, watch_session_id, session_id, title_id, watch_seconds, runtime_seconds, completion_rate, duration_basis, client_mutation_id=None, client_occurred_at=None):
         mutation_key = (session_id, client_mutation_id)
         if client_mutation_id is not None and mutation_key in self.watch_mutations:
             return self.watch_mutations[mutation_key]
@@ -144,6 +145,7 @@ class FakeInteractionRepository:
             "completion_rate": completion_rate,
             "duration_basis": duration_basis,
             "recorded_at": datetime.now(timezone.utc),
+            "client_occurred_at": client_occurred_at,
         }
         self.watch_sessions[watch_session_id] = row
         if client_mutation_id is not None:
@@ -153,7 +155,7 @@ class FakeInteractionRepository:
     def get_watch_session(self, watch_session_id):
         return self.watch_sessions.get(watch_session_id)
 
-    def create_rating(self, session_id, title_id, rating, watch_session_id, client_mutation_id=None):
+    def create_rating(self, session_id, title_id, rating, watch_session_id, client_mutation_id=None, client_occurred_at=None):
         if self.fail_rating:
             raise RuntimeError("simulated rating failure")
         mutation_key = (session_id, client_mutation_id)
@@ -167,6 +169,7 @@ class FakeInteractionRepository:
             "rating_value": rating,
             "watch_session_id": watch_session_id,
             "rated_at": datetime.now(timezone.utc),
+            "client_occurred_at": client_occurred_at,
         }
         self.ratings.append(row)
         if client_mutation_id is not None:
@@ -217,6 +220,41 @@ class InteractionServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["result_count"], self.repository.search_result_count)
+
+    def test_client_event_time_is_preserved_when_clock_skew_is_bounded(self):
+        occurred_at = datetime.now(timezone.utc) - timedelta(hours=2)
+
+        result = self.service.record_signal(
+            self.session_id,
+            "movie-1",
+            Decimal("8.5"),
+            30,
+            client_occurred_at=occurred_at,
+        )
+
+        self.assertEqual(result["watch_session"]["client_occurred_at"], occurred_at)
+        self.assertEqual(result["rating"]["client_occurred_at"], occurred_at)
+
+    def test_client_event_time_without_timezone_is_rejected(self):
+        with self.assertRaises(InteractionValidationError):
+            self.service.record_search_event(
+                self.session_id,
+                "Drama",
+                0,
+                {},
+                client_occurred_at=datetime.now(),
+            )
+
+    def test_client_event_time_with_excessive_skew_is_discarded(self):
+        result = self.service.record_search_event(
+            self.session_id,
+            "Drama",
+            0,
+            {},
+            client_occurred_at=datetime.now(timezone.utc) - timedelta(days=8),
+        )
+
+        self.assertIsNone(result["client_occurred_at"])
 
     def test_search_telemetry_rejects_unknown_catalog_genres(self):
         self.repository.catalog_genre_exists = lambda _genre: False

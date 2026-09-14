@@ -8,7 +8,7 @@ import { translate } from "./lib/i18n";
 import { getCurrentUser, getAuthPageUrl, logout, logoutAll } from "./services/authService";
 import { loadCatalog } from "./services/catalogService";
 import { getInteractionState, syncPendingInteractions } from "./services/interactionService";
-import { clearInteractionState, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
+import { clearInteractionState, hasPendingInteractions, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./styles.css";
 import "./profile.css";
@@ -107,15 +107,15 @@ export default function ProfilePage() {
         locale: language,
         platform: typeof navigator !== "undefined" ? String(navigator.platform || "web").slice(0, 32) : "web"
       });
-      preservePendingInteractions = syncResults.some((result) => result.status === "rejected");
+      preservePendingInteractions = syncResults.some((result) => result.status === "rejected") || hasPendingInteractions();
     } catch {
       // Logout is an auth boundary and must not be blocked by a degraded
       // interaction API. Keep the account-scoped outbox for a later retry.
       preservePendingInteractions = true;
     }
     try {
-      if (allDevices) await logoutAll();
-      else await logout();
+      if (allDevices) await logoutAll({ preservePendingInteractions });
+      else await logout({ preservePendingInteractions });
       clearInteractionState({ clearPending: !preservePendingInteractions });
       window.location.href = "./";
     } catch {

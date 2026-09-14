@@ -44,6 +44,7 @@ class SearchEventCreateRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=200)
     result_count: int = Field(default=0, ge=0, le=2_147_483_647)
     filters: dict[StrictStr, StrictStr] = Field(default_factory=dict)
+    client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
 
     @field_validator("filters")
@@ -64,6 +65,7 @@ class SearchEventResponse(BaseModel):
     result_count: int
     filters: dict[str, str]
     occurred_at: datetime
+    client_occurred_at: datetime | None = None
 
 
 class WatchSessionCreateRequest(BaseModel):
@@ -72,6 +74,7 @@ class WatchSessionCreateRequest(BaseModel):
     session_id: UUID
     show_id: str = Field(..., min_length=1, max_length=32)
     watch_minutes: int = Field(..., ge=0)
+    client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
 
 
@@ -86,6 +89,7 @@ class WatchSessionResponse(BaseModel):
     completion_rate: Decimal | None
     duration_basis: str
     recorded_at: datetime
+    client_occurred_at: datetime | None = None
 
 
 class RatingCreateRequest(BaseModel):
@@ -95,6 +99,7 @@ class RatingCreateRequest(BaseModel):
     show_id: str = Field(..., min_length=1, max_length=32)
     rating: Decimal = Field(...)
     watch_session_id: UUID | None = None
+    client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
 
     @field_validator("rating")
@@ -112,6 +117,7 @@ class RatingResponse(BaseModel):
     rating: Decimal
     watch_session_id: UUID | None
     rated_at: datetime
+    client_occurred_at: datetime | None = None
 
 
 class SignalCreateRequest(BaseModel):
@@ -121,6 +127,7 @@ class SignalCreateRequest(BaseModel):
     show_id: str = Field(..., min_length=1, max_length=32)
     rating: Decimal = Field(...)
     watch_minutes: int = Field(..., ge=0)
+    client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
 
     @field_validator("rating")

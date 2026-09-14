@@ -161,39 +161,56 @@ class InteractionRepository:
         result_count: int,
         filters: dict[str, str],
         client_mutation_id: UUID | None = None,
+        client_occurred_at: datetime | None = None,
     ) -> dict:
         if client_mutation_id is None:
             row = self.connection.execute(
                 """
                 INSERT INTO interaction.search_events (
-                    session_id, query_text, normalized_query, result_count, filters
+                    session_id, query_text, normalized_query, result_count, filters,
+                    client_occurred_at
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING search_event_id, session_id, query_text, normalized_query,
-                          result_count, filters, occurred_at
+                          result_count, filters, occurred_at, client_occurred_at
                 """,
-                (session_id, query_text, normalized_query, result_count, Jsonb(filters)),
+                (
+                    session_id,
+                    query_text,
+                    normalized_query,
+                    result_count,
+                    Jsonb(filters),
+                    client_occurred_at,
+                ),
             ).fetchone()
         else:
             row = self.connection.execute(
                 """
                 INSERT INTO interaction.search_events (
                     session_id, query_text, normalized_query, result_count, filters,
-                    client_mutation_id
+                    client_occurred_at, client_mutation_id
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (session_id, client_mutation_id)
                     WHERE client_mutation_id IS NOT NULL DO NOTHING
                 RETURNING search_event_id, session_id, query_text, normalized_query,
-                          result_count, filters, occurred_at
+                          result_count, filters, occurred_at, client_occurred_at
                 """,
-                (session_id, query_text, normalized_query, result_count, Jsonb(filters), client_mutation_id),
+                (
+                    session_id,
+                    query_text,
+                    normalized_query,
+                    result_count,
+                    Jsonb(filters),
+                    client_occurred_at,
+                    client_mutation_id,
+                ),
             ).fetchone()
             if row is None:
                 row = self.connection.execute(
                     """
                     SELECT search_event_id, session_id, query_text, normalized_query,
-                           result_count, filters, occurred_at
+                           result_count, filters, occurred_at, client_occurred_at
                     FROM interaction.search_events
                     WHERE session_id = %s AND client_mutation_id = %s
                     """,
@@ -213,18 +230,21 @@ class InteractionRepository:
         completion_rate: Decimal | None,
         duration_basis: str,
         client_mutation_id: UUID | None = None,
+        client_occurred_at: datetime | None = None,
     ) -> dict:
         row = self.connection.execute(
             """
             INSERT INTO interaction.watch_sessions (
                 watch_session_id, session_id, title_id, watch_seconds,
-                runtime_seconds, completion_rate, duration_basis, client_mutation_id
+                runtime_seconds, completion_rate, duration_basis,
+                client_occurred_at, client_mutation_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (session_id, client_mutation_id)
                 WHERE client_mutation_id IS NOT NULL DO NOTHING
             RETURNING watch_session_id, session_id, title_id, watch_seconds,
-                      runtime_seconds, completion_rate, duration_basis, recorded_at
+                      runtime_seconds, completion_rate, duration_basis, recorded_at,
+                      client_occurred_at
             """,
             (
                 watch_session_id,
@@ -234,6 +254,7 @@ class InteractionRepository:
                 runtime_seconds,
                 completion_rate,
                 duration_basis,
+                client_occurred_at,
                 client_mutation_id,
             ),
         ).fetchone()
@@ -241,7 +262,8 @@ class InteractionRepository:
             row = self.connection.execute(
                 """
                 SELECT watch_session_id, session_id, title_id, watch_seconds,
-                       runtime_seconds, completion_rate, duration_basis, recorded_at
+                       runtime_seconds, completion_rate, duration_basis, recorded_at,
+                       client_occurred_at
                 FROM interaction.watch_sessions
                 WHERE session_id = %s AND client_mutation_id = %s
                 """,
@@ -258,25 +280,34 @@ class InteractionRepository:
         rating: Decimal,
         watch_session_id: UUID | None,
         client_mutation_id: UUID | None = None,
+        client_occurred_at: datetime | None = None,
     ) -> dict:
         row = self.connection.execute(
             """
             INSERT INTO interaction.ratings (
-                session_id, watch_session_id, title_id, rating_value, client_mutation_id
+                session_id, watch_session_id, title_id, rating_value,
+                client_occurred_at, client_mutation_id
             )
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (session_id, client_mutation_id)
                 WHERE client_mutation_id IS NOT NULL DO NOTHING
             RETURNING rating_id, session_id, watch_session_id, title_id,
-                      rating_value, rated_at
+                      rating_value, rated_at, client_occurred_at
             """,
-            (session_id, watch_session_id, title_id, rating, client_mutation_id),
+            (
+                session_id,
+                watch_session_id,
+                title_id,
+                rating,
+                client_occurred_at,
+                client_mutation_id,
+            ),
         ).fetchone()
         if row is None and client_mutation_id is not None:
             row = self.connection.execute(
                 """
                 SELECT rating_id, session_id, watch_session_id, title_id,
-                       rating_value, rated_at
+                       rating_value, rated_at, client_occurred_at
                 FROM interaction.ratings
                 WHERE session_id = %s AND client_mutation_id = %s
                 """,
