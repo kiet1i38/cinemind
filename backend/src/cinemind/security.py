@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 import ipaddress
 from math import ceil
-from threading import Lock
+from threading import RLock
 import time
 
 
@@ -14,6 +14,9 @@ class RateLimitDecision:
 
     allowed: bool
     retry_after_seconds: int = 0
+
+
+_RATE_LIMITER_LOCK = RLock()
 
 
 class SlidingWindowRateLimiter:
@@ -31,24 +34,16 @@ class SlidingWindowRateLimiter:
         self.window_seconds = window_seconds
         self.max_keys = max_keys
         self._events: dict[str, deque[float]] = {}
-        self._lock = Lock()
+        # All process-local buckets share one re-entrant lock so a compound
+        # decision (for example account + IP) can be reserved atomically.
+        self._lock = _RATE_LIMITER_LOCK
 
     def check(self, key: str, now: float | None = None) -> RateLimitDecision:
         """Check a key without consuming a failure slot."""
 
         timestamp = time.monotonic() if now is None else now
         with self._lock:
-            events = self._events.get(key)
-            if events is None:
-                return RateLimitDecision(allowed=True)
-            self._prune(events, timestamp)
-            if not events:
-                self._events.pop(key, None)
-                return RateLimitDecision(allowed=True)
-            if len(events) < self.max_attempts:
-                return RateLimitDecision(allowed=True)
-            retry_after = max(1, ceil(self.window_seconds - (timestamp - events[0])))
-            return RateLimitDecision(allowed=False, retry_after_seconds=retry_after)
+            return self._check_locked(key, timestamp)
 
     def record_failure(self, key: str, now: float | None = None) -> None:
         """Consume one failure slot and keep the bucket collection bounded."""
@@ -60,32 +55,18 @@ class SlidingWindowRateLimiter:
 
         timestamp = time.monotonic() if now is None else now
         with self._lock:
-            events = self._events.get(key)
-            if events is None:
-                if len(self._events) >= self.max_keys:
-                    self._evict_oldest()
-                events = deque()
-                self._events[key] = events
-            self._prune(events, timestamp)
-            events.append(timestamp)
+            self._record_attempt_locked(key, timestamp)
 
     def consume(self, key: str, now: float | None = None) -> RateLimitDecision:
         """Atomically check and consume one request slot when available."""
 
         timestamp = time.monotonic() if now is None else now
         with self._lock:
-            events = self._events.get(key)
-            if events is None:
-                if len(self._events) >= self.max_keys:
-                    self._evict_oldest()
-                events = deque()
-                self._events[key] = events
-            self._prune(events, timestamp)
-            if len(events) >= self.max_attempts:
-                retry_after = max(1, ceil(self.window_seconds - (timestamp - events[0])))
-                return RateLimitDecision(allowed=False, retry_after_seconds=retry_after)
-            events.append(timestamp)
-            return RateLimitDecision(allowed=True)
+            decision = self._check_locked(key, timestamp)
+            if not decision.allowed:
+                return decision
+            self._record_attempt_locked(key, timestamp)
+            return decision
 
     def record_success(self, key: str) -> None:
         """Reset failures after a successful authentication attempt."""
@@ -112,6 +93,52 @@ class SlidingWindowRateLimiter:
         cutoff = now - self.window_seconds
         while events and events[0] <= cutoff:
             events.popleft()
+
+    def _check_locked(self, key: str, timestamp: float) -> RateLimitDecision:
+        events = self._events.get(key)
+        if events is None:
+            return RateLimitDecision(allowed=True)
+        self._prune(events, timestamp)
+        if not events:
+            self._events.pop(key, None)
+            return RateLimitDecision(allowed=True)
+        if len(events) < self.max_attempts:
+            return RateLimitDecision(allowed=True)
+        retry_after = max(1, ceil(self.window_seconds - (timestamp - events[0])))
+        return RateLimitDecision(allowed=False, retry_after_seconds=retry_after)
+
+    def _record_attempt_locked(self, key: str, timestamp: float) -> None:
+        events = self._events.get(key)
+        if events is None:
+            if len(self._events) >= self.max_keys:
+                self._evict_oldest()
+            events = deque()
+            self._events[key] = events
+        self._prune(events, timestamp)
+        events.append(timestamp)
+
+
+def consume_many(
+    requests: tuple[tuple[SlidingWindowRateLimiter, str], ...],
+    now: float | None = None,
+) -> tuple[RateLimitDecision, ...]:
+    """Check and reserve multiple buckets as one process-local operation.
+
+    No bucket is consumed when any requested bucket is already exhausted. This
+    prevents a rejected login from poisoning the other dimension of its limit.
+    """
+
+    timestamp = time.monotonic() if now is None else now
+    with _RATE_LIMITER_LOCK:
+        decisions = tuple(
+            limiter._check_locked(key, timestamp)
+            for limiter, key in requests
+        )
+        if any(not decision.allowed for decision in decisions):
+            return decisions
+        for limiter, key in requests:
+            limiter._record_attempt_locked(key, timestamp)
+        return decisions
 
 
 def client_address_from_headers(

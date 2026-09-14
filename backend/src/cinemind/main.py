@@ -84,6 +84,8 @@ def create_app() -> FastAPI:
     application.add_middleware(
         CSRFMiddleware,
         allowed_origins=settings.cors_allowed_origins,
+        trust_proxy_headers=settings.trust_proxy_headers,
+        trusted_proxy_networks=settings.trusted_proxy_networks,
     )
     application.add_middleware(
         CORSMiddleware,

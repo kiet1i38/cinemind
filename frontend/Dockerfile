@@ -9,8 +9,10 @@ RUN npm run build
 FROM nginx:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker-entrypoint.d/20-render-trusted-proxies.sh /docker-entrypoint.d/20-render-trusted-proxies.sh
 COPY --from=builder /app/dist /usr/share/nginx/html
 RUN mkdir -p /usr/share/nginx/html/data
+RUN chmod +x /docker-entrypoint.d/20-render-trusted-proxies.sh
 COPY public/data/catalog.json /usr/share/nginx/html/data/catalog.json
 COPY public/data/catalog-manifest.json /usr/share/nginx/html/data/catalog-manifest.json
 COPY public/data/posters /usr/share/nginx/html/data/posters

@@ -27,7 +27,7 @@ from cinemind.auth.service import (
 )
 from cinemind.config import Settings, get_settings
 from cinemind.db.connection import connection_scope
-from cinemind.security import SlidingWindowRateLimiter, is_trusted_proxy
+from cinemind.security import SlidingWindowRateLimiter, consume_many, is_trusted_proxy
 from fastapi import HTTPException
 
 
@@ -313,8 +313,12 @@ def _enforce_login_attempt_rate_limit(request: Request, identifier_key: str) -> 
     """Consume a quota for every login, including valid-password attempts."""
 
     operation = identifier_key.split(":", 1)[0]
-    identifier_decision = auth_login_attempt_limiter.consume(identifier_key)
-    ip_decision = auth_login_ip_attempt_limiter.consume(_auth_ip_key(request, operation))
+    identifier_decision, ip_decision = consume_many(
+        (
+            (auth_login_attempt_limiter, identifier_key),
+            (auth_login_ip_attempt_limiter, _auth_ip_key(request, operation)),
+        )
+    )
     if identifier_decision.allowed and ip_decision.allowed:
         return
     decision = ip_decision if not ip_decision.allowed else identifier_decision

@@ -7,6 +7,7 @@ const frontendDir = resolve(scriptDir, "..");
 const sourceRoot = resolve(frontendDir, "src");
 const interactionServicePath = resolve(sourceRoot, "services/interactionService.js");
 const nginxConfigPath = resolve(frontendDir, "nginx.conf");
+const trustedProxyScriptPath = resolve(frontendDir, "docker-entrypoint.d/20-render-trusted-proxies.sh");
 
 const rules = [
   { file: "App.jsx", pattern: /preferredOrder|fallbackCatalog|cinemind-(?:language|ratings)|slice\(0,\s*(?:12|60)\)/u, message: "App must consume configuration and services instead of owning catalog constants." },
@@ -37,8 +38,23 @@ if (!/role="radiogroup"/u.test(ratingModal) || !/0\.5/u.test(ratingModal)) {
 }
 
 const nginxConfig = await readFile(nginxConfigPath, "utf8");
-if (/\$proxy_add_x_forwarded_for/u.test(nginxConfig) || !/proxy_set_header\s+X-Forwarded-For\s+\$remote_addr;/u.test(nginxConfig)) {
-  violations.push("nginx.conf: the trusted proxy must overwrite X-Forwarded-For with the direct client address.");
+const trustedProxyScript = await readFile(trustedProxyScriptPath, "utf8");
+if (
+  /\$proxy_add_x_forwarded_for/u.test(nginxConfig)
+  || !/proxy_set_header\s+Host\s+\$http_host;/u.test(nginxConfig)
+  || !/proxy_set_header\s+X-Forwarded-Host\s+\$http_host;/u.test(nginxConfig)
+  || !/proxy_set_header\s+X-Forwarded-For\s+\$remote_addr;/u.test(nginxConfig)
+  || !/proxy_set_header\s+X-Forwarded-Proto\s+\$cinemind_forwarded_proto;/u.test(nginxConfig)
+) {
+  violations.push("nginx.conf: preserve the request host and use the validated proxy boundary for forwarded identity.");
+}
+if (
+  !/real_ip_header\s+X-Forwarded-For;/u.test(trustedProxyScript)
+  || !/real_ip_recursive\s+on;/u.test(trustedProxyScript)
+  || !/set_real_ip_from/u.test(trustedProxyScript)
+  || !/default 0;/u.test(trustedProxyScript)
+) {
+  violations.push("docker-entrypoint.d/20-render-trusted-proxies.sh: outer proxy trust must be explicit and fail closed.");
 }
 
 try {

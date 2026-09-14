@@ -100,19 +100,23 @@ export default function ProfilePage() {
   async function signOut(allDevices = false) {
     const confirmed = window.confirm(translate(language, allDevices ? "logoutAllConfirm" : "logoutConfirm"));
     if (!confirmed) return;
+    let preservePendingInteractions = false;
     try {
       // Give the append-only outbox one last chance before the owner changes.
       const syncResults = await syncPendingInteractions(catalog, {
         locale: language,
         platform: typeof navigator !== "undefined" ? String(navigator.platform || "web").slice(0, 32) : "web"
       });
-      if (syncResults.some((result) => result.status === "rejected")) {
-        setMessage(translate(language, "pendingSyncBeforeLogout"));
-        return;
-      }
+      preservePendingInteractions = syncResults.some((result) => result.status === "rejected");
+    } catch {
+      // Logout is an auth boundary and must not be blocked by a degraded
+      // interaction API. Keep the account-scoped outbox for a later retry.
+      preservePendingInteractions = true;
+    }
+    try {
       if (allDevices) await logoutAll();
       else await logout();
-      clearInteractionState();
+      clearInteractionState({ clearPending: !preservePendingInteractions });
       window.location.href = "./";
     } catch {
       setMessage(translate(language, "authGenericError"));

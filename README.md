@@ -37,6 +37,12 @@ Interactive API documentation is available at `http://127.0.0.1:8000/docs`. Acco
 
 The Docker image serves the verified production bundle through nginx on port 5173. After a UI change, rebuild the image with `docker compose up --build -d`. The backend service applies the PostgreSQL migrations and seeds the catalog on port 8000. Backend endpoints and local commands are documented in `backend/README.md`.
 
+### Trusted proxy boundary
+
+The Compose topology keeps the backend bound to loopback and lets the frontend nginx proxy overwrite client forwarding headers. Leave `CINEMIND_TRUSTED_UPSTREAM_PROXY_NETWORKS` empty for direct local access. If an additional TLS-terminating proxy is placed in front of nginx, set that variable on the `frontend` service to a comma-separated list of the proxy's exact CIDR blocks. The container then trusts forwarded HTTPS and client-IP headers only from those networks; never use a catch-all network. Keep `TRUSTED_PROXY_NETWORKS` limited to the internal proxy network that can reach the backend.
+
+When `CINEMIND_ENVIRONMENT=production`, leaving `REQUIRE_HTTPS` and `RESET_ENABLED` blank preserves the application's secure defaults: HTTPS is required and the destructive reset endpoint is disabled unless explicitly enabled with separate admin credentials.
+
 ## Run locally
 
 Run `cd frontend`, then `npm install` and `npm run dev`. The normalized catalog is

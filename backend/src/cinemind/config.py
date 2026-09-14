@@ -45,7 +45,7 @@ def _bool_from_environment(name: str, default: bool) -> bool:
     """Parse a human-friendly boolean environment value."""
 
     value = os.getenv(name)
-    if value is None:
+    if value is None or not value.strip():
         return default
 
     normalized = value.strip().casefold()

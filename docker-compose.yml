@@ -40,7 +40,9 @@ services:
       # The default frontend proxy is the only public edge in this topology.
       # Keep the trusted network narrow and override it for custom deployments.
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
-      REQUIRE_HTTPS: ${REQUIRE_HTTPS:-false}
+      # Blank lets the application select its environment-aware default.
+      # Set REQUIRE_HTTPS explicitly only when overriding that policy.
+      REQUIRE_HTTPS: ${REQUIRE_HTTPS-}
       AUTH_RATE_LIMIT_WINDOW_SECONDS: ${AUTH_RATE_LIMIT_WINDOW_SECONDS:-300}
       AUTH_RATE_LIMIT_MAX_ATTEMPTS: ${AUTH_RATE_LIMIT_MAX_ATTEMPTS:-10}
       AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS:-300}
@@ -56,7 +58,8 @@ services:
       CATALOG_MAX_ERROR_ISSUES: ${CATALOG_MAX_ERROR_ISSUES:-0}
       ADMIN_RESET_USERNAME: ${ADMIN_RESET_USERNAME:-}
       ADMIN_RESET_PASSWORD: ${ADMIN_RESET_PASSWORD:-}
-      RESET_ENABLED: ${RESET_ENABLED:-true}
+      # Reset is disabled automatically in production unless explicitly opted in.
+      RESET_ENABLED: ${RESET_ENABLED-}
       FULL_RESET_ENABLED: ${FULL_RESET_ENABLED:-false}
     volumes:
       - ./frontend/public/data/catalog.json:/app/data/catalog.json:ro
@@ -79,6 +82,10 @@ services:
       dockerfile: Dockerfile
     ports:
       - "5173:5173"
+    environment:
+      # Keep empty by default. Add the CIDR blocks of a real outer proxy/CDN
+      # only when this deployment is actually behind one.
+      CINEMIND_TRUSTED_UPSTREAM_PROXY_NETWORKS: ${CINEMIND_TRUSTED_UPSTREAM_PROXY_NETWORKS-}
     depends_on:
       backend:
         condition: service_healthy

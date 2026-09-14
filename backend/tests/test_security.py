@@ -2,15 +2,17 @@
 
 from types import SimpleNamespace
 from dataclasses import replace
+import os
 import unittest
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
 from cinemind.config import Settings
-from cinemind.config import get_settings
+from cinemind.config import _bool_from_environment, get_settings
 from cinemind.auth import routes as auth_routes
 from cinemind.interaction.limits import normalize_filters
-from cinemind.middleware import _interaction_principal
+from cinemind.middleware import CSRFMiddleware, _interaction_principal, _scope_origin
 from cinemind.middleware import InteractionRateLimitMiddleware
 from cinemind.security import SlidingWindowRateLimiter, client_address_from_headers
 
@@ -237,6 +239,89 @@ class SecurityPrimitiveTests(unittest.TestCase):
         self.assertFalse(auth_routes.auth_ip_rate_limiter.check(ip_key).allowed)
         self.assertTrue(auth_routes.auth_rate_limiter.check(identifier_key).allowed)
 
+    def test_login_rate_limit_rejection_does_not_poison_the_other_bucket(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.42"),
+            headers={},
+        )
+        auth_routes.auth_login_attempt_limiter.clear()
+        auth_routes.auth_login_ip_attempt_limiter.clear()
+        identifier_key = auth_routes._auth_identifier_rate_limit_key(
+            "victim@example.com", "login"
+        )
+        ip_key = auth_routes._auth_ip_key(request, "login")
+
+        for _ in range(auth_routes.auth_login_ip_attempt_limiter.max_attempts):
+            auth_routes.auth_login_ip_attempt_limiter.record_attempt(ip_key)
+        with self.assertRaises(HTTPException) as blocked_by_ip:
+            auth_routes._enforce_login_attempt_rate_limit(request, identifier_key)
+        self.assertEqual(blocked_by_ip.exception.status_code, 429)
+        self.assertTrue(
+            auth_routes.auth_login_attempt_limiter.check(identifier_key).allowed
+        )
+
+        auth_routes.auth_login_attempt_limiter.clear()
+        auth_routes.auth_login_ip_attempt_limiter.clear()
+        for _ in range(auth_routes.auth_login_attempt_limiter.max_attempts):
+            auth_routes.auth_login_attempt_limiter.record_attempt(identifier_key)
+        with self.assertRaises(HTTPException) as blocked_by_account:
+            auth_routes._enforce_login_attempt_rate_limit(request, identifier_key)
+        self.assertEqual(blocked_by_account.exception.status_code, 429)
+        self.assertTrue(
+            auth_routes.auth_login_ip_attempt_limiter.check(ip_key).allowed
+        )
+
+    def test_blank_boolean_environment_uses_the_environment_default(self):
+        with patch.dict(os.environ, {"REQUIRE_HTTPS": "", "RESET_ENABLED": ""}):
+            self.assertTrue(_bool_from_environment("REQUIRE_HTTPS", True))
+            self.assertFalse(_bool_from_environment("RESET_ENABLED", False))
+
+    def test_production_settings_keep_secure_defaults_when_compose_values_are_blank(self):
+        with patch.dict(
+            os.environ,
+            {
+                "CINEMIND_ENVIRONMENT": "production",
+                "DATABASE_URL": "postgresql://cinemind@database:5432/cinemind",
+                "REQUIRE_HTTPS": "",
+                "RESET_ENABLED": "",
+            },
+        ):
+            get_settings.cache_clear()
+            try:
+                settings = get_settings()
+            finally:
+                get_settings.cache_clear()
+        self.assertTrue(settings.require_https)
+        self.assertFalse(settings.reset_enabled)
+
+    def test_scope_origin_preserves_custom_port_and_trusted_forwarded_scheme(self):
+        lan_scope = {
+            "scheme": "http",
+            "headers": [
+                (b"host", b"192.168.1.10:5173"),
+            ],
+            "client": ("192.168.1.20", 5000),
+        }
+        self.assertEqual(_scope_origin(lan_scope), "http://192.168.1.10:5173")
+
+        proxied_scope = {
+            "scheme": "http",
+            "headers": [
+                (b"host", b"app.example.test"),
+                (b"x-forwarded-host", b"app.example.test"),
+                (b"x-forwarded-proto", b"https"),
+            ],
+            "client": ("172.20.0.4", 5000),
+        }
+        self.assertEqual(
+            _scope_origin(
+                proxied_scope,
+                trust_proxy_headers=True,
+                trusted_proxy_networks=("172.16.0.0/12",),
+            ),
+            "https://app.example.test",
+        )
+
     def test_registration_attempts_consume_a_success_independent_bucket(self):
         request = SimpleNamespace(
             client=SimpleNamespace(host="203.0.113.41"),
@@ -303,6 +388,41 @@ class InteractionRateLimitMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.request("/api/interaction/search-events"), 201)
         self.assertEqual(await self.request("/api/interaction/search-events"), 201)
         self.assertEqual(await self.request("/api/interaction/search-events"), 429)
+
+
+class CSRFMiddlewareTests(unittest.IsolatedAsyncioTestCase):
+    async def test_same_origin_lan_request_with_port_is_allowed(self):
+        async def app(_scope, _receive, send):
+            await send({"type": "http.response.start", "status": 204, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        middleware = CSRFMiddleware(app, allowed_origins=())
+        status = None
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/auth/login",
+                "scheme": "http",
+                "headers": [
+                    (b"host", b"192.168.1.10:5173"),
+                    (b"origin", b"http://192.168.1.10:5173"),
+                ],
+                "client": ("192.168.1.20", 1234),
+            },
+            receive,
+            send,
+        )
+        self.assertEqual(status, 204)
 
 
 if __name__ == "__main__":

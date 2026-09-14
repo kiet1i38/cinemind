@@ -6,7 +6,11 @@ from uuid import UUID
 
 from starlette.responses import JSONResponse
 
-from cinemind.security import SlidingWindowRateLimiter, client_address_from_headers
+from cinemind.security import (
+    SlidingWindowRateLimiter,
+    client_address_from_headers,
+    is_trusted_proxy,
+)
 
 
 class _RequestBodyTooLarge(Exception):
@@ -198,9 +202,17 @@ class CSRFMiddleware:
 
     SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
-    def __init__(self, app, allowed_origins: tuple[str, ...]):
+    def __init__(
+        self,
+        app,
+        allowed_origins: tuple[str, ...],
+        trust_proxy_headers: bool = False,
+        trusted_proxy_networks: tuple[str, ...] = (),
+    ):
         self.app = app
         self.allowed_origins = frozenset(origin.rstrip("/") for origin in allowed_origins)
+        self.trust_proxy_headers = trust_proxy_headers
+        self.trusted_proxy_networks = trusted_proxy_networks
 
     async def __call__(self, scope, receive: Callable, send: Callable) -> None:
         if scope["type"] != "http" or scope.get("method", "GET") in self.SAFE_METHODS:
@@ -215,7 +227,11 @@ class CSRFMiddleware:
         headers = _scope_headers(scope)
         origin = headers.get("origin", "").rstrip("/")
         fetch_site = headers.get("sec-fetch-site", "").casefold()
-        request_origin = _scope_origin(scope)
+        request_origin = _scope_origin(
+            scope,
+            trust_proxy_headers=self.trust_proxy_headers,
+            trusted_proxy_networks=self.trusted_proxy_networks,
+        )
         origin_is_allowed = not origin or origin == request_origin or origin in self.allowed_origins
         if fetch_site == "cross-site" or not origin_is_allowed:
             await JSONResponse(
@@ -238,10 +254,25 @@ def _scope_direct_client(scope) -> str | None:
     return client[0] if client else None
 
 
-def _scope_origin(scope) -> str:
+def _scope_origin(
+    scope,
+    *,
+    trust_proxy_headers: bool = False,
+    trusted_proxy_networks: tuple[str, ...] = (),
+) -> str:
     headers = _scope_headers(scope)
     host = headers.get("host", "").strip()
-    return f"{scope.get('scheme', 'http')}://{host}" if host else ""
+    scheme = scope.get("scheme", "http")
+    if trust_proxy_headers and is_trusted_proxy(
+        _scope_direct_client(scope), trusted_proxy_networks
+    ):
+        forwarded_scheme = headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().casefold()
+        if forwarded_scheme in {"http", "https"}:
+            scheme = forwarded_scheme
+        forwarded_host = headers.get("x-forwarded-host", "").split(",", 1)[0].strip()
+        if forwarded_host:
+            host = forwarded_host
+    return f"{scheme}://{host}" if host else ""
 
 
 def _cookie_value(cookie_header: str, name: str) -> str:

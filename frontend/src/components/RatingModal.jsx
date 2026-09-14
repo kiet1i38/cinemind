@@ -70,16 +70,34 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
   const [errors, setErrors] = useState({});
   const [isSaving, setIsSaving] = useState(false);
   const dialogRef = useRef(null);
+  const dirtyFieldsRef = useRef({ rating: false, watchDuration: false });
+  const initializedItemRef = useRef(null);
 
   useDialogFocus(dialogRef, onClose, { enabled: Boolean(item) });
 
   useEffect(() => {
-    if (!item) return undefined;
-    setRating(existingSignal ? String(existingSignal.rating) : "");
-    setWatchDuration(existingSignal ? String(existingSignal.watchMinutes) : "");
-    setErrors({});
-    setIsSaving(false);
-  }, [item?.id]);
+    if (!item) {
+      dirtyFieldsRef.current = { rating: false, watchDuration: false };
+      initializedItemRef.current = null;
+      return undefined;
+    }
+    // Hydration can finish after the modal opens. Refresh an untouched form
+    // when the server-provided signal arrives, but never overwrite fields the
+    // user has already edited while the modal is open.
+    const isNewItem = initializedItemRef.current !== item.id;
+    if (isNewItem) {
+      dirtyFieldsRef.current = { rating: false, watchDuration: false };
+      setRating(existingSignal ? String(existingSignal.rating) : "");
+      setWatchDuration(existingSignal ? String(existingSignal.watchMinutes) : "");
+      setErrors({});
+      setIsSaving(false);
+    } else {
+      if (!dirtyFieldsRef.current.rating) setRating(existingSignal ? String(existingSignal.rating) : "");
+      if (!dirtyFieldsRef.current.watchDuration) setWatchDuration(existingSignal ? String(existingSignal.watchMinutes) : "");
+    }
+    initializedItemRef.current = item.id;
+    return undefined;
+  }, [existingSignal?.rating, existingSignal?.watchMinutes, item?.id]);
 
   if (!item) return null;
 
@@ -102,6 +120,14 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
   const durationIsLong = isDurationLongerThanRuntime(item, watchDuration);
   const ratingErrorVariables = { min: signalConfig.rating.min, max: signalConfig.rating.max, step: signalConfig.rating.step };
   const durationErrorVariables = { min: signalConfig.watchMinutes.min, max: signalConfig.watchMinutes.max };
+  const handleRatingChange = (value) => {
+    dirtyFieldsRef.current.rating = true;
+    setRating(value);
+  };
+  const handleWatchDurationChange = (event) => {
+    dirtyFieldsRef.current.watchDuration = true;
+    setWatchDuration(event.target.value);
+  };
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -116,13 +142,13 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
           <form onSubmit={submit} noValidate>
             <div className="form-field">
               <label><Star size={17} weight="fill" aria-hidden="true" />{translate(language, "ratingLabel")}</label>
-              <StarRatingPicker value={rating} language={language} onChange={setRating} disabled={isSaving} error={errors.rating} />
+              <StarRatingPicker value={rating} language={language} onChange={handleRatingChange} disabled={isSaving} error={errors.rating} />
               <span id="rating-helper" className="field-helper">{translate(language, "ratingHelper", ratingErrorVariables)}</span>
               {errors.rating ? <span id="rating-error" className="field-error" role="alert"><WarningCircle size={15} aria-hidden="true" />{translate(language, errors.rating, ratingErrorVariables)}</span> : null}
             </div>
             <div className="form-field">
               <label htmlFor="watch-duration-input"><Clock size={17} weight="bold" aria-hidden="true" />{translate(language, "watchDurationLabel")}</label>
-              <input id="watch-duration-input" name="watchDuration" type="number" min={signalConfig.watchMinutes.min} max={signalConfig.watchMinutes.max} step={signalConfig.watchMinutes.step} inputMode="numeric" value={watchDuration} onChange={(event) => setWatchDuration(event.target.value)} placeholder={translate(language, "watchDurationPlaceholder")} aria-invalid={Boolean(errors.watchMinutes)} aria-describedby="duration-helper duration-error" />
+              <input id="watch-duration-input" name="watchDuration" type="number" min={signalConfig.watchMinutes.min} max={signalConfig.watchMinutes.max} step={signalConfig.watchMinutes.step} inputMode="numeric" value={watchDuration} onChange={handleWatchDurationChange} placeholder={translate(language, "watchDurationPlaceholder")} aria-invalid={Boolean(errors.watchMinutes)} aria-describedby="duration-helper duration-error" />
               <span id="duration-helper" className="field-helper">{isMovie(item) ? translate(language, "watchDurationHelperMovie") : translate(language, "watchDurationHelperTv", { episodeMinutes: appConfig.catalog.tvEpisodeRuntimeMinutes })}</span>
               {errors.watchMinutes ? <span id="duration-error" className="field-error" role="alert"><WarningCircle size={15} aria-hidden="true" />{translate(language, errors.watchMinutes, durationErrorVariables)}</span> : null}
               {!errors.watchMinutes && durationIsLong ? <span className="field-warning" role="status"><WarningCircle size={15} aria-hidden="true" />{translate(language, "durationWarning")}</span> : null}
