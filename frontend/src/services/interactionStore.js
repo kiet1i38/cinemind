@@ -8,60 +8,113 @@ const ownerStoreBase = createJsonStore(interactionConfig.ownerStorageKey, "anony
 const sessionStoreBase = createJsonStore(interactionConfig.sessionStorageKey, null);
 const sessionTokenStoreBase = createJsonStore(`${interactionConfig.sessionStorageKey}:token`, null);
 const signalStoreBase = createJsonStore(appConfig.signals.storageKey, {});
-const favoriteStoreBase = createJsonStore(interactionConfig.favoritesStorageKey, []);
-const watchlistStoreBase = createJsonStore(interactionConfig.watchlistStorageKey, []);
-const outboxStoreBase = createJsonStore(interactionConfig.outboxStorageKey, () => ({
-  signals: {},
-  preferences: { favorites: {}, watchlist: {} }
-}));
+const outboxStoreBase = createJsonStore(interactionConfig.outboxStorageKey, () => ({ signals: {}, searches: {} }));
+const legacyFavoriteStore = createJsonStore("cinemind-favorites", null);
+const legacyWatchlistStore = createJsonStore("cinemind-watchlist", null);
+
+// Remove obsolete preference data as soon as the new bundle loads.
+legacyFavoriteStore.remove();
+legacyWatchlistStore.remove();
 
 export function getInteractionOwner() {
   const owner = ownerStoreBase.read();
   return typeof owner === "string" && owner.trim() ? owner : "anonymous";
 }
 
-export function setInteractionOwner(userId) {
-  const nextOwner = userId ? String(userId) : "anonymous";
-  const previousOwner = getInteractionOwner();
-  ownerStoreBase.write(nextOwner);
-  return { previousOwner, nextOwner, changed: previousOwner !== nextOwner };
-}
-
-function scopedValue(store, fallback) {
+function ownerScopedValue(store, owner, fallback) {
   const raw = store.read();
   if (raw && typeof raw === "object" && !Array.isArray(raw) && raw.owners) {
-    const owner = getInteractionOwner();
     return Object.prototype.hasOwnProperty.call(raw.owners, owner) ? raw.owners[owner] : fallback;
   }
-  if (raw !== null && raw !== undefined) {
-    writeScopedValue(store, raw);
-    return raw;
-  }
-  return fallback;
+  return raw === null || raw === undefined ? fallback : raw;
 }
 
-function writeScopedValue(store, value) {
+function writeScopedValueForOwner(store, owner, value) {
   const raw = store.read();
-  const owners = raw && typeof raw === "object" && !Array.isArray(raw) && raw.owners
-    ? { ...raw.owners }
-    : {};
-  owners[getInteractionOwner()] = value;
+  const owners = raw && typeof raw === "object" && !Array.isArray(raw) && raw.owners ? { ...raw.owners } : {};
+  owners[owner] = value;
   store.write({ version: 2, owners });
 }
 
+function writeScopedValue(store, value) {
+  writeScopedValueForOwner(store, getInteractionOwner(), value);
+}
+
 function removeScopedValue(store) {
+  removeScopedValueForOwner(store, getInteractionOwner());
+}
+
+function removeScopedValueForOwner(store, owner) {
   const raw = store.read();
   if (!(raw && typeof raw === "object" && !Array.isArray(raw) && raw.owners)) {
     store.remove();
     return;
   }
   const owners = { ...raw.owners };
-  delete owners[getInteractionOwner()];
-  store.write({ version: 2, owners });
+  delete owners[owner];
+  if (Object.keys(owners).length) store.write({ version: 2, owners });
+  else store.remove();
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(String(value || "").trim());
+}
+
+function normalizeOutbox(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    signals: source.signals && typeof source.signals === "object" && !Array.isArray(source.signals) ? source.signals : {},
+    searches: source.searches && typeof source.searches === "object" && !Array.isArray(source.searches) ? source.searches : {}
+  };
+}
+
+export function setInteractionOwner(userId) {
+  const nextOwner = userId ? String(userId) : "anonymous";
+  const previousOwner = getInteractionOwner();
+  if (previousOwner === nextOwner) return { previousOwner, nextOwner, changed: false };
+
+  if (previousOwner === "anonymous" && nextOwner !== "anonymous") {
+    const anonymousSession = ownerScopedValue(sessionStoreBase, previousOwner, null);
+    const anonymousToken = ownerScopedValue(sessionTokenStoreBase, previousOwner, null);
+    const accountSession = ownerScopedValue(sessionStoreBase, nextOwner, null);
+    const accountToken = ownerScopedValue(sessionTokenStoreBase, nextOwner, null);
+    // Login/registration attaches the anonymous session server-side. Prefer
+    // its proof even if an older account namespace already exists.
+    if (isUuid(anonymousSession) || !isUuid(accountSession)) {
+      writeScopedValueForOwner(sessionStoreBase, nextOwner, isUuid(anonymousSession) ? String(anonymousSession).toLowerCase() : accountSession);
+    }
+    if (typeof anonymousToken === "string" && anonymousToken.trim().length >= 20 && anonymousToken.trim().length <= 256) {
+      writeScopedValueForOwner(sessionTokenStoreBase, nextOwner, anonymousToken.trim());
+    } else if (accountToken !== null && accountToken !== undefined) {
+      writeScopedValueForOwner(sessionTokenStoreBase, nextOwner, accountToken);
+    }
+    const anonymousSignals = ownerScopedValue(signalStoreBase, previousOwner, {});
+    const accountSignals = ownerScopedValue(signalStoreBase, nextOwner, {});
+    writeScopedValueForOwner(signalStoreBase, nextOwner, {
+      ...(accountSignals && typeof accountSignals === "object" && !Array.isArray(accountSignals) ? accountSignals : {}),
+      ...(anonymousSignals && typeof anonymousSignals === "object" && !Array.isArray(anonymousSignals) ? anonymousSignals : {})
+    });
+    const anonymousOutbox = normalizeOutbox(ownerScopedValue(outboxStoreBase, previousOwner, {}));
+    const accountOutbox = normalizeOutbox(ownerScopedValue(outboxStoreBase, nextOwner, {}));
+    writeScopedValueForOwner(outboxStoreBase, nextOwner, {
+      signals: { ...accountOutbox.signals, ...anonymousOutbox.signals },
+      searches: { ...accountOutbox.searches, ...anonymousOutbox.searches }
+    });
+    // The anonymous namespace is now attached server-side. Remove its local
+    // copy so a later logout or another account cannot inherit private data.
+    removeScopedValueForOwner(sessionStoreBase, previousOwner);
+    removeScopedValueForOwner(sessionTokenStoreBase, previousOwner);
+    removeScopedValueForOwner(signalStoreBase, previousOwner);
+    removeScopedValueForOwner(outboxStoreBase, previousOwner);
+  }
+
+  ownerStoreBase.write(nextOwner);
+  return { previousOwner, nextOwner, changed: true };
 }
 
 export function readOwnerScopedSignalState() {
-  return scopedValue(signalStoreBase, {});
+  const value = ownerScopedValue(signalStoreBase, getInteractionOwner(), {});
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
 export function writeOwnerScopedSignalState(value) {
@@ -74,40 +127,24 @@ export function removeOwnerScopedSignalState() {
 
 export const interactionSessionStore = {
   read() {
-    const value = scopedValue(sessionStoreBase, null);
-    return typeof value === "string" && value.trim() ? value : null;
+    const value = ownerScopedValue(sessionStoreBase, getInteractionOwner(), null);
+    if (!isUuid(value)) {
+      if (value !== null && value !== undefined) writeScopedValue(sessionStoreBase, null);
+      return null;
+    }
+    return String(value).toLowerCase();
   },
   readToken() {
-    const value = scopedValue(sessionTokenStoreBase, null);
-    return typeof value === "string" && value.trim() ? value : null;
+    const value = ownerScopedValue(sessionTokenStoreBase, getInteractionOwner(), null);
+    if (typeof value !== "string" || value.trim().length < 20 || value.trim().length > 256) {
+      if (value !== null && value !== undefined) writeScopedValue(sessionTokenStoreBase, null);
+      return null;
+    }
+    return value.trim();
   },
   write(value, token = null) {
-    writeScopedValue(sessionStoreBase, value ? String(value) : null);
-    writeScopedValue(sessionTokenStoreBase, token ? String(token) : null);
-  }
-};
-
-function readIdList(store) {
-  const value = scopedValue(store, []);
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))];
-}
-
-export const favoriteStore = {
-  read() {
-    return readIdList(favoriteStoreBase);
-  },
-  write(value) {
-    writeScopedValue(favoriteStoreBase, [...new Set((value || []).map(String))]);
-  }
-};
-
-export const watchlistStore = {
-  read() {
-    return readIdList(watchlistStoreBase);
-  },
-  write(value) {
-    writeScopedValue(watchlistStoreBase, [...new Set((value || []).map(String))]);
+    writeScopedValue(sessionStoreBase, isUuid(value) ? String(value).toLowerCase() : null);
+    writeScopedValue(sessionTokenStoreBase, typeof token === "string" && token.trim().length >= 20 && token.trim().length <= 256 ? token.trim() : null);
   }
 };
 
@@ -125,25 +162,11 @@ export function createMutationId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`;
 }
 
-function normalizeOutbox(value) {
-  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const preferences = source.preferences && typeof source.preferences === "object" ? source.preferences : {};
-  return {
-    signals: source.signals && typeof source.signals === "object" ? source.signals : {},
-    searches: source.searches && typeof source.searches === "object" ? source.searches : {},
-    preferences: {
-      favorites: preferences.favorites && typeof preferences.favorites === "object" ? preferences.favorites : {},
-      watchlist: preferences.watchlist && typeof preferences.watchlist === "object" ? preferences.watchlist : {}
-    }
-  };
-}
-
 export function readPendingInteractions() {
-  return normalizeOutbox(scopedValue(outboxStoreBase, {
-    signals: {},
-    searches: {},
-    preferences: { favorites: {}, watchlist: {} }
-  }));
+  const raw = ownerScopedValue(outboxStoreBase, getInteractionOwner(), { signals: {}, searches: {} });
+  const normalized = normalizeOutbox(raw);
+  if (JSON.stringify(raw) !== JSON.stringify(normalized)) writePendingInteractions(normalized);
+  return normalized;
 }
 
 function writePendingInteractions(value) {
@@ -151,14 +174,13 @@ function writePendingInteractions(value) {
 }
 
 export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId = createMutationId()) {
+  const normalizedRating = Number(rating);
+  const normalizedWatchMinutes = Number(watchMinutes);
+  if (!isValidRating(normalizedRating) || !Number.isInteger(normalizedWatchMinutes) || normalizedWatchMinutes < 0 || normalizedWatchMinutes > interactionConfig.maxWatchMinutes) {
+    throw new Error("Invalid signal payload");
+  }
   const outbox = readPendingInteractions();
-  const key = String(showId);
-  outbox.signals[key] = {
-    rating: Number(rating),
-    watchMinutes: Number(watchMinutes),
-    queuedAt: new Date().toISOString(),
-    mutationId
-  };
+  outbox.signals[String(showId)] = { rating: normalizedRating, watchMinutes: normalizedWatchMinutes, queuedAt: new Date().toISOString(), mutationId };
   writePendingInteractions(outbox);
   return mutationId;
 }
@@ -171,19 +193,9 @@ export function acknowledgePendingSignal(showId, mutationId) {
   writePendingInteractions(outbox);
 }
 
-export function queuePendingSearch(
-  { query, resultCount, filters },
-  mutationId = createMutationId()
-) {
+export function queuePendingSearch({ query, resultCount, filters }, mutationId = createMutationId()) {
   const outbox = readPendingInteractions();
-  const key = String(mutationId);
-  outbox.searches[key] = {
-    query: String(query ?? ""),
-    resultCount: Number(resultCount),
-    filters: filters && typeof filters === "object" && !Array.isArray(filters) ? { ...filters } : {},
-    queuedAt: new Date().toISOString(),
-    mutationId
-  };
+  outbox.searches[String(mutationId)] = { query: String(query ?? "").trim().slice(0, 200), resultCount: Math.max(0, Number(resultCount) || 0), filters: filters && typeof filters === "object" && !Array.isArray(filters) ? { ...filters } : {}, queuedAt: new Date().toISOString(), mutationId };
   writePendingInteractions(outbox);
   return mutationId;
 }
@@ -196,70 +208,31 @@ export function acknowledgePendingSearch(mutationId) {
   writePendingInteractions(outbox);
 }
 
-export function queuePendingPreference(kind, showId, active, mutationId = createMutationId()) {
-  const outbox = readPendingInteractions();
-  const key = String(showId);
-  if (!outbox.preferences[kind]) outbox.preferences[kind] = {};
-  outbox.preferences[kind][key] = {
-    active: Boolean(active),
-    queuedAt: new Date().toISOString(),
-    mutationId
-  };
-  writePendingInteractions(outbox);
-  return mutationId;
-}
-
-export function acknowledgePendingPreference(kind, showId, mutationId) {
-  const outbox = readPendingInteractions();
-  const key = String(showId);
-  if (outbox.preferences[kind]?.[key]?.mutationId !== mutationId) return;
-  delete outbox.preferences[kind][key];
-  writePendingInteractions(outbox);
-}
-
 export function mergeInteractionState(remoteState, localState = {}) {
   const pending = readPendingInteractions();
-  const hasRemoteState = Boolean(remoteState && typeof remoteState === "object");
-  const ratings = hasRemoteState ? {} : { ...(localState.ratings || {}) };
-  for (const item of remoteState?.ratings || []) {
-    ratings[String(item.show_id)] = {
-      rating: Number(item.rating),
-      watchMinutes: item.watch_minutes === null ? 0 : Number(item.watch_minutes),
-      savedAt: item.rated_at
-    };
+  const ratings = { ...(localState.ratings || {}) };
+  for (const item of Array.isArray(remoteState?.ratings) ? remoteState.ratings : []) {
+    const remoteRating = Number(item?.rating);
+    const remoteWatchMinutes = item?.watch_minutes === null ? 0 : Number(item?.watch_minutes);
+    if (!item || typeof item !== "object" || !item.show_id || !isValidRating(remoteRating) || !Number.isInteger(remoteWatchMinutes) || remoteWatchMinutes < 0 || remoteWatchMinutes > interactionConfig.maxWatchMinutes) continue;
+    ratings[String(item.show_id)] = { rating: remoteRating, watchMinutes: remoteWatchMinutes, savedAt: item.rated_at };
   }
   for (const [showId, signal] of Object.entries(pending.signals)) {
-    ratings[showId] = {
-      rating: signal.rating,
-      watchMinutes: signal.watchMinutes,
-      savedAt: signal.queuedAt
-    };
+    if (!signal || !isValidRating(Number(signal.rating)) || !Number.isInteger(Number(signal.watchMinutes)) || Number(signal.watchMinutes) < 0 || Number(signal.watchMinutes) > interactionConfig.maxWatchMinutes) continue;
+    ratings[showId] = { rating: Number(signal.rating), watchMinutes: Number(signal.watchMinutes), savedAt: signal.queuedAt };
   }
+  return { ratings };
+}
 
-  const mergeIds = (localIds, remoteItems, pendingPreferences) => {
-    const sourceIds = hasRemoteState && Array.isArray(remoteItems)
-      ? remoteItems.map((item) => String(item.show_id))
-      : (localIds || []).map(String);
-    const ids = new Set(sourceIds);
-    for (const [showId, preference] of Object.entries(pendingPreferences || {})) {
-      if (preference.active) ids.add(showId);
-      else ids.delete(showId);
-    }
-    return [...ids];
-  };
-
-  return {
-    ratings,
-    favorites: mergeIds(localState.favorites, remoteState?.favorites, pending.preferences.favorites),
-    watchlist_items: mergeIds(localState.watchlist, remoteState?.watchlist_items, pending.preferences.watchlist)
-  };
+function isValidRating(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 10 && Math.abs(value * 2 - Math.round(value * 2)) < Number.EPSILON * 100;
 }
 
 export function clearInteractionState({ preserveSession = false, clearPending = true, resetOwner = true } = {}) {
   if (!preserveSession) interactionSessionStore.write(null);
   removeOwnerScopedSignalState();
-  removeScopedValue(favoriteStoreBase);
-  removeScopedValue(watchlistStoreBase);
   if (clearPending) removeScopedValue(outboxStoreBase);
+  legacyFavoriteStore.remove();
+  legacyWatchlistStore.remove();
   if (resetOwner) ownerStoreBase.write("anonymous");
 }

@@ -134,14 +134,16 @@ def bootstrap_catalog(settings: Settings) -> dict:
 def build_source(settings: Settings, checksum: str) -> DatasetSource:
     """Build a deterministic source identity from configuration."""
 
-    # The database enforces uniqueness by name and type.  Derive the stable
-    # UUID from the same identity so a URI change updates the existing source
-    # row instead of creating a parallel, stale source identity.
-    source_key = f"{settings.catalog_source_name.strip().casefold()}:{settings.catalog_source_type.strip().casefold()}"
+    # The database enforces uniqueness by the exact name/type pair. Derive the
+    # stable UUID from that same pair so a URI change updates the existing row
+    # without making case-folded identities collide with distinct DB rows.
+    source_name = settings.catalog_source_name.strip()
+    source_type = settings.catalog_source_type.strip()
+    source_key = f"{source_name}:{source_type}"
     return DatasetSource(
         source_id=uuid5(NAMESPACE_URL, source_key),
-        source_name=settings.catalog_source_name,
-        source_type=settings.catalog_source_type,
+        source_name=source_name,
+        source_type=source_type,
         source_uri=settings.catalog_source_uri,
         schema_version=settings.catalog_schema_version,
         collected_at=datetime.now(timezone.utc),

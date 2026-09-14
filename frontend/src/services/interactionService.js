@@ -2,13 +2,11 @@
 
 import { appConfig, resolveApiBaseUrl } from "../config/appConfig";
 import {
-  acknowledgePendingPreference,
   acknowledgePendingSearch,
   acknowledgePendingSignal,
   createMutationId,
   getInteractionOwner,
   interactionSessionStore,
-  queuePendingPreference,
   queuePendingSearch,
   queuePendingSignal,
   readPendingInteractions
@@ -164,43 +162,11 @@ export async function submitSignal({ record, rating, watchMinutes, ...metadata }
   });
 }
 
-async function changePreference(path, method, record, metadata = {}) {
-  const mutationId = metadata.mutationId || createMutationId();
-  return withFreshInteractionSession(metadata, async (sessionId) => {
-    const options = { method, headers: {} };
-    options.headers["X-Cinemind-Mutation-Id"] = mutationId;
-    let requestPath = path;
-    if (method === "POST") {
-      options.body = JSON.stringify({ session_id: sessionId, show_id: record.id, client_mutation_id: mutationId });
-    } else {
-      requestPath += `/${encodeURIComponent(record.id)}/${encodeURIComponent(sessionId)}`;
-    }
-    return request(requestPath, options);
-  });
-}
-
-export function addFavorite(record, metadata) {
-  return changePreference("/favorites", "POST", record, metadata);
-}
-
-export function removeFavorite(record, metadata) {
-  return changePreference("/favorites", "DELETE", record, metadata);
-}
-
-export function addWatchlistItem(record, metadata) {
-  return changePreference("/watchlist-items", "POST", record, metadata);
-}
-
-export function removeWatchlistItem(record, metadata) {
-  return changePreference("/watchlist-items", "DELETE", record, metadata);
-}
-
 export function isRetryableInteractionError(error) {
-  return !error?.status || error.status === 408 || error.status === 429 || error.status >= 500;
-}
-
-export function setFavoritePreference(record, active, metadata = {}) {
-  return setPreference("favorites", record, active, metadata);
+  // Keep the outbox for transport/session failures, but discard payloads the
+  // API has definitively rejected.  Retrying 409/422 forever would leave a
+  // stale mutation in localStorage and could block logout indefinitely.
+  return !error?.status || [401, 404, 408, 429].includes(error.status) || error.status >= 500;
 }
 
 async function withFreshInteractionSession(metadata, operation) {
@@ -229,28 +195,6 @@ function markAuthRequired(error) {
   return error;
 }
 
-export function setWatchlistPreference(record, active, metadata = {}) {
-  return setPreference("watchlist", record, active, metadata);
-}
-
-async function setPreference(kind, record, active, metadata) {
-  const mutationId = queuePendingPreference(kind, record.id, active, metadata.mutationId);
-  const path = kind === "favorites" ? "/favorites" : "/watchlist-items";
-  const owner = getInteractionOwner();
-  return enqueueMutation(`${owner}:${kind}:${record.id}`, async () => {
-    try {
-      const result = active
-        ? await changePreference(path, "POST", record, { ...metadata, mutationId })
-        : await changePreference(path, "DELETE", record, { ...metadata, mutationId });
-      acknowledgePendingPreference(kind, record.id, mutationId);
-      return result;
-    } catch (error) {
-      if (!isRetryableInteractionError(error)) acknowledgePendingPreference(kind, record.id, mutationId);
-      throw error;
-    }
-  });
-}
-
 export async function syncPendingInteractions(records, metadata = {}) {
   const owner = getInteractionOwner();
   if (pendingSyncRequest?.owner === owner) return pendingSyncRequest.promise;
@@ -269,7 +213,10 @@ async function syncPendingInteractionsOnce(records, metadata) {
   const tasks = [];
 
   for (const search of Object.values(pending.searches)) {
-    if (!search || typeof search !== "object" || !search.mutationId) continue;
+    if (!search || typeof search !== "object" || !search.mutationId) {
+      if (search?.mutationId) acknowledgePendingSearch(search.mutationId);
+      continue;
+    }
     tasks.push(recordSearchEvent({
       query: search.query,
       resultCount: search.resultCount,
@@ -281,21 +228,11 @@ async function syncPendingInteractionsOnce(records, metadata) {
 
   for (const [showId, signal] of Object.entries(pending.signals)) {
     const record = recordsById.get(showId);
-    if (record) {
-      tasks.push(submitSignal({ record, ...signal, ...metadata, mutationId: signal.mutationId }));
+    if (!record || !signal || typeof signal !== "object" || !signal.mutationId) {
+      if (signal?.mutationId) acknowledgePendingSignal(showId, signal.mutationId);
+      continue;
     }
-  }
-  for (const [showId, preference] of Object.entries(pending.preferences.favorites)) {
-    const record = recordsById.get(showId);
-    if (record) {
-      tasks.push(setFavoritePreference(record, preference.active, { ...metadata, mutationId: preference.mutationId }));
-    }
-  }
-  for (const [showId, preference] of Object.entries(pending.preferences.watchlist)) {
-    const record = recordsById.get(showId);
-    if (record) {
-      tasks.push(setWatchlistPreference(record, preference.active, { ...metadata, mutationId: preference.mutationId }));
-    }
+    tasks.push(submitSignal({ record, ...signal, ...metadata, mutationId: signal.mutationId }));
   }
   return Promise.allSettled(tasks);
 }

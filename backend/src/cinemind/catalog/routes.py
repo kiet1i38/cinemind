@@ -38,7 +38,7 @@ def get_catalog_summary(
 @router.get("", response_model=CatalogPageResponse)
 def list_catalog(
     limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=100_000),
     query: str | None = Query(default=None, max_length=200),
     content_type: str | None = Query(default=None, alias="type"),
     genre: str | None = Query(default=None, max_length=120),

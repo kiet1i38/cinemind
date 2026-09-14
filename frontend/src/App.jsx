@@ -20,20 +20,13 @@ import {
   getInteractionState,
   isRetryableInteractionError,
   recordSearchEvent,
-  setFavoritePreference,
-  setWatchlistPreference,
   submitSignal,
   syncPendingInteractions
 } from "./services/interactionService";
 import { getDiscoverableTitles, getRecentTitles, getRelatedTitles, getTitlesByType } from "./services/recommendationService";
 import { catalogPageSizeStore } from "./services/catalogPreferencesStore";
 import { getAuthPageUrl, getCurrentUser } from "./services/authService";
-import {
-  favoriteStore,
-  mergeInteractionState,
-  setInteractionOwner,
-  watchlistStore
-} from "./services/interactionStore";
+import { mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./authGate.css";
 
@@ -50,8 +43,6 @@ export default function App() {
   const [modalItem, setModalItem] = useState(null);
   const [routeId, setRouteId] = useState(() => getRouteTitleId());
   const [ratings, setRatings] = useState(() => signalStore.read());
-  const [favorites, setFavorites] = useState(() => favoriteStore.read());
-  const [watchlist, setWatchlist] = useState(() => watchlistStore.read());
   const [authUser, setAuthUser] = useState(null);
   const [authStatus, setAuthStatus] = useState("checking");
   const [authPrompt, setAuthPrompt] = useState(null);
@@ -59,7 +50,6 @@ export default function App() {
   const [activeNavigationTarget, setActiveNavigationTarget] = useState(navigationTargets.home);
   const searchEventSignature = useRef("");
   const languageRef = useRef(language);
-  const preferenceIntentRef = useRef({ favorites: new Map(), watchlist: new Map() });
   const interactionRevisionRef = useRef(0);
   const authRequestRef = useRef(null);
   const authRetryRef = useRef(null);
@@ -117,14 +107,9 @@ export default function App() {
       authRetryRef.current = null;
     };
     const applyConfirmedIdentity = (user) => {
-      const ownership = setInteractionOwner(user?.user_id);
-      // Each account has its own browser namespace. Never clear the new
-      // owner's state when the auth check finishes after a user switch.
-      if (ownership.changed) setRatings(signalStore.read());
+      setInteractionOwner(user?.user_id);
       setAuthUser(user);
       setRatings(signalStore.read());
-      setFavorites(favoriteStore.read());
-      setWatchlist(watchlistStore.read());
       setAuthStatus(user ? "authenticated" : "anonymous");
     };
     const scheduleAuthRetry = () => {
@@ -176,14 +161,6 @@ export default function App() {
     signalStore.write(ratings);
   }, [ratings]);
 
-  useEffect(() => {
-    favoriteStore.write(favorites);
-  }, [favorites]);
-
-  useEffect(() => {
-    watchlistStore.write(watchlist);
-  }, [watchlist]);
-
   const interactionMetadata = useCallback(() => ({
     locale: languageRef.current,
     platform: typeof navigator !== "undefined" ? String(navigator.platform || "web").slice(0, 32) : "web"
@@ -202,13 +179,9 @@ export default function App() {
           || hydrationOwner !== (authUser?.user_id ? String(authUser.user_id) : "anonymous")
         ) return;
         const merged = mergeInteractionState(state, {
-          ratings: signalStore.read(),
-          favorites: favoriteStore.read(),
-          watchlist: watchlistStore.read()
+          ratings: signalStore.read()
         });
         setRatings(merged.ratings);
-        setFavorites(merged.favorites);
-        setWatchlist(merged.watchlist_items);
         syncPendingInteractions(catalog, interactionMetadata()).catch(() => undefined);
       })
       .catch(() => undefined);
@@ -253,8 +226,6 @@ export default function App() {
   const movies = useMemo(() => getTitlesByType(catalog, catalogTypes.movie), [catalog]);
   const tvShows = useMemo(() => getTitlesByType(catalog, catalogTypes.tvShow), [catalog]);
   const ratedRecords = useMemo(() => Object.keys(ratings).map((id) => catalog.find((record) => record.id === id)).filter(Boolean), [catalog, ratings]);
-  const favoriteRecords = useMemo(() => favorites.map((id) => catalog.find((record) => record.id === id)).filter(Boolean), [catalog, favorites]);
-  const watchlistRecords = useMemo(() => watchlist.map((id) => catalog.find((record) => record.id === id)).filter(Boolean), [catalog, watchlist]);
   const lastRated = useMemo(() => {
     let latestRecord = null;
     let latestTimestamp = Number.NEGATIVE_INFINITY;
@@ -340,8 +311,9 @@ export default function App() {
   }, [clearFilters, goHome]);
 
   const handleQueryChange = useCallback((nextQuery) => {
-    setQuery(nextQuery);
-    if (nextQuery.trim()) {
+    const boundedQuery = String(nextQuery || "").slice(0, 200);
+    setQuery(boundedQuery);
+    if (boundedQuery.trim()) {
       if (window.location.hash) closeTitleRoute();
       setRouteId(null);
       setActiveNavigationTarget(null);
@@ -399,46 +371,6 @@ export default function App() {
     }
   }, [authUser, interactionMetadata, language, modalItem, ratings]);
 
-  const togglePreference = useCallback(async (kind, record, nextActive) => {
-    if (requestAuth("preference", record)) return;
-    interactionRevisionRef.current += 1;
-    const id = String(record.id);
-    const intentMap = preferenceIntentRef.current[kind];
-    const currentActive = intentMap.has(id)
-      ? intentMap.get(id)
-      : (kind === "favorites" ? favorites : watchlist).includes(id);
-    const shouldAdd = intentMap.has(id) ? !currentActive : (typeof nextActive === "boolean" ? nextActive : !currentActive);
-    intentMap.set(id, shouldAdd);
-    const update = (current) => shouldAdd
-      ? [...new Set([...current, id])]
-      : current.filter((itemId) => itemId !== id);
-    if (kind === "favorites") setFavorites(update);
-    else setWatchlist(update);
-    try {
-      const save = kind === "favorites" ? setFavoritePreference : setWatchlistPreference;
-      await save(record, shouldAdd, interactionMetadata());
-      setToast(translate(language, "preferenceSaved"));
-    } catch (error) {
-      if (isRetryableInteractionError(error)) {
-        setToast(translate(language, "preferenceSavedLocally"));
-        return;
-      }
-      if (intentMap.get(id) === shouldAdd) {
-        intentMap.delete(id);
-        if (kind === "favorites") setFavorites((current) => shouldAdd ? current.filter((itemId) => itemId !== id) : [...new Set([...current, id])]);
-        else setWatchlist((current) => shouldAdd ? current.filter((itemId) => itemId !== id) : [...new Set([...current, id])]);
-      }
-      if (error.authRequired || error.status === 401) {
-        setAuthPrompt({ action: "preference", title: record.title });
-      } else {
-        setToast(translate(language, "preferenceSaveError"));
-      }
-    }
-  }, [favorites, interactionMetadata, language, requestAuth, watchlist]);
-
-  const toggleFavorite = useCallback((record, nextActive) => togglePreference("favorites", record, nextActive), [togglePreference]);
-  const toggleWatchlist = useCallback((record, nextActive) => togglePreference("watchlist", record, nextActive), [togglePreference]);
-
   const headerProps = {
     language,
     query,
@@ -456,10 +388,10 @@ export default function App() {
     <div className="app-shell">
       <Header {...headerProps} />
       {routeId ? (
-        <DetailView item={routeItem} related={routeRelated} language={language} onBack={backFromDetail} onRate={openModal} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} isFavorite={routeItem ? favorites.includes(String(routeItem.id)) : false} isInWatchlist={routeItem ? watchlist.includes(String(routeItem.id)) : false} favoriteIds={favorites} watchlistIds={watchlist} />
+        <DetailView item={routeItem} related={routeRelated} language={language} onBack={backFromDetail} onRate={openModal} onSelect={openModal} />
       ) : (
         <main data-testid="home-page">
-          <Hero record={featured} language={language} onRate={openModal} onMoreInfo={openDetail} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} isFavorite={featured ? favorites.includes(String(featured.id)) : false} isInWatchlist={featured ? watchlist.includes(String(featured.id)) : false} />
+          <Hero record={featured} language={language} onRate={openModal} onMoreInfo={openDetail} />
           <div className="browse-shell" id="catalog">
             <div className="browse-intro">
               <h2>{translate(language, "exploreCatalog")}</h2>
@@ -474,23 +406,21 @@ export default function App() {
                 </div>
                 {filteredCatalog.length ? (
                   <>
-                    <div className="search-results-grid">{visibleFilteredCatalog.map((record) => <CatalogCard key={record.id} record={record} language={language} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} isFavorite={favorites.includes(String(record.id))} isInWatchlist={watchlist.includes(String(record.id))} />)}</div>
+                    <div className="search-results-grid">{visibleFilteredCatalog.map((record) => <CatalogCard key={record.id} record={record} language={language} onSelect={openModal} />)}</div>
                     <CatalogPagination language={language} displayedCount={visibleFilteredCatalog.length} totalCount={filteredCatalog.length} onLoadMore={() => setVisibleCount((current) => Math.min(current + pageSize, filteredCatalog.length))} />
                   </>
                 ) : <EmptyState language={language} onClear={clearFilters} />}
               </section>
             ) : (
               <>
-                <TitleRail id="trending" title={translate(language, "trending")} items={trending} language={language} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} favoriteIds={favorites} watchlistIds={watchlist} />
-                <TitleRail id="recent" title={translate(language, "newest")} items={recent} language={language} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} favoriteIds={favorites} watchlistIds={watchlist} />
-                <TitleRail id="movies" title={translate(language, "moviesForYou")} items={movies} language={language} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} favoriteIds={favorites} watchlistIds={watchlist} />
-                <TitleRail id="tv" title={translate(language, "tvForYou")} items={tvShows} language={language} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} favoriteIds={favorites} watchlistIds={watchlist} />
-                <TitleRail id="rated" title={translate(language, "ratedTitles")} items={ratedRecords} language={language} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} favoriteIds={favorites} watchlistIds={watchlist} />
-                <TitleRail id="favorites" title={translate(language, "favorites")} items={favoriteRecords} language={language} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} favoriteIds={favorites} watchlistIds={watchlist} />
-                <TitleRail id="watchlist" title={translate(language, "watchlist")} items={watchlistRecords} language={language} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} favoriteIds={favorites} watchlistIds={watchlist} />
+                <TitleRail id="trending" title={translate(language, "trending")} items={trending} language={language} onSelect={openModal} />
+                <TitleRail id="recent" title={translate(language, "newest")} items={recent} language={language} onSelect={openModal} />
+                <TitleRail id="movies" title={translate(language, "moviesForYou")} items={movies} language={language} onSelect={openModal} />
+                <TitleRail id="tv" title={translate(language, "tvForYou")} items={tvShows} language={language} onSelect={openModal} />
+                <TitleRail id="rated" title={translate(language, "ratedTitles")} items={ratedRecords} language={language} onSelect={openModal} />
                 <section className="title-section signals-section" id="section-signals" aria-labelledby="signals-heading">
                   <div className="section-heading"><div><h2 id="signals-heading">{translate(language, "previewPicks")}</h2><p>{translate(language, "previewPicksDescription")}</p></div></div>
-                  {previewPicks.length ? <div className="title-rail" data-rail="signals" data-testid="rail-signals">{previewPicks.map((record) => <CatalogCard key={record.id} record={record} language={language} onSelect={openModal} onToggleFavorite={toggleFavorite} onToggleWatchlist={toggleWatchlist} isFavorite={favorites.includes(String(record.id))} isInWatchlist={watchlist.includes(String(record.id))} />)}</div> : <EmptyState language={language} signals />}
+                  {previewPicks.length ? <div className="title-rail" data-rail="signals" data-testid="rail-signals">{previewPicks.map((record) => <CatalogCard key={record.id} record={record} language={language} onSelect={openModal} />)}</div> : <EmptyState language={language} signals />}
                 </section>
               </>
             )}

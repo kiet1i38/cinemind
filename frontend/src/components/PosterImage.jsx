@@ -35,7 +35,7 @@ export function PosterImage({ record, language = appLanguage, className = "", pr
         alt={translate(language, "posterAlt", { title: record.title })}
         data-poster-kind={record.posterKind || "public"}
         loading={priority ? "eager" : "lazy"}
-        fetchPriority={priority ? "high" : "auto"}
+        fetchpriority={priority ? "high" : "auto"}
         onError={() => {
           if (record.posterFallbackUrl && source !== record.posterFallbackUrl) {
             setSource(record.posterFallbackUrl);

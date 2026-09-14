@@ -78,6 +78,7 @@ class Settings:
     admin_reset_password: str = field(repr=False)
     reset_enabled: bool
     full_reset_enabled: bool
+    interaction_session_ttl_days: int = 30
 
     def __post_init__(self) -> None:
         """Reject unsafe or internally inconsistent runtime limits early."""
@@ -90,6 +91,7 @@ class Settings:
             "db_connect_timeout_seconds": self.db_connect_timeout_seconds,
             "max_request_body_bytes": self.max_request_body_bytes,
             "max_watch_minutes": self.max_watch_minutes,
+            "interaction_session_ttl_days": self.interaction_session_ttl_days,
             "auth_session_ttl_days": self.auth_session_ttl_days,
             "auth_password_iterations": self.auth_password_iterations,
             "auth_rate_limit_window_seconds": self.auth_rate_limit_window_seconds,
@@ -166,6 +168,7 @@ def get_settings() -> Settings:
             "MAX_REQUEST_BODY_BYTES", 32768
         ),
         max_watch_minutes=_int_from_environment("MAX_WATCH_MINUTES", 10080),
+        interaction_session_ttl_days=_int_from_environment("INTERACTION_SESSION_TTL_DAYS", 30),
         cors_allowed_origins=_list_from_environment(
             "CORS_ALLOWED_ORIGINS",
             ("http://localhost:5173", "http://127.0.0.1:5173"),

@@ -27,8 +27,13 @@ const englishCopy = JSON.parse(await readFile(resolve(sourceRoot, "locales/en.js
 if (!Object.keys(englishCopy).length) violations.push("locales: the English copy must not be empty.");
 
 const interactionService = await readFile(interactionServicePath, "utf8");
-if (!/changePreference\(path,\s*"(?:POST|DELETE)",\s*record,\s*\{\s*\.\.\.metadata,\s*mutationId\s*\}\)/su.test(interactionService)) {
-  violations.push("services/interactionService.js: preference retries must reuse the queued mutationId.");
+if (/changePreference|setFavoritePreference|setWatchlistPreference|watchlist-items|\/favorites/u.test(interactionService)) {
+  violations.push("services/interactionService.js: retired preference mutations must not be exposed.");
+}
+
+const ratingModal = await readFile(resolve(sourceRoot, "components/RatingModal.jsx"), "utf8");
+if (!/role="radiogroup"/u.test(ratingModal) || !/0\.5/u.test(ratingModal)) {
+  violations.push("components/RatingModal.jsx: ratings must use the half-star picker.");
 }
 
 const nginxConfig = await readFile(nginxConfigPath, "utf8");

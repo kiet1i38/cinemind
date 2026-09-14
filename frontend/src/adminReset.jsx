@@ -13,24 +13,24 @@ const resetConfig = appConfig.adminReset;
 const scopeCards = [
   {
     value: "interaction",
-    eyebrow: "Mức 1",
-    title: "Session hiện tại",
-    description: "Xóa ratings, watch sessions, favorites, watchlist và search events của trình duyệt này.",
-    warning: "Catalog phim vẫn được giữ nguyên."
+    eyebrow: "Level 1",
+    title: "Current session",
+    description: "Delete ratings, watch sessions, and search events for this browser.",
+    warning: "The movie catalog is preserved."
   },
   {
     value: "demo",
-    eyebrow: "Mức 2",
-    title: "Dữ liệu demo",
-    description: "Xóa toàn bộ dữ liệu động của ứng dụng để bắt đầu lại một buổi trình diễn sạch.",
-    warning: "Các session anonymous của những người test khác cũng bị xóa."
+    eyebrow: "Level 2",
+    title: "Demo data",
+    description: "Delete all application data so the demo can start from a clean state.",
+    warning: "Anonymous sessions from other testers are also deleted."
   },
   {
     value: "full",
-    eyebrow: "Mức 3",
-    title: "Toàn bộ dữ liệu user",
-    description: "Xóa toàn bộ user, auth session và interaction data của ứng dụng.",
-    warning: "Giữ nguyên catalog phim, migration history và ops audit."
+    eyebrow: "Level 3",
+    title: "All user data",
+    description: "Delete all users, auth sessions, and interaction data from the application.",
+    warning: "The movie catalog, migration history, and operations audit are preserved."
   }
 ];
 
@@ -88,7 +88,7 @@ export default function AdminResetPage() {
       <div className="reset-orb reset-orb-right" aria-hidden="true" />
       <div className="reset-shell">
         <header className="reset-header">
-          <a className="reset-back-link" href="./" aria-label="Quay lại CineMind">
+          <a className="reset-back-link" href="./" aria-label="Back to CineMind">
             <ArrowLeft size={17} aria-hidden="true" />
             <span>CineMind</span>
           </a>
@@ -99,7 +99,7 @@ export default function AdminResetPage() {
           <div className="reset-hero-icon" aria-hidden="true"><ShieldCheck size={25} weight="duotone" /></div>
           <p className="reset-eyebrow">CineMind / Admin console</p>
           <h1 id="reset-title">Reset data safely.</h1>
-          <p className="reset-lede">Trang riêng cho việc làm sạch dữ liệu test. Mọi thao tác đều cần Basic Auth và câu xác nhận đúng với mức reset đã chọn.</p>
+          <p className="reset-lede">A protected page for cleaning test data. Every operation requires Basic Auth and the exact confirmation phrase for the selected reset level.</p>
         </section>
 
         <form className="reset-card" onSubmit={handleSubmit}>
@@ -152,11 +152,11 @@ export default function AdminResetPage() {
               <span>Selected scope</span>
               <strong>{selectedScope.title}</strong>
               {scope === "interaction" && hasCurrentSession ? <small>Session {sessionId.slice(0, 8)}...</small> : null}
-              {scope === "interaction" && !hasCurrentSession ? <small className="reset-warning-text">Mở CineMind và tạo interaction session trước.</small> : null}
+              {scope === "interaction" && !hasCurrentSession ? <small className="reset-warning-text">Open CineMind and create an interaction session first.</small> : null}
             </div>
           </div>
 
-          {scope === "full" ? <div className="reset-danger-note"><Warning size={18} weight="fill" aria-hidden="true" /><span>Mức này xóa toàn bộ user và dữ liệu tương tác nhưng giữ nguyên catalog phim, migration history và ops audit.</span></div> : null}
+          {scope === "full" ? <div className="reset-danger-note"><Warning size={18} weight="fill" aria-hidden="true" /><span>This level deletes all users and interaction data while preserving the movie catalog, migration history, and operations audit.</span></div> : null}
           {message ? <div className={`reset-feedback ${requestState}`} role={requestState === "error" ? "alert" : "status"}>{requestState === "error" ? <XCircle size={18} weight="fill" aria-hidden="true" /> : <CheckCircle size={18} weight="fill" aria-hidden="true" />}<span>{message}</span></div> : null}
 
           <div className="reset-actions">

@@ -93,9 +93,14 @@ class RatingCreateRequest(BaseModel):
 
     session_id: UUID
     show_id: str = Field(..., min_length=1, max_length=32)
-    rating: Decimal = Field(..., ge=Decimal("0"), le=Decimal("10"), multiple_of=Decimal("0.5"))
+    rating: Decimal = Field(...)
     watch_session_id: UUID | None = None
     client_mutation_id: UUID | None = None
+
+    @field_validator("rating")
+    @classmethod
+    def validate_rating(cls, value: Decimal) -> Decimal:
+        return _validate_rating(value)
 
 
 class RatingResponse(BaseModel):
@@ -114,9 +119,14 @@ class SignalCreateRequest(BaseModel):
 
     session_id: UUID
     show_id: str = Field(..., min_length=1, max_length=32)
-    rating: Decimal = Field(..., ge=Decimal("0"), le=Decimal("10"), multiple_of=Decimal("0.5"))
+    rating: Decimal = Field(...)
     watch_minutes: int = Field(..., ge=0)
     client_mutation_id: UUID | None = None
+
+    @field_validator("rating")
+    @classmethod
+    def validate_rating(cls, value: Decimal) -> Decimal:
+        return _validate_rating(value)
 
 
 class SignalResponse(BaseModel):
@@ -124,23 +134,6 @@ class SignalResponse(BaseModel):
 
     watch_session: WatchSessionResponse
     rating: RatingResponse
-
-
-class PreferenceCreateRequest(BaseModel):
-    """Request to add or restore a favorite/watchlist item."""
-
-    session_id: UUID
-    show_id: str = Field(..., min_length=1, max_length=32)
-    client_mutation_id: UUID | None = None
-
-
-class PreferenceResponse(BaseModel):
-    """Current state of a favorite or watchlist item."""
-
-    session_id: UUID
-    show_id: str
-    active: bool
-    changed_at: datetime
 
 
 class RatingStateResponse(BaseModel):
@@ -152,17 +145,19 @@ class RatingStateResponse(BaseModel):
     rated_at: datetime
 
 
-class TitleStateResponse(BaseModel):
-    """Active favorite/watchlist title reference."""
-
-    show_id: str
-    changed_at: datetime
-
-
 class InteractionStateResponse(BaseModel):
     """All persisted state needed to restore the frontend session."""
 
     session_id: UUID
     ratings: list[RatingStateResponse] = Field(default_factory=list)
-    favorites: list[TitleStateResponse] = Field(default_factory=list)
-    watchlist_items: list[TitleStateResponse] = Field(default_factory=list)
+
+
+def _validate_rating(value: Decimal) -> Decimal:
+    """Accept finite ratings from 0 to 10 in exact half-point steps."""
+
+    rating = Decimal(value)
+    if not rating.is_finite() or rating < Decimal("0") or rating > Decimal("10"):
+        raise ValueError("rating must be between 0 and 10")
+    if (rating * 2) != (rating * 2).to_integral_value():
+        raise ValueError("rating must use increments of 0.5")
+    return rating.quantize(Decimal("0.1"))

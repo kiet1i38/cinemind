@@ -26,14 +26,14 @@ class OpsRepository:
                 source_uri,
                 schema_version,
                 collected_at,
+                is_active,
                 checksum_sha256
             )
-            VALUES (%s, %s, %s, %s, %s, %s, NULL)
+            VALUES (%s, %s, %s, %s, %s, %s, FALSE, NULL)
             ON CONFLICT (source_name, source_type)
             DO UPDATE SET
                 source_uri = EXCLUDED.source_uri,
                 schema_version = EXCLUDED.schema_version,
-                is_active = TRUE,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING source_id
             """,
@@ -80,6 +80,14 @@ class OpsRepository:
         )
         if result.rowcount != 1:
             raise RuntimeError(f"Dataset source not found: {source_id}")
+        self.connection.execute(
+            """
+            UPDATE ops.dataset_sources
+            SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+            WHERE source_id <> %s AND is_active = TRUE
+            """,
+            (source_id,),
+        )
 
     def get_source_checksum(self, source_id: UUID) -> str | None:
         """Read the last ingested source checksum before a refresh."""

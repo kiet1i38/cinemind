@@ -7,6 +7,69 @@ import { isDurationLongerThanRuntime, validateSignalInput } from "../lib/signalV
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import { PosterImage } from "./PosterImage";
 
+const ratingOptions = Array.from(
+  { length: Math.round((signalConfig.rating.max - Math.max(signalConfig.rating.min, 0.5)) / signalConfig.rating.step) + 1 },
+  (_, index) => Number((Math.max(signalConfig.rating.min, 0.5) + index * signalConfig.rating.step).toFixed(1)),
+);
+const starValues = Array.from({ length: Math.round(signalConfig.rating.max) }, (_, index) => index + 1);
+
+function ratingLabel(value, language) {
+  if (value === 0) return translate(language, "ratingNone");
+  return translate(language, "ratingStars", { value: value.toFixed(1) });
+}
+
+function StarRatingPicker({ value, language, onChange, disabled, error }) {
+  const selected = Number(value);
+  const selectedIndex = selected > 0 ? ratingOptions.indexOf(selected) + 1 : 0;
+  const choices = [0, ...ratingOptions];
+
+  const handleKeyDown = (event) => {
+    const focusedValue = Number(event.target?.dataset?.ratingValue);
+    const focusedIndex = Number.isFinite(focusedValue) ? ratingOptions.indexOf(focusedValue) + 1 : 0;
+    const currentIndex = focusedIndex > 0 ? focusedIndex : (selectedIndex >= 0 ? selectedIndex : 0);
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowRight" || event.key === "ArrowUp") nextIndex = Math.min(choices.length - 1, currentIndex + 1);
+    if (event.key === "ArrowLeft" || event.key === "ArrowDown") nextIndex = Math.max(0, currentIndex - 1);
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = choices.length - 1;
+    if (nextIndex !== currentIndex || ["Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      onChange(String(choices[nextIndex]));
+      const nextValue = choices[nextIndex];
+      const focusId = nextIndex === 0
+        ? "rating-none"
+        : Number.isInteger(nextValue)
+          ? `rating-star-${nextValue - 1}-full`
+          : `rating-star-${Math.floor(nextValue)}`;
+      document.getElementById(focusId)?.focus();
+    }
+  };
+
+  return (
+    <div className="rating-star-picker" role="radiogroup" aria-label={translate(language, "ratingLabel")} aria-invalid={error ? "true" : "false"} aria-describedby="rating-helper rating-error" onKeyDown={handleKeyDown}>
+      <button id="rating-none" type="button" className="rating-none-hit" role="radio" aria-checked={selectedIndex === 0} aria-label={ratingLabel(0, language)} tabIndex={selectedIndex === 0 ? 0 : -1} disabled={disabled} onClick={() => onChange("0")}>
+        {translate(language, "ratingNone")}
+      </button>
+      {starValues.map((fullValue, index) => {
+        const halfValue = fullValue - 0.5;
+        const halfChoiceIndex = ratingOptions.indexOf(halfValue) + 1;
+        const fullChoiceIndex = ratingOptions.indexOf(fullValue) + 1;
+        const fillWidth = selected >= fullValue ? "100%" : selected >= halfValue ? "50%" : "0%";
+        return (
+          <span key={fullValue} className="rating-star-cell">
+            <span className="rating-star-visual" aria-hidden="true">
+              <Star size={24} weight="regular" />
+              <span className="rating-star-fill" style={{ width: fillWidth }}><Star size={24} weight="fill" /></span>
+            </span>
+            <button id={`rating-star-${index}`} type="button" className="rating-star-hit half" role="radio" aria-checked={selected === halfValue} aria-label={ratingLabel(halfValue, language)} tabIndex={selectedIndex === halfChoiceIndex ? 0 : -1} disabled={disabled} onClick={() => onChange(String(halfValue))} data-rating-value={halfValue}><span className="sr-only">{ratingLabel(halfValue, language)}</span></button>
+            <button id={`rating-star-${index}-full`} type="button" className="rating-star-hit full" role="radio" aria-checked={selected === fullValue} aria-label={ratingLabel(fullValue, language)} tabIndex={selectedIndex === fullChoiceIndex ? 0 : -1} disabled={disabled} onClick={() => onChange(String(fullValue))} data-rating-value={fullValue}><span className="sr-only">{ratingLabel(fullValue, language)}</span></button>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 export function RatingModal({ item, language, existingSignal, onClose, onSave }) {
   const [rating, setRating] = useState("");
   const [watchDuration, setWatchDuration] = useState("");
@@ -22,7 +85,7 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
     setWatchDuration(existingSignal ? String(existingSignal.watchMinutes) : "");
     setErrors({});
     setIsSaving(false);
-  }, [item?.id]);
+  }, [existingSignal, item?.id]);
 
   if (!item) return null;
 
@@ -58,8 +121,8 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
           <p className="modal-description">{translate(language, "rateDescription")}</p>
           <form onSubmit={submit} noValidate>
             <div className="form-field">
-              <label htmlFor="rating-input"><Star size={17} weight="fill" aria-hidden="true" />{translate(language, "ratingLabel")}</label>
-              <input id="rating-input" name="rating" type="number" min={signalConfig.rating.min} max={signalConfig.rating.max} step={signalConfig.rating.step} inputMode="decimal" value={rating} onChange={(event) => setRating(event.target.value)} placeholder={translate(language, "ratingPlaceholder", ratingErrorVariables)} aria-invalid={Boolean(errors.rating)} aria-describedby="rating-helper rating-error" data-dialog-initial-focus />
+              <label><Star size={17} weight="fill" aria-hidden="true" />{translate(language, "ratingLabel")}</label>
+              <StarRatingPicker value={rating} language={language} onChange={setRating} disabled={isSaving} error={errors.rating} />
               <span id="rating-helper" className="field-helper">{translate(language, "ratingHelper", ratingErrorVariables)}</span>
               {errors.rating ? <span id="rating-error" className="field-error" role="alert"><WarningCircle size={15} aria-hidden="true" />{translate(language, errors.rating, ratingErrorVariables)}</span> : null}
             </div>

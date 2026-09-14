@@ -10,7 +10,7 @@ export function AuthRequiredModal({ language, action, title, onClose }) {
 
   if (!action) return null;
 
-  const actionKey = action === "rating" ? "authRequiredForRating" : "authRequiredForPreference";
+  const actionKey = "authRequiredForRating";
   const navigate = (mode) => {
     window.location.href = getAuthPageUrl(mode);
   };

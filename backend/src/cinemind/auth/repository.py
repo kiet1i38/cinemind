@@ -157,6 +157,7 @@ class AuthRepository:
             SET user_id = %s, last_seen_at = CURRENT_TIMESTAMP
             WHERE session_id = %s
               AND ended_at IS NULL
+              AND expires_at > CURRENT_TIMESTAMP
               AND (session_token_hash IS NULL OR session_token_hash = %s)
               AND (user_id IS NULL OR user_id = %s)
             RETURNING session_id
@@ -180,6 +181,7 @@ class AuthRepository:
             WHERE session_id = %s
               AND user_id = %s
               AND ended_at IS NULL
+              AND expires_at > CURRENT_TIMESTAMP
               AND session_token_hash = %s
             RETURNING session_id
             """,

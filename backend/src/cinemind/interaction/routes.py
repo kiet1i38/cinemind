@@ -11,8 +11,6 @@ from cinemind.db.connection import connection_scope
 from cinemind.interaction.repository import InteractionRepository
 from cinemind.interaction.schemas import (
     InteractionStateResponse,
-    PreferenceCreateRequest,
-    PreferenceResponse,
     RatingCreateRequest,
     RatingResponse,
     SearchEventCreateRequest,
@@ -39,9 +37,24 @@ def enforce_interaction_rate_limit(request: Request) -> None:
     return None
 
 
+def _require_secure_transport(request: Request) -> None:
+    """Do not issue or accept session proofs over plaintext in production."""
+
+    settings = get_settings()
+    if request.url.scheme == "https":
+        return
+    if settings.trust_proxy_headers:
+        forwarded = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().casefold()
+        if forwarded == "https":
+            return
+    if settings.require_https:
+        raise HTTPException(status_code=400, detail="Secure transport is required")
+
+
 router = APIRouter(
     prefix="/api/interaction",
     tags=["interaction"],
+    dependencies=[Depends(_require_secure_transport)],
 )
 
 
@@ -56,11 +69,13 @@ def get_interaction_service() -> Iterator[InteractionService]:
 @router.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 def create_session(
     payload: SessionCreateRequest,
+    request: Request,
     auth: AuthContext | None = Depends(get_optional_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> SessionResponse:
     """Create a browser session, linked to the account when signed in."""
 
+    _require_secure_transport(request)
     return SessionResponse(**service.create_session(
         payload.locale,
         payload.platform,
@@ -183,86 +198,6 @@ def create_signal(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
-@router.post("/favorites", response_model=PreferenceResponse, status_code=status.HTTP_201_CREATED)
-def add_favorite(
-    payload: PreferenceCreateRequest,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
-    auth: AuthContext = Depends(require_auth_context),
-    service: InteractionService = Depends(get_interaction_service),
-) -> PreferenceResponse:
-    """Add or restore a favorite title."""
-
-    return _preference_response(service, "favorites", payload, auth.user_id, session_token)
-
-
-@router.delete("/favorites/{show_id}", response_model=PreferenceResponse)
-def remove_favorite(
-    show_id: str,
-    session_id: UUID = Query(...),
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
-    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id", max_length=64),
-    auth: AuthContext = Depends(require_auth_context),
-    service: InteractionService = Depends(get_interaction_service),
-) -> PreferenceResponse:
-    """Soft-remove a favorite title; repeated removal is safe."""
-
-    return _remove_preference_response(service, "favorites", session_id, show_id, auth.user_id, session_token, client_mutation_id)
-
-
-@router.delete("/favorites/{show_id}/{session_id}", response_model=PreferenceResponse)
-def remove_favorite_by_path(
-    show_id: str,
-    session_id: UUID,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
-    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id", max_length=64),
-    auth: AuthContext = Depends(require_auth_context),
-    service: InteractionService = Depends(get_interaction_service),
-) -> PreferenceResponse:
-    """Path-based favorite removal for hosts that filter session query keys."""
-
-    return _remove_preference_response(service, "favorites", session_id, show_id, auth.user_id, session_token, client_mutation_id)
-
-
-@router.post("/watchlist-items", response_model=PreferenceResponse, status_code=status.HTTP_201_CREATED)
-def add_watchlist_item(
-    payload: PreferenceCreateRequest,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
-    auth: AuthContext = Depends(require_auth_context),
-    service: InteractionService = Depends(get_interaction_service),
-) -> PreferenceResponse:
-    """Add or restore a watchlist title."""
-
-    return _preference_response(service, "watchlist_items", payload, auth.user_id, session_token)
-
-
-@router.delete("/watchlist-items/{show_id}", response_model=PreferenceResponse)
-def remove_watchlist_item(
-    show_id: str,
-    session_id: UUID = Query(...),
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
-    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id", max_length=64),
-    auth: AuthContext = Depends(require_auth_context),
-    service: InteractionService = Depends(get_interaction_service),
-) -> PreferenceResponse:
-    """Soft-remove a watchlist title; repeated removal is safe."""
-
-    return _remove_preference_response(service, "watchlist_items", session_id, show_id, auth.user_id, session_token, client_mutation_id)
-
-
-@router.delete("/watchlist-items/{show_id}/{session_id}", response_model=PreferenceResponse)
-def remove_watchlist_item_by_path(
-    show_id: str,
-    session_id: UUID,
-    session_token: str | None = Header(default=None, alias="X-Cinemind-Session-Token", min_length=20, max_length=256),
-    client_mutation_id: UUID | None = Header(default=None, alias="X-Cinemind-Mutation-Id", max_length=64),
-    auth: AuthContext = Depends(require_auth_context),
-    service: InteractionService = Depends(get_interaction_service),
-) -> PreferenceResponse:
-    """Path-based watchlist removal for hosts that filter session query keys."""
-
-    return _remove_preference_response(service, "watchlist_items", session_id, show_id, auth.user_id, session_token, client_mutation_id)
-
-
 @router.get("/state", response_model=InteractionStateResponse)
 def get_interaction_state(
     session_id: UUID = Query(...),
@@ -270,7 +205,7 @@ def get_interaction_state(
     auth: AuthContext | None = Depends(get_optional_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> InteractionStateResponse:
-    """Restore latest ratings and active preference state for a session."""
+    """Restore latest ratings and watch durations for a session."""
 
     try:
         return InteractionStateResponse(**service.get_state(session_id, auth.user_id if auth else None, session_token))
@@ -293,59 +228,5 @@ def get_interaction_state_by_path(
         return InteractionStateResponse(**service.get_state(session_id, auth.user_id if auth else None, session_token))
     except InteractionNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    except InteractionUnauthorizedError as error:
-        raise HTTPException(status_code=401, detail=str(error)) from error
-
-
-def _preference_response(
-    service: InteractionService,
-    table_name: str,
-    payload: PreferenceCreateRequest,
-    user_id,
-    session_token=None,
-) -> PreferenceResponse:
-    try:
-        return PreferenceResponse(**service.add_preference(
-            table_name,
-            payload.session_id,
-            payload.show_id,
-            user_id,
-            session_token,
-            payload.client_mutation_id,
-        ))
-    except InteractionNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except InteractionConflictError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except InteractionValidationError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    except InteractionUnauthorizedError as error:
-        raise HTTPException(status_code=401, detail=str(error)) from error
-
-
-def _remove_preference_response(
-    service: InteractionService,
-    table_name: str,
-    session_id: UUID,
-    show_id: str,
-    user_id,
-    session_token=None,
-    client_mutation_id=None,
-) -> PreferenceResponse:
-    try:
-        return PreferenceResponse(**service.remove_preference(
-            table_name,
-            session_id,
-            show_id,
-            user_id,
-            session_token,
-            client_mutation_id,
-        ))
-    except InteractionNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except InteractionConflictError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except InteractionValidationError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
     except InteractionUnauthorizedError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error

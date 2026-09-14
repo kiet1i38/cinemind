@@ -13,6 +13,7 @@ class SessionRecord:
     session_id: UUID
     started_at: datetime
     last_seen_at: datetime
+    expires_at: datetime
     ended_at: datetime | None
     locale: str | None
     platform: str | None
@@ -33,5 +34,3 @@ class InteractionState:
     """Latest user-facing state for an anonymous session."""
 
     ratings: tuple[dict, ...]
-    favorites: tuple[dict, ...]
-    watchlist_items: tuple[dict, ...]

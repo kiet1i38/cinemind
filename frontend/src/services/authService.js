@@ -38,8 +38,14 @@ function interactionSessionPayload() {
 }
 
 export async function getCurrentUser() {
-  const payload = await request("/me");
-  return payload?.authenticated ? payload.user : null;
+  try {
+    const payload = await request("/me");
+    return payload?.authenticated ? payload.user : null;
+  } catch (error) {
+    // An expired or revoked cookie is an anonymous state, not an outage.
+    if (error?.status === 401 || error?.status === 403) return null;
+    throw error;
+  }
 }
 
 export function login({ identifier, password }) {
