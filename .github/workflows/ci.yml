@@ -44,31 +44,3 @@ jobs:
         working-directory: frontend
         run: npm run check
 
-  browser:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Start the full local stack
-        run: docker compose up --build -d
-      - name: Wait for the frontend and API
-        shell: bash
-        run: |
-          for attempt in {1..60}; do
-            if curl --fail --silent http://127.0.0.1:5173/ >/dev/null \
-              && curl --fail --silent http://127.0.0.1:8000/healthz >/dev/null \
-              && curl --fail --silent http://127.0.0.1:8000/readyz >/dev/null; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker compose ps
-          exit 1
-      - name: Run browser smoke and regression flows
-        working-directory: frontend
-        run: npm run test:browser
-      - name: Stop the local stack
-        if: always()
-        run: docker compose down

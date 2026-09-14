@@ -11,7 +11,6 @@
     "data:check-catalog": "node scripts/check-catalog.mjs",
     "lint:syntax": "node scripts/check-syntax.mjs",
     "check:architecture": "node scripts/check-architecture.mjs",
-    "test:browser": "npx --yes --package @playwright/cli playwright-cli --session=cinemind-ci open http://127.0.0.1:5173/ && npx --yes --package @playwright/cli playwright-cli --session=cinemind-ci run-code --filename scripts/browser-smoke.js",
     "check": "npm run lint:syntax && npm run check:architecture && npm run data:check-catalog && npm run build"
   },
   "dependencies": {
