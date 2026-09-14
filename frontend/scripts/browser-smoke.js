@@ -10,7 +10,14 @@ async (page) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   };
   const onPageError = (error) => pageErrors.push(error.message);
-  const waitForHome = async () => page.getByTestId("home-page").waitFor({ state: "visible", timeout: 15000 });
+  const waitForHome = async () => {
+    try {
+      await page.getByTestId("home-page").waitFor({ state: "visible", timeout: 15000 });
+    } catch (error) {
+      const bodyText = await page.locator("body").innerText().catch(() => "");
+      throw new Error(`${error.message}; consoleErrors=${JSON.stringify(consoleErrors)}; pageErrors=${JSON.stringify(pageErrors)}; body=${JSON.stringify(bodyText.slice(0, 1200))}`);
+    }
+  };
   const ownerScoped = async (storageKey) => page.evaluate((key) => {
     const raw = JSON.parse(localStorage.getItem(key) || "null");
     if (!(raw && typeof raw === "object" && !Array.isArray(raw) && raw.owners)) return raw || {};
