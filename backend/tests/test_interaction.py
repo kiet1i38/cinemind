@@ -165,9 +165,19 @@ class FakeInteractionRepository:
             "rating_id": len(self.ratings) + 1,
             "session_id": session_id,
             "title_id": title_id,
+            "show_id": next(
+                title["show_id"]
+                for title in self.titles.values()
+                if title["title_id"] == title_id
+            ),
             "rating": rating,
             "rating_value": rating,
             "watch_session_id": watch_session_id,
+            "watch_seconds": (
+                self.watch_sessions[watch_session_id]["watch_seconds"]
+                if watch_session_id is not None
+                else None
+            ),
             "rated_at": datetime.now(timezone.utc),
             "client_occurred_at": client_occurred_at,
         }
@@ -176,8 +186,24 @@ class FakeInteractionRepository:
             self.rating_mutations[mutation_key] = row
         return row
 
-    def interaction_state(self, _session_id, _user_id=None):
-        return {"ratings": tuple()}
+    def interaction_state(self, session_id, _user_id=None):
+        latest_by_title = {}
+        for row in self.ratings:
+            if row["session_id"] != session_id:
+                continue
+            effective_time = row["client_occurred_at"] or row["rated_at"]
+            sort_key = (effective_time, row["rated_at"], row["rating_id"])
+            current = latest_by_title.get(row["title_id"])
+            if current is None or sort_key > current[0]:
+                latest_by_title[row["title_id"]] = (sort_key, row)
+        return {
+            "ratings": tuple(
+                row
+                for _sort_key, row in sorted(
+                    latest_by_title.values(), key=lambda item: item[1]["title_id"]
+                )
+            )
+        }
 
 
 class InteractionServiceTests(unittest.TestCase):
@@ -255,6 +281,27 @@ class InteractionServiceTests(unittest.TestCase):
         )
 
         self.assertIsNone(result["client_occurred_at"])
+
+    def test_state_keeps_newer_client_event_when_older_retry_arrives_later(self):
+        newer_event_time = datetime.now(timezone.utc) - timedelta(hours=2)
+
+        self.service.record_rating(
+            self.session_id,
+            "movie-1",
+            Decimal("8"),
+            client_occurred_at=newer_event_time,
+        )
+        self.service.record_rating(
+            self.session_id,
+            "movie-1",
+            Decimal("2"),
+            client_occurred_at=newer_event_time - timedelta(hours=1),
+        )
+
+        state = self.service.get_state(self.session_id)
+
+        self.assertEqual(state["ratings"][0]["show_id"], "movie-1")
+        self.assertEqual(state["ratings"][0]["rating"], Decimal("8.0"))
 
     def test_search_telemetry_rejects_unknown_catalog_genres(self):
         self.repository.catalog_genre_exists = lambda _genre: False

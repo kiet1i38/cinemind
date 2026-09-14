@@ -7,6 +7,7 @@ import {
   acknowledgePendingSignal,
   createMutationId,
   getInteractionOwner,
+  getInteractionRevision,
   interactionSessionStore,
   pendingInteractionsPersisted,
   queuePendingSearch,
@@ -15,9 +16,16 @@ import {
 } from "./interactionStore";
 
 const interactionConfig = appConfig.interaction;
+const DEFAULT_PENDING_SYNC_BATCH_SIZE = 20;
+// Backend's default interaction budget is 120 writes per 60 seconds. Keep
+// replay below that budget even when a queue contains many pending events.
+const DEFAULT_PENDING_SYNC_PACING_MS = 500;
+const DEFAULT_PENDING_SYNC_BACKOFF_MS = 5000;
+const DEFAULT_PENDING_SYNC_MAX_BACKOFF_MS = 300000;
 let sessionRequest = null;
 let pendingSyncRequest = null;
 const mutationChains = new Map();
+const pendingSyncBackoffs = new Map();
 
 function ownerChangedError() {
   const error = new Error("Interaction owner changed while a request was in flight");
@@ -25,15 +33,46 @@ function ownerChangedError() {
   return error;
 }
 
-function assertOwner(owner) {
-  if (getInteractionOwner() !== owner) throw ownerChangedError();
+function captureInteractionContext() {
+  return { owner: getInteractionOwner(), revision: getInteractionRevision() };
 }
 
-async function request(path, options = {}) {
+function normalizeInteractionContext(context = null) {
+  if (context && typeof context === "object" && typeof context.owner === "string") {
+    return {
+      owner: context.owner,
+      revision: Number.isInteger(context.revision) ? context.revision : getInteractionRevision()
+    };
+  }
+  return captureInteractionContext();
+}
+
+function assertInteractionContext(context) {
+  if (getInteractionOwner() === context.owner && getInteractionRevision() === context.revision) return;
+  const error = ownerChangedError();
+  error.expectedOwner = context.owner;
+  error.currentOwner = getInteractionOwner();
+  error.expectedRevision = context.revision;
+  error.currentRevision = getInteractionRevision();
+  throw error;
+}
+
+function isCurrentInteractionContext(context) {
+  try {
+    assertInteractionContext(context);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function request(path, options = {}, context = null) {
+  const interactionContext = normalizeInteractionContext(context);
+  assertInteractionContext(interactionContext);
   const headers = new Headers(options.headers || {});
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const sessionId = interactionSessionStore.read();
-  const sessionToken = interactionSessionStore.readToken();
+  const sessionId = interactionSessionStore.read(interactionContext.owner);
+  const sessionToken = interactionSessionStore.readToken(interactionContext.owner);
   if (sessionId && !headers.has("X-Cinemind-Session")) headers.set("X-Cinemind-Session", sessionId);
   if (sessionToken && !headers.has("X-Cinemind-Session-Token")) {
     headers.set("X-Cinemind-Session-Token", sessionToken);
@@ -54,6 +93,10 @@ async function request(path, options = {}) {
     }
   }
 
+  // Never let a response from an earlier owner/auth generation affect the
+  // current account, including error responses.
+  assertInteractionContext(interactionContext);
+
   if (!response.ok) {
     const detail = typeof payload?.detail === "string"
       ? payload.detail
@@ -61,54 +104,84 @@ async function request(path, options = {}) {
     const error = new Error(detail);
     error.status = response.status;
     error.code = payload?.detail?.code || payload?.code;
+    const retryAfter = readResponseHeader(response, "Retry-After");
+    const retryAfterMs = parseRetryAfter(retryAfter);
+    if (retryAfter !== null) error.retryAfter = retryAfter;
+    if (retryAfterMs !== null) error.retryAfterMs = retryAfterMs;
     throw error;
   }
   return payload;
 }
 
-export async function ensureInteractionSession({ locale, platform } = {}) {
-  const owner = getInteractionOwner();
-  const existingSessionId = interactionSessionStore.read();
+function readResponseHeader(response, name) {
+  try {
+    if (typeof response?.headers?.get === "function") {
+      const value = response.headers.get(name);
+      if (value !== null && value !== undefined) return String(value);
+    }
+    const headers = response?.headers;
+    if (!headers || typeof headers !== "object") return null;
+    return headers[name] ?? headers[name.toLowerCase()] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function parseRetryAfter(value, now = Date.now()) {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) ? Math.max(0, timestamp - now) : null;
+}
+
+export async function ensureInteractionSession({ locale, platform } = {}, context = null) {
+  const interactionContext = normalizeInteractionContext(context);
+  assertInteractionContext(interactionContext);
+  const existingSessionId = interactionSessionStore.read(interactionContext.owner);
   if (existingSessionId) return existingSessionId;
-  if (sessionRequest?.owner === owner) return sessionRequest.promise;
+  if (sessionRequest?.owner === interactionContext.owner
+    && sessionRequest?.revision === interactionContext.revision) return sessionRequest.promise;
 
   const promise = request("/sessions", {
     method: "POST",
     body: JSON.stringify({ locale, platform })
-  })
+  }, interactionContext)
     .then((payload) => {
       // A response from a previous account must never hydrate the current
       // owner's browser namespace.
-      assertOwner(owner);
+      assertInteractionContext(interactionContext);
       const sessionId = payload?.session_id;
       if (!sessionId) throw new Error("Interaction session response is missing session_id");
-      interactionSessionStore.write(sessionId, payload?.session_token);
+      interactionSessionStore.write(sessionId, payload?.session_token, interactionContext.owner);
       return sessionId;
     })
     .finally(() => {
       if (sessionRequest?.promise === promise) sessionRequest = null;
     });
-  sessionRequest = { owner, promise };
+  sessionRequest = { ...interactionContext, promise };
   return promise;
 }
 
 export async function getInteractionState(metadata = {}) {
-  const owner = getInteractionOwner();
-  let sessionId = await ensureInteractionSession(metadata);
-  assertOwner(owner);
+  const interactionContext = captureInteractionContext();
+  let sessionId = await ensureInteractionSession(metadata, interactionContext);
+  assertInteractionContext(interactionContext);
   try {
-    const result = await request(`/state/${encodeURIComponent(sessionId)}`);
-    assertOwner(owner);
+    const result = await request(`/state/${encodeURIComponent(sessionId)}`, {}, interactionContext);
+    assertInteractionContext(interactionContext);
     return result;
   } catch (error) {
     if (error.code !== "SESSION_NOT_FOUND") throw error;
-    assertOwner(owner);
-    interactionSessionStore.write(null);
-    sessionId = await ensureInteractionSession(metadata);
-    assertOwner(owner);
+    assertInteractionContext(interactionContext);
+    interactionSessionStore.write(null, null, interactionContext.owner);
+    sessionId = await ensureInteractionSession(metadata, interactionContext);
+    assertInteractionContext(interactionContext);
     try {
-      const result = await request(`/state/${encodeURIComponent(sessionId)}`);
-      assertOwner(owner);
+      const result = await request(`/state/${encodeURIComponent(sessionId)}`, {}, interactionContext);
+      assertInteractionContext(interactionContext);
       return result;
     } catch (retryError) {
       if (retryError.code === "AUTH_REQUIRED" || retryError.status === 401) markAuthRequired(retryError);
@@ -117,18 +190,21 @@ export async function getInteractionState(metadata = {}) {
   }
 }
 
-export async function recordSearchEvent({ query, resultCount, filters, ...metadata }) {
+export function recordSearchEvent({ query, resultCount, filters, ...metadata }, context = null) {
+  const interactionContext = normalizeInteractionContext(context);
+  assertInteractionContext(interactionContext);
   const mutationId = queuePendingSearch(
     { query, resultCount, filters },
     metadata.mutationId || createMutationId(),
-    metadata.firstQueuedAt
+    metadata.firstQueuedAt,
+    interactionContext.owner
   );
   const pendingPersisted = pendingInteractionsPersisted();
-  const pendingEntry = readPendingInteractions().searches[mutationId];
+  const pendingEntry = readPendingInteractions(interactionContext.owner).searches[mutationId];
   const clientOccurredAt = pendingEntry?.firstQueuedAt || new Date().toISOString();
-  const owner = getInteractionOwner();
-  return enqueueMutation(`${owner}:search:${mutationId}`, async () => {
+  return enqueueMutation(`${interactionContext.owner}:search:${mutationId}`, async () => {
     try {
+      assertInteractionContext(interactionContext);
       const result = await withFreshInteractionSession(metadata, async (sessionId) => request("/search-events", {
         method: "POST",
         body: JSON.stringify({
@@ -139,25 +215,30 @@ export async function recordSearchEvent({ query, resultCount, filters, ...metada
           client_occurred_at: clientOccurredAt,
           client_mutation_id: mutationId
         })
-      }));
-      acknowledgePendingSearch(mutationId);
+      }, interactionContext), interactionContext);
+      assertInteractionContext(interactionContext);
+      acknowledgePendingSearch(mutationId, interactionContext.owner);
       return result;
     } catch (error) {
       error.pendingPersisted = pendingPersisted;
-      if (!shouldKeepPendingInteraction(error)) acknowledgePendingSearch(mutationId);
+      if (!shouldKeepPendingInteraction(error) && isCurrentInteractionContext(interactionContext)) {
+        acknowledgePendingSearch(mutationId, interactionContext.owner);
+      }
       throw error;
     }
   });
 }
 
-export async function submitSignal({ record, rating, watchMinutes, ...metadata }) {
-  const mutationId = queuePendingSignal(record.id, { rating, watchMinutes }, metadata.mutationId, metadata.firstQueuedAt);
+export function submitSignal({ record, rating, watchMinutes, ...metadata }, context = null) {
+  const interactionContext = normalizeInteractionContext(context);
+  assertInteractionContext(interactionContext);
+  const mutationId = queuePendingSignal(record.id, { rating, watchMinutes }, metadata.mutationId, metadata.firstQueuedAt, interactionContext.owner);
   const pendingPersisted = pendingInteractionsPersisted();
-  const pendingEntry = readPendingInteractions().signals[mutationId];
+  const pendingEntry = readPendingInteractions(interactionContext.owner).signals[mutationId];
   const clientOccurredAt = pendingEntry?.firstQueuedAt || new Date().toISOString();
-  const owner = getInteractionOwner();
-  return enqueueMutation(`${owner}:signal:${record.id}`, async () => {
+  return enqueueMutation(`${interactionContext.owner}:signal:${record.id}`, async () => {
     try {
+      assertInteractionContext(interactionContext);
       const result = await withFreshInteractionSession(metadata, async (sessionId) => request("/signals", {
         method: "POST",
         body: JSON.stringify({
@@ -168,12 +249,15 @@ export async function submitSignal({ record, rating, watchMinutes, ...metadata }
           client_occurred_at: clientOccurredAt,
           client_mutation_id: mutationId
         })
-      }));
-      acknowledgePendingSignal(record.id, mutationId);
+      }, interactionContext), interactionContext);
+      assertInteractionContext(interactionContext);
+      acknowledgePendingSignal(record.id, mutationId, interactionContext.owner);
       return result;
     } catch (error) {
       error.pendingPersisted = pendingPersisted;
-      if (!shouldKeepPendingInteraction(error)) acknowledgePendingSignal(record.id, mutationId);
+      if (!shouldKeepPendingInteraction(error) && isCurrentInteractionContext(interactionContext)) {
+        acknowledgePendingSignal(record.id, mutationId, interactionContext.owner);
+      }
       throw error;
     }
   });
@@ -197,20 +281,25 @@ function shouldKeepPendingInteraction(error) {
     || error?.status === 401;
 }
 
-async function withFreshInteractionSession(metadata, operation) {
-  const owner = getInteractionOwner();
-  const sessionId = await ensureInteractionSession(metadata);
-  assertOwner(owner);
+async function withFreshInteractionSession(metadata, operation, context = null) {
+  const interactionContext = normalizeInteractionContext(context);
+  assertInteractionContext(interactionContext);
+  const sessionId = await ensureInteractionSession(metadata, interactionContext);
+  assertInteractionContext(interactionContext);
   try {
-    return await operation(sessionId);
+    const result = await operation(sessionId);
+    assertInteractionContext(interactionContext);
+    return result;
   } catch (error) {
     if (error.code !== "SESSION_NOT_FOUND") throw error;
-    assertOwner(owner);
-    interactionSessionStore.write(null);
-    const freshSessionId = await ensureInteractionSession(metadata);
-    assertOwner(owner);
+    assertInteractionContext(interactionContext);
+    interactionSessionStore.write(null, null, interactionContext.owner);
+    const freshSessionId = await ensureInteractionSession(metadata, interactionContext);
+    assertInteractionContext(interactionContext);
     try {
-      return await operation(freshSessionId);
+      const result = await operation(freshSessionId);
+      assertInteractionContext(interactionContext);
+      return result;
     } catch (retryError) {
       if (retryError.code === "AUTH_REQUIRED" || retryError.status === 401) markAuthRequired(retryError);
       throw retryError;
@@ -224,25 +313,31 @@ function markAuthRequired(error) {
 }
 
 export async function syncPendingInteractions(records, metadata = {}) {
-  const owner = getInteractionOwner();
-  if (pendingSyncRequest?.owner === owner) return pendingSyncRequest.promise;
+  const interactionContext = captureInteractionContext();
+  if (pendingSyncRequest?.owner === interactionContext.owner
+    && pendingSyncRequest?.revision === interactionContext.revision) return pendingSyncRequest.promise;
 
-  const promise = syncPendingInteractionsOnce(records, metadata)
+  const promise = syncPendingInteractionsOnce(records, metadata, interactionContext)
     .finally(() => {
       if (pendingSyncRequest?.promise === promise) pendingSyncRequest = null;
     });
-  pendingSyncRequest = { owner, promise };
+  pendingSyncRequest = { ...interactionContext, promise };
   return promise;
 }
 
-async function syncPendingInteractionsOnce(records, metadata) {
+async function syncPendingInteractionsOnce(records, metadata, interactionContext) {
+  assertInteractionContext(interactionContext);
+  const existingBackoff = pendingSyncBackoffs.get(interactionContext.owner);
+  if (existingBackoff && existingBackoff.until > Date.now()) return [];
   const recordsById = new Map((records || []).map((record) => [String(record.id), record]));
-  const pending = readPendingInteractions();
+  const pending = readPendingInteractions(interactionContext.owner);
   const pendingEvents = [];
 
   for (const search of Object.values(pending.searches)) {
     if (!search || typeof search !== "object" || !search.mutationId) {
-      if (search?.mutationId) acknowledgePendingSearch(search.mutationId);
+      if (search?.mutationId && isCurrentInteractionContext(interactionContext)) {
+        acknowledgePendingSearch(search.mutationId, interactionContext.owner);
+      }
       continue;
     }
     pendingEvents.push({ kind: "search", entry: search });
@@ -252,7 +347,9 @@ async function syncPendingInteractionsOnce(records, metadata) {
     const showId = String(signal?.showId || "").trim();
     const record = recordsById.get(showId);
     if (!record || !signal || typeof signal !== "object" || !signal.mutationId) {
-      if (signal?.mutationId) acknowledgePendingSignal(showId, signal.mutationId);
+      if (signal?.mutationId && isCurrentInteractionContext(interactionContext)) {
+        acknowledgePendingSignal(showId, signal.mutationId, interactionContext.owner);
+      }
       continue;
     }
     pendingEvents.push({ kind: "signal", entry: signal, record });
@@ -265,8 +362,28 @@ async function syncPendingInteractionsOnce(records, metadata) {
     const rightTime = Date.parse(right.entry?.firstQueuedAt || right.entry?.queuedAt || "") || 0;
     return leftTime - rightTime || String(left.entry?.mutationId || "").localeCompare(String(right.entry?.mutationId || ""));
   });
+  if (!orderedPending.length) {
+    pendingSyncBackoffs.delete(interactionContext.owner);
+    return [];
+  }
+
+  const batchSize = configuredPendingSyncBatchSize();
+  const pacingMs = configuredPendingSyncPacingMs();
   const results = [];
-  for (const { kind, entry, record } of orderedPending) {
+  let attempted = 0;
+  let rateLimited = false;
+  const batch = orderedPending.slice(0, batchSize);
+  for (const { kind, entry, record } of batch) {
+    if (attempted > 0 && pacingMs > 0) await waitForPendingSyncPacing(pacingMs);
+    try {
+      assertInteractionContext(interactionContext);
+    } catch (reason) {
+      // Stop the snapshot when the owner changes. Remaining entries stay in
+      // the captured owner's outbox and cannot be replayed into a new owner.
+      results.push({ status: "rejected", reason });
+      break;
+    }
+    attempted += 1;
     try {
       const task = kind === "search"
         ? recordSearchEvent({
@@ -276,20 +393,67 @@ async function syncPendingInteractionsOnce(records, metadata) {
           ...metadata,
           mutationId: entry.mutationId,
           firstQueuedAt: entry.firstQueuedAt
-        })
+        }, interactionContext)
         : submitSignal({
           record,
           ...entry,
           ...metadata,
           mutationId: entry.mutationId,
           firstQueuedAt: entry.firstQueuedAt
-        });
+        }, interactionContext);
       results.push({ status: "fulfilled", value: await task });
     } catch (reason) {
       results.push({ status: "rejected", reason });
+      if (reason?.status === 429) {
+        rateLimited = true;
+        setPendingSyncBackoff(interactionContext.owner, reason);
+        break;
+      }
     }
   }
+  if (!rateLimited) pendingSyncBackoffs.delete(interactionContext.owner);
   return results;
+}
+
+function configuredPendingSyncBatchSize() {
+  const value = Number(interactionConfig.pendingSyncBatchSize);
+  return Number.isInteger(value) && value > 0 ? value : DEFAULT_PENDING_SYNC_BATCH_SIZE;
+}
+
+function configuredPendingSyncPacingMs() {
+  const value = Number(interactionConfig.pendingSyncPacingMs);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_PENDING_SYNC_PACING_MS;
+}
+
+function configuredPendingSyncBackoffMs() {
+  const value = Number(interactionConfig.pendingSyncBackoffMs);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_PENDING_SYNC_BACKOFF_MS;
+}
+
+function configuredPendingSyncMaxBackoffMs() {
+  const value = Number(interactionConfig.pendingSyncMaxBackoffMs);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_PENDING_SYNC_MAX_BACKOFF_MS;
+}
+
+function setPendingSyncBackoff(owner, error) {
+  const previous = pendingSyncBackoffs.get(owner);
+  const attempt = (previous?.attempt || 0) + 1;
+  const retryAfterMs = Number.isFinite(error?.retryAfterMs) && error.retryAfterMs >= 0
+    ? error.retryAfterMs
+    : null;
+  const fallbackDelay = Math.min(
+    configuredPendingSyncBackoffMs() * (2 ** (attempt - 1)),
+    configuredPendingSyncMaxBackoffMs()
+  );
+  pendingSyncBackoffs.set(owner, {
+    attempt,
+    until: Date.now() + (retryAfterMs === null ? fallbackDelay : retryAfterMs)
+  });
+}
+
+function waitForPendingSyncPacing(delayMs) {
+  if (delayMs <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function enqueueMutation(key, operation) {

@@ -349,7 +349,10 @@ class InteractionRepository:
             JOIN catalog.titles t ON t.title_id = r.title_id AND t.is_active = TRUE
             LEFT JOIN interaction.watch_sessions ws ON ws.watch_session_id = r.watch_session_id
             WHERE {session_clause}
-            ORDER BY r.title_id, r.rated_at DESC, r.rating_id DESC
+            ORDER BY r.title_id,
+                     COALESCE(r.client_occurred_at, r.rated_at) DESC,
+                     r.rated_at DESC,
+                     r.rating_id DESC
             """,
             (session_parameter,),
         ).fetchall()

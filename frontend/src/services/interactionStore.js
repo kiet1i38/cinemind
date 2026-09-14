@@ -15,6 +15,10 @@ const outboxEntryPrefix = `${interactionConfig.outboxStorageKey}:entry:`;
 const outboxMigrationPrefix = `${interactionConfig.outboxStorageKey}:migration:`;
 const OUTBOX_TYPES = new Set(["signals", "searches"]);
 let lastPendingWritePersisted = true;
+// Incremented whenever the interaction owner/session boundary changes. Any
+// async operation that captured an older generation must stop before it can
+// read or write the current owner's namespace.
+let interactionRevision = 0;
 
 // Remove obsolete preference data as soon as the new bundle loads.
 legacyFavoriteStore.remove();
@@ -23,6 +27,10 @@ legacyWatchlistStore.remove();
 export function getInteractionOwner() {
   const owner = ownerStoreBase.read();
   return typeof owner === "string" && owner.trim() ? owner : "anonymous";
+}
+
+export function getInteractionRevision() {
+  return interactionRevision;
 }
 
 function ownerScopedValue(store, owner, fallback) {
@@ -388,7 +396,22 @@ function readOutboxForOwner(owner) {
 export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null } = {}) {
   const nextOwner = userId ? String(userId) : "anonymous";
   const previousOwner = getInteractionOwner();
-  if (previousOwner === nextOwner) return { previousOwner, nextOwner, changed: false };
+  if (previousOwner === nextOwner) return { previousOwner, nextOwner, changed: false, revision: interactionRevision };
+
+  // Persist the namespace boundary before moving or deleting any data. If
+  // storage is full/restricted, browserStore keeps this value in memory and
+  // reports the durable-write failure; never continue a transition while the
+  // owner still resolves to the old persistent namespace.
+  const ownerPersisted = ownerStoreBase.write(nextOwner);
+  if (getInteractionOwner() !== nextOwner) {
+    return {
+      previousOwner,
+      nextOwner,
+      changed: false,
+      persisted: false,
+      revision: interactionRevision
+    };
+  }
 
   if (previousOwner === "anonymous" && nextOwner !== "anonymous") {
     const anonymousSession = ownerScopedValue(sessionStoreBase, previousOwner, null);
@@ -427,8 +450,8 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
     clearOutboxForOwner(previousOwner);
   }
 
-  ownerStoreBase.write(nextOwner);
-  return { previousOwner, nextOwner, changed: true };
+  interactionRevision += 1;
+  return { previousOwner, nextOwner, changed: true, persisted: ownerPersisted, revision: interactionRevision };
 }
 
 export function promoteAuthenticatedInteraction(userId, acceptedAnonymousSessionId) {
@@ -449,25 +472,28 @@ export function removeOwnerScopedSignalState() {
 }
 
 export const interactionSessionStore = {
-  read() {
-    const value = ownerScopedValue(sessionStoreBase, getInteractionOwner(), null);
+  read(ownerId = getInteractionOwner()) {
+    const owner = String(ownerId || "anonymous");
+    const value = ownerScopedValue(sessionStoreBase, owner, null);
     if (!isUuid(value)) {
-      if (value !== null && value !== undefined) writeScopedValue(sessionStoreBase, null);
+      if (value !== null && value !== undefined) writeScopedValueForOwner(sessionStoreBase, owner, null);
       return null;
     }
     return String(value).toLowerCase();
   },
-  readToken() {
-    const value = ownerScopedValue(sessionTokenStoreBase, getInteractionOwner(), null);
+  readToken(ownerId = getInteractionOwner()) {
+    const owner = String(ownerId || "anonymous");
+    const value = ownerScopedValue(sessionTokenStoreBase, owner, null);
     if (typeof value !== "string" || value.trim().length < 20 || value.trim().length > 256) {
-      if (value !== null && value !== undefined) writeScopedValue(sessionTokenStoreBase, null);
+      if (value !== null && value !== undefined) writeScopedValueForOwner(sessionTokenStoreBase, owner, null);
       return null;
     }
     return value.trim();
   },
-  write(value, token = null) {
-    writeScopedValue(sessionStoreBase, isUuid(value) ? String(value).toLowerCase() : null);
-    writeScopedValue(sessionTokenStoreBase, typeof token === "string" && token.trim().length >= 20 && token.trim().length <= 256 ? token.trim() : null);
+  write(value, token = null, ownerId = getInteractionOwner()) {
+    const owner = String(ownerId || "anonymous");
+    writeScopedValueForOwner(sessionStoreBase, owner, isUuid(value) ? String(value).toLowerCase() : null);
+    writeScopedValueForOwner(sessionTokenStoreBase, owner, typeof token === "string" && token.trim().length >= 20 && token.trim().length <= 256 ? token.trim() : null);
   }
 };
 
@@ -485,8 +511,8 @@ export function createMutationId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`;
 }
 
-export function readPendingInteractions() {
-  return readOutboxForOwner(getInteractionOwner());
+export function readPendingInteractions(ownerId = getInteractionOwner()) {
+  return readOutboxForOwner(String(ownerId || "anonymous"));
 }
 
 export function readPendingInteractionsForOwner(ownerId) {
@@ -502,7 +528,7 @@ export function pendingInteractionsPersisted() {
   return lastPendingWritePersisted;
 }
 
-export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId = createMutationId(), requestedFirstQueuedAt = null) {
+export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId = createMutationId(), requestedFirstQueuedAt = null, ownerId = getInteractionOwner()) {
   const normalizedShowId = String(showId || "").trim();
   const normalizedRating = Number(rating);
   const normalizedWatchMinutes = Number(watchMinutes);
@@ -510,7 +536,7 @@ export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId 
     throw new Error("Invalid signal payload");
   }
   const normalizedMutationId = String(mutationId).toLowerCase();
-  const owner = getInteractionOwner();
+  const owner = String(ownerId || "anonymous");
   const existing = readOutboxForOwner(owner).signals[normalizedMutationId];
   const firstQueuedAt = existing?.firstQueuedAt
     || existing?.queuedAt
@@ -528,19 +554,19 @@ export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId 
   return normalizedMutationId;
 }
 
-export function acknowledgePendingSignal(showId, mutationId) {
+export function acknowledgePendingSignal(showId, mutationId, ownerId = getInteractionOwner()) {
   const normalizedMutationId = String(mutationId || "").toLowerCase();
-  const owner = getInteractionOwner();
+  const owner = String(ownerId || "anonymous");
   const signal = readOutboxForOwner(owner).signals[normalizedMutationId];
   if (!signal || signal.mutationId !== normalizedMutationId || (showId && signal.showId !== String(showId))) return;
   removeOutboxEntry(owner, "signals", normalizedMutationId);
 }
 
-export function queuePendingSearch({ query, resultCount, filters }, mutationId = createMutationId(), requestedFirstQueuedAt = null) {
+export function queuePendingSearch({ query, resultCount, filters }, mutationId = createMutationId(), requestedFirstQueuedAt = null, ownerId = getInteractionOwner()) {
   const normalizedQuery = String(query ?? "").trim().slice(0, 200);
   if (!normalizedQuery || !isUuid(mutationId)) throw new Error("Invalid search payload");
   const normalizedMutationId = String(mutationId).toLowerCase();
-  const owner = getInteractionOwner();
+  const owner = String(ownerId || "anonymous");
   const existing = readOutboxForOwner(owner).searches[normalizedMutationId];
   const firstQueuedAt = existing?.firstQueuedAt
     || existing?.queuedAt
@@ -558,9 +584,9 @@ export function queuePendingSearch({ query, resultCount, filters }, mutationId =
   return normalizedMutationId;
 }
 
-export function acknowledgePendingSearch(mutationId) {
+export function acknowledgePendingSearch(mutationId, ownerId = getInteractionOwner()) {
   const key = String(mutationId || "").toLowerCase();
-  const owner = getInteractionOwner();
+  const owner = String(ownerId || "anonymous");
   const search = readOutboxForOwner(owner).searches[key];
   if (!search || search.mutationId !== key) return;
   removeOutboxEntry(owner, "searches", key);
@@ -596,6 +622,7 @@ function isValidRating(value) {
 
 export function clearInteractionState({ preserveSession = false, clearPending = true, resetOwner = true, ownerId = null } = {}) {
   const owner = ownerId ? String(ownerId) : getInteractionOwner();
+  const currentOwner = getInteractionOwner();
   if (!preserveSession) {
     removeScopedValueForOwner(sessionStoreBase, owner);
     removeScopedValueForOwner(sessionTokenStoreBase, owner);
@@ -610,5 +637,10 @@ export function clearInteractionState({ preserveSession = false, clearPending = 
     removeScopedValueForOwner(signalStoreBase, "anonymous");
     if (clearPending) clearOutboxForOwner("anonymous");
   }
-  if (resetOwner) ownerStoreBase.write("anonymous");
+  if (resetOwner) {
+    ownerStoreBase.write("anonymous");
+    interactionRevision += 1;
+  } else if (owner === currentOwner) {
+    interactionRevision += 1;
+  }
 }

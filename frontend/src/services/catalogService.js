@@ -22,6 +22,7 @@ const POSTER_KINDS = new Set(["public", "generated"]);
 const OPTIONAL_TEXT_FIELDS = ["description", "dateAdded", "rating", "posterProvider"];
 const LIST_FIELDS = ["cast", "country", "listedIn"];
 const MAX_SHOW_ID_LENGTH = 32;
+const catalogSourceTextByRecords = new WeakMap();
 
 export const localCatalogProvider = {
   async getAll(signal) {
@@ -31,7 +32,10 @@ export const localCatalogProvider = {
       appConfig.runtime?.requestTimeoutMs
     );
     if (!response.ok) throw new Error(`Catalog request failed with ${response.status}`);
-    return response.json();
+    const sourceText = await response.text();
+    const records = JSON.parse(sourceText);
+    if (records && typeof records === "object") catalogSourceTextByRecords.set(records, sourceText);
+    return records;
   }
 };
 
@@ -86,19 +90,20 @@ export function validateCatalogRecord(record, index = 0) {
 
 export async function loadCatalog(signal, provider = localCatalogProvider) {
   const records = validateCatalogRecords(await provider.getAll(signal));
-  if (provider === localCatalogProvider) await verifyCatalogVersion(records, signal);
+  if (provider === localCatalogProvider) {
+    await verifyCatalogVersion(records, signal, catalogSourceTextByRecords.get(records) || null);
+  }
   return records;
 }
 
-async function verifyCatalogVersion(records, signal) {
+async function verifyCatalogVersion(records, signal, sourceText) {
   const [manifest, summary] = await Promise.all([
     readCatalogManifest(signal),
     readCatalogSummary(signal)
   ]);
-  if (!summary) return;
 
   const staticTotal = records.length;
-  if (Number.isInteger(summary.total) && summary.total !== staticTotal) {
+  if (summary && Number.isInteger(summary.total) && summary.total !== staticTotal) {
     throw new CatalogVersionMismatchError(
       `Catalog version mismatch: frontend has ${staticTotal} titles but the API has ${summary.total}`
     );
@@ -109,9 +114,35 @@ async function verifyCatalogVersion(records, signal) {
     );
   }
   const staticChecksum = String(manifest?.sha256 || "").trim().toLowerCase();
-  const apiChecksum = String(summary.source_checksum_sha256 || "").trim().toLowerCase();
+  if (manifest && staticChecksum) {
+    if (typeof sourceText !== "string") {
+      throw new CatalogVersionMismatchError("Catalog source bytes are unavailable for checksum verification");
+    }
+    const actualChecksum = await sha256Text(sourceText, signal);
+    if (actualChecksum !== staticChecksum) {
+      throw new CatalogVersionMismatchError("Catalog checksum mismatch between the file and manifest");
+    }
+  }
+  const apiChecksum = String(summary?.source_checksum_sha256 || "").trim().toLowerCase();
   if (staticChecksum && apiChecksum && staticChecksum !== apiChecksum) {
     throw new CatalogVersionMismatchError("Catalog checksum mismatch between the frontend and API");
+  }
+}
+
+async function sha256Text(sourceText, signal) {
+  if (signal?.aborted) throw signal.reason || new DOMException("The operation was aborted", "AbortError");
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle || typeof TextEncoder === "undefined") {
+    throw new CatalogVersionMismatchError("Catalog checksum verification is unavailable in this browser");
+  }
+  try {
+    const digest = await subtle.digest("SHA-256", new TextEncoder().encode(sourceText));
+    if (signal?.aborted) throw signal.reason || new DOMException("The operation was aborted", "AbortError");
+    return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (error instanceof CatalogVersionMismatchError) throw error;
+    throw new CatalogVersionMismatchError("Catalog checksum verification failed");
   }
 }
 

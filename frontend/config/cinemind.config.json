@@ -109,6 +109,10 @@
     "maxWatchMinutes": 10080,
     "searchDebounceMs": 700,
     "pendingRetryIntervalMs": 30000,
+    "pendingSyncBatchSize": 20,
+    "pendingSyncPacingMs": 500,
+    "pendingSyncBackoffMs": 5000,
+    "pendingSyncMaxBackoffMs": 300000,
     "pendingMutationMaxItems": 100,
     "pendingMutationTtlMs": 86400000
   },
