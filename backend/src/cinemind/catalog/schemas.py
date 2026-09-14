@@ -55,3 +55,5 @@ class ReadinessResponse(BaseModel):
     status: str
     catalog_table: str
     checked_at: datetime
+    migration_version: str | None = None
+    migration_checksum_sha256: str | None = None

@@ -28,7 +28,10 @@ def get_optional_auth_context(request: Request) -> AuthContext | None:
     if not token:
         return None
     with connection_scope(get_settings()) as connection:
-        record = AuthRepository(connection).get_auth_context(hash_session_token(token))
+        repository = AuthRepository(connection)
+        with repository.transaction():
+            repository.acquire_write_lock()
+            record = repository.get_auth_context(hash_session_token(token))
     if not record:
         return None
     return AuthContext(

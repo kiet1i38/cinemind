@@ -73,11 +73,11 @@ class RequestBodyLimitMiddleware:
 
 
 class InteractionRateLimitMiddleware:
-    """Keep interaction error buckets isolated by client and browser session.
+    """Keep interaction quotas isolated by client, principal, and endpoint.
 
-    Malformed, unauthorized, and server-error responses consume failure slots.
-    A separate client bucket prevents callers from bypassing the principal key,
-    and successful anonymous-session creation has its own bounded quota.
+    Failure buckets protect error paths, while write buckets consume every
+    successful or failed mutation. A separate client bucket prevents callers
+    from bypassing the principal key, and session creation has its own quota.
     """
 
     def __init__(
@@ -100,6 +100,9 @@ class InteractionRateLimitMiddleware:
         self.session_creation_limiter = SlidingWindowRateLimiter(
             max_attempts, window_seconds
         )
+        self.write_client_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
+        self.write_principal_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
+        self.write_endpoint_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
 
     async def __call__(self, scope, receive: Callable, send: Callable) -> None:
         path = scope.get("path", "")
@@ -123,6 +126,11 @@ class InteractionRateLimitMiddleware:
         )
         client_key = f"interaction-client:{client}"
         principal_key = f"interaction-principal:{principal}"
+        method = scope.get("method", "GET").upper()
+        is_write = method in {"POST", "PUT", "PATCH", "DELETE"}
+        # Keep the endpoint dimension isolated per real client. A global
+        # endpoint bucket would let one caller exhaust the quota for everyone.
+        endpoint_key = f"interaction-write-endpoint:{method}:{path}:{client}"
         is_session_creation = (
             scope.get("method", "GET") == "POST"
             and path == "/api/interaction/sessions"
@@ -130,19 +138,34 @@ class InteractionRateLimitMiddleware:
         decision = self.client_limiter.check(client_key)
         principal_decision = self.session_limiter.check(principal_key)
         creation_decision = (
-            self.session_creation_limiter.check(client_key)
+            self.session_creation_limiter.consume(client_key)
             if is_session_creation
             else None
+        )
+        write_client_decision = (
+            self.write_client_limiter.consume(client_key) if is_write else None
+        )
+        write_principal_decision = (
+            self.write_principal_limiter.consume(principal_key) if is_write else None
+        )
+        write_endpoint_decision = (
+            self.write_endpoint_limiter.consume(endpoint_key) if is_write else None
         )
         if (
             not decision.allowed
             or not principal_decision.allowed
             or (creation_decision is not None and not creation_decision.allowed)
+            or (write_client_decision is not None and not write_client_decision.allowed)
+            or (write_principal_decision is not None and not write_principal_decision.allowed)
+            or (write_endpoint_decision is not None and not write_endpoint_decision.allowed)
         ):
             retry_after = max(
                 decision.retry_after_seconds,
                 principal_decision.retry_after_seconds,
                 creation_decision.retry_after_seconds if creation_decision else 0,
+                write_client_decision.retry_after_seconds if write_client_decision else 0,
+                write_principal_decision.retry_after_seconds if write_principal_decision else 0,
+                write_endpoint_decision.retry_after_seconds if write_endpoint_decision else 0,
             )
             await JSONResponse(
                 {"detail": "Too many interaction requests. Please try again later."},
@@ -168,8 +191,6 @@ class InteractionRateLimitMiddleware:
         if status_code >= 400:
             self.client_limiter.record_failure(client_key)
             self.session_limiter.record_failure(principal_key)
-        elif is_session_creation:
-            self.session_creation_limiter.record_failure(client_key)
 
 
 class CSRFMiddleware:

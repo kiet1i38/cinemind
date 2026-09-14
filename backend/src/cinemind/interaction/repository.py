@@ -7,6 +7,9 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from cinemind.catalog.repository import CatalogRepository
+from cinemind.db.locks import acquire_write_lock
+
 
 class InteractionRepository:
     """Persist interaction events without embedding business rules in routes."""
@@ -18,6 +21,11 @@ class InteractionRepository:
         """Return a PostgreSQL transaction context for service-level atomic work."""
 
         return self.connection.transaction()
+
+    def acquire_write_lock(self) -> None:
+        """Serialize interaction writes with destructive maintenance."""
+
+        acquire_write_lock(self.connection)
 
     def create_session(
         self,
@@ -78,6 +86,72 @@ class InteractionRepository:
             (show_id,),
         ).fetchone()
         return dict(row) if row else None
+
+    def count_catalog_results(self, normalized_query: str, filters: dict[str, str]) -> int:
+        """Calculate search telemetry from the authoritative active catalog."""
+
+        clauses = ["t.is_active = TRUE"]
+        parameters: list = []
+        if normalized_query:
+            pattern = f"%{CatalogRepository._escape_like(normalized_query)}%"
+            clauses.append(
+                "("
+                "t.title ILIKE %s ESCAPE '!' "
+                "OR EXISTS (SELECT 1 FROM catalog.title_directors d "
+                "WHERE d.title_id = t.title_id AND d.director_name ILIKE %s ESCAPE '!') "
+                "OR EXISTS (SELECT 1 FROM catalog.title_cast c "
+                "WHERE c.title_id = t.title_id AND c.person_name ILIKE %s ESCAPE '!') "
+                "OR EXISTS (SELECT 1 FROM catalog.title_genres g "
+                "WHERE g.title_id = t.title_id AND g.genre_name ILIKE %s ESCAPE '!')"
+                ")"
+            )
+            parameters.extend((pattern, pattern, pattern, pattern))
+
+        content_type = filters.get("type", "all")
+        if content_type != "all":
+            clauses.append("t.content_type = %s")
+            parameters.append(content_type)
+
+        genre = filters.get("genre", "all")
+        if genre != "all":
+            clauses.append(
+                "EXISTS (SELECT 1 FROM catalog.title_genres gf "
+                "WHERE gf.title_id = t.title_id AND gf.genre_name = %s)"
+            )
+            parameters.append(genre)
+
+        year = filters.get("year", "all")
+        if year == "2020s":
+            clauses.append("t.release_year >= %s")
+            parameters.append(2020)
+        elif year == "2010s":
+            clauses.append("t.release_year >= %s AND t.release_year < %s")
+            parameters.extend((2010, 2020))
+        elif year == "before2010":
+            clauses.append("t.release_year < %s")
+            parameters.append(2010)
+
+        row = self.connection.execute(
+            f"SELECT COUNT(*) AS total FROM catalog.titles t WHERE {' AND '.join(clauses)}",
+            parameters,
+        ).fetchone()
+        return int(row["total"] if row else 0)
+
+    def catalog_genre_exists(self, genre: str) -> bool:
+        """Check that a submitted genre belongs to the active catalog."""
+
+        row = self.connection.execute(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM catalog.title_genres g
+                JOIN catalog.titles t ON t.title_id = g.title_id
+                WHERE g.genre_name = %s AND t.is_active = TRUE
+            ) AS available
+            """,
+            (genre,),
+        ).fetchone()
+        return bool(row and row["available"])
 
     def create_search_event(
         self,

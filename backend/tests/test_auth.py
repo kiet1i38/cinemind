@@ -38,6 +38,7 @@ class FakeAuthRepository:
         self.transactions_started = 0
         self.transactions_committed = 0
         self.transactions_rolled_back = 0
+        self.session_limit_arguments = []
 
     def transaction(self):
         return FakeTransaction(self)
@@ -73,7 +74,11 @@ class FakeAuthRepository:
     def set_last_login(self, user_id, logged_in_at):
         self.users[user_id]["last_login_at"] = logged_in_at
 
-    def create_session(self, auth_session_id, user_id, token_hash, created_at, expires_at, user_agent):
+    def acquire_write_lock(self):
+        return None
+
+    def create_session(self, auth_session_id, user_id, token_hash, created_at, expires_at, user_agent, max_active_sessions=5):
+        self.session_limit_arguments.append(max_active_sessions)
         self.sessions.append({"auth_session_id": auth_session_id, "user_id": user_id, "token_hash": token_hash})
         return {"auth_session_id": auth_session_id, "user_id": user_id, "expires_at": expires_at}
 
@@ -130,6 +135,12 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(result["user"]["username"], "demo_user")
         with self.assertRaises(InvalidCredentialsError):
             self.service.login("demo@example.com", "wrong-password", None, None)
+
+    def test_authenticated_session_creation_receives_active_session_limit(self):
+        self.service.register("demo@example.com", "demo_user", "Demo", "a-secure-password", None, None)
+        self.service.login("demo@example.com", "a-secure-password", None, None)
+
+        self.assertEqual(self.repository.session_limit_arguments, [5, 5])
 
     def test_duplicate_and_weak_account_input_are_rejected(self):
         self.service.register("demo@example.com", "demo_user", "Demo", "a-secure-password", None, None)

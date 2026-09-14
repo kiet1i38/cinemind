@@ -9,6 +9,9 @@ MAX_FILTER_COUNT = 8
 MAX_FILTER_KEY_LENGTH = 32
 MAX_FILTER_VALUE_LENGTH = 64
 MAX_FILTER_JSON_BYTES = 1024
+SEARCH_FILTER_KEYS = frozenset({"type", "genre", "year"})
+SEARCH_FILTER_TYPES = frozenset({"all", "Movie", "TV Show"})
+SEARCH_FILTER_YEARS = frozenset({"all", "2020s", "2010s", "before2010"})
 
 
 def normalize_filters(filters: Mapping[str, str] | None) -> dict[str, str]:
@@ -45,3 +48,25 @@ def normalize_filters(filters: Mapping[str, str] | None) -> dict[str, str]:
             f"filters must be at most {MAX_FILTER_JSON_BYTES} bytes when encoded"
         )
     return normalized
+
+
+def normalize_search_filters(filters: Mapping[str, str] | None) -> dict[str, str]:
+    """Validate the exact filter contract used by the catalog UI."""
+
+    normalized = normalize_filters(filters)
+    unknown = set(normalized) - SEARCH_FILTER_KEYS
+    if unknown:
+        raise ValueError("search filters contain unsupported keys")
+
+    result = {
+        "type": normalized.get("type", "all"),
+        "genre": normalized.get("genre", "all"),
+        "year": normalized.get("year", "all"),
+    }
+    if result["type"] not in SEARCH_FILTER_TYPES:
+        raise ValueError("type filter is not supported")
+    if result["year"] not in SEARCH_FILTER_YEARS:
+        raise ValueError("year filter is not supported")
+    if not result["genre"]:
+        raise ValueError("genre filter must not be blank")
+    return result

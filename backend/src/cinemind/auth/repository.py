@@ -3,6 +3,8 @@
 from datetime import datetime
 from uuid import UUID
 
+from cinemind.db.locks import acquire_write_lock
+
 
 class AuthRepository:
     """Persist account records without putting SQL in route handlers."""
@@ -14,6 +16,11 @@ class AuthRepository:
         """Return a transaction context for one auth use case."""
 
         return self.connection.transaction()
+
+    def acquire_write_lock(self) -> None:
+        """Serialize auth writes with destructive maintenance operations."""
+
+        acquire_write_lock(self.connection)
 
     def get_user_by_identifier(self, identifier: str) -> dict | None:
         row = self.connection.execute(
@@ -82,7 +89,43 @@ class AuthRepository:
         created_at: datetime,
         expires_at: datetime,
         user_agent: str | None,
+        max_active_sessions: int = 5,
     ) -> dict:
+        if max_active_sessions < 1:
+            raise ValueError("max_active_sessions must be positive")
+        user_exists = self.connection.execute(
+            "SELECT user_id FROM auth.users WHERE user_id = %s FOR UPDATE",
+            (user_id,),
+        ).fetchone()
+        if user_exists is None:
+            raise RuntimeError("Could not create auth session for missing user")
+        # Remove unusable history before keeping only the newest active rows.
+        # The caller holds the shared transaction lock, and the user row lock
+        # serializes concurrent logins for this account.
+        self.connection.execute(
+            """
+            DELETE FROM auth.sessions
+            WHERE user_id = %s
+              AND (revoked_at IS NOT NULL OR expires_at <= CURRENT_TIMESTAMP)
+            """,
+            (user_id,),
+        )
+        self.connection.execute(
+            """
+            UPDATE auth.sessions
+            SET revoked_at = CURRENT_TIMESTAMP
+            WHERE auth_session_id IN (
+                SELECT auth_session_id
+                FROM auth.sessions
+                WHERE user_id = %s
+                  AND revoked_at IS NULL
+                  AND expires_at > CURRENT_TIMESTAMP
+                ORDER BY created_at DESC, auth_session_id DESC
+                OFFSET %s
+            )
+            """,
+            (user_id, max_active_sessions - 1),
+        )
         row = self.connection.execute(
             """
             INSERT INTO auth.sessions (
@@ -106,18 +149,36 @@ class AuthRepository:
             raise RuntimeError("Could not create auth session")
         return dict(row)
 
+    def cleanup_sessions(self, retention_days: int) -> int:
+        """Delete expired/revoked session history past the retention window."""
+
+        if retention_days < 1:
+            raise ValueError("retention_days must be positive")
+        result = self.connection.execute(
+            """
+            DELETE FROM auth.sessions
+            WHERE (revoked_at IS NOT NULL
+                   AND revoked_at < CURRENT_TIMESTAMP - (%s * INTERVAL '1 day'))
+               OR (expires_at < CURRENT_TIMESTAMP - (%s * INTERVAL '1 day'))
+            """,
+            (retention_days, retention_days),
+        )
+        return int(result.rowcount)
+
     def get_auth_context(self, token_hash: str) -> dict | None:
         row = self.connection.execute(
             """
-            SELECT s.auth_session_id,
-                   u.user_id, u.email, u.username, u.display_name,
-                   u.created_at, u.last_login_at
-            FROM auth.sessions s
-            JOIN auth.users u ON u.user_id = s.user_id
+            UPDATE auth.sessions s
+            SET last_seen_at = CURRENT_TIMESTAMP
+            FROM auth.users u
             WHERE s.token_hash = %s
               AND s.revoked_at IS NULL
               AND s.expires_at > CURRENT_TIMESTAMP
+              AND u.user_id = s.user_id
               AND u.is_active = TRUE
+            RETURNING s.auth_session_id,
+                   u.user_id, u.email, u.username, u.display_name,
+                   u.created_at, u.last_login_at
             """,
             (token_hash,),
         ).fetchone()

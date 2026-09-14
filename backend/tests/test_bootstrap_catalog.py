@@ -39,8 +39,8 @@ class _FakeOpsRepository:
     def record_quality_issues(self, *_args):
         return None
 
-    def mark_dataset_source_ingested(self, source_id, checksum, collected_at):
-        self.marked_checksums.append((source_id, checksum, collected_at))
+    def mark_dataset_source_ingested(self, source_id, checksum, collected_at, **metadata):
+        self.marked_checksums.append((source_id, checksum, collected_at, metadata))
         self.checksum = checksum
 
     def finish_ingestion_run(self, *, status, **_kwargs):

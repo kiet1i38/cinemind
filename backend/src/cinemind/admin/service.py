@@ -39,11 +39,13 @@ class ResetService:
         if request.session_id is None:
             raise ResetValidationError("session_id is required for the interaction scope")
         with self.repository.transaction():
+            self._acquire_write_lock()
             deleted = self.repository.delete_session_interactions(request.session_id)
         return self._response(request.scope, deleted)
 
     def _reset_demo_data(self, request: ResetRequest) -> dict:
         with self.repository.transaction():
+            self._acquire_write_lock()
             deleted = self.repository.delete_all_interactions()
         return self._response(request.scope, deleted)
 
@@ -51,6 +53,7 @@ class ResetService:
         """Clear all user-owned data without rebuilding catalog or ops history."""
 
         with self.repository.transaction():
+            self._acquire_write_lock()
             deleted = self.repository.delete_all_user_data()
 
         return self._response(request.scope, deleted)
@@ -68,6 +71,11 @@ class ResetService:
             raise ResetValidationError("session_id is required for the interaction scope")
         if request.scope is ResetScope.FULL and not self.settings.full_reset_enabled:
             raise ResetValidationError("Full database reset is disabled")
+
+    def _acquire_write_lock(self) -> None:
+        lock = getattr(self.repository, "acquire_write_lock", None)
+        if lock is not None:
+            lock()
 
     @staticmethod
     def _response(

@@ -95,6 +95,11 @@ class Settings:
     catalog_min_valid_ratio: float = 0.95
     catalog_min_valid_records: int = 1
     catalog_max_error_issues: int = 0
+    auth_login_rate_limit_window_seconds: int = 300
+    auth_login_rate_limit_max_attempts: int = 20
+    auth_max_active_sessions_per_user: int = 5
+    auth_session_retention_days: int = 30
+    auth_session_cleanup_interval_seconds: int = 300
 
     def __post_init__(self) -> None:
         """Reject unsafe or internally inconsistent runtime limits early."""
@@ -115,6 +120,11 @@ class Settings:
             "interaction_rate_limit_window_seconds": self.interaction_rate_limit_window_seconds,
             "interaction_rate_limit_max_attempts": self.interaction_rate_limit_max_attempts,
             "catalog_min_valid_records": self.catalog_min_valid_records,
+            "auth_login_rate_limit_window_seconds": self.auth_login_rate_limit_window_seconds,
+            "auth_login_rate_limit_max_attempts": self.auth_login_rate_limit_max_attempts,
+            "auth_max_active_sessions_per_user": self.auth_max_active_sessions_per_user,
+            "auth_session_retention_days": self.auth_session_retention_days,
+            "auth_session_cleanup_interval_seconds": self.auth_session_cleanup_interval_seconds,
         }
         invalid = [name for name, value in positive_limits.items() if value < 1]
         if invalid:
@@ -231,4 +241,19 @@ def get_settings() -> Settings:
         catalog_min_valid_ratio=_float_from_environment("CATALOG_MIN_VALID_RATIO", 0.95),
         catalog_min_valid_records=_int_from_environment("CATALOG_MIN_VALID_RECORDS", 1),
         catalog_max_error_issues=_int_from_environment("CATALOG_MAX_ERROR_ISSUES", 0),
+        auth_login_rate_limit_window_seconds=_int_from_environment(
+            "AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300
+        ),
+        auth_login_rate_limit_max_attempts=_int_from_environment(
+            "AUTH_LOGIN_RATE_LIMIT_MAX_ATTEMPTS", 20
+        ),
+        auth_max_active_sessions_per_user=_int_from_environment(
+            "AUTH_MAX_ACTIVE_SESSIONS_PER_USER", 5
+        ),
+        auth_session_retention_days=_int_from_environment(
+            "AUTH_SESSION_RETENTION_DAYS", 30
+        ),
+        auth_session_cleanup_interval_seconds=_int_from_environment(
+            "AUTH_SESSION_CLEANUP_INTERVAL_SECONDS", 300
+        ),
     )

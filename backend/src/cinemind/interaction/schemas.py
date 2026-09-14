@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, StrictStr, field_validator
 
-from cinemind.interaction.limits import normalize_filters
+from cinemind.interaction.limits import normalize_search_filters
 
 
 class SessionCreateRequest(BaseModel):
@@ -51,7 +51,7 @@ class SearchEventCreateRequest(BaseModel):
     def validate_filters(cls, value: dict[str, str]) -> dict[str, str]:
         """Reject oversized or malformed filter payloads before persistence."""
 
-        return normalize_filters(value)
+        return normalize_search_filters(value)
 
 
 class SearchEventResponse(BaseModel):

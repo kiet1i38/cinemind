@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from cinemind.auth.crypto import hash_session_token, new_session_token
 from cinemind.config import Settings
-from cinemind.interaction.limits import MAX_SEARCH_QUERY_LENGTH, normalize_filters
+from cinemind.interaction.limits import MAX_SEARCH_QUERY_LENGTH, normalize_search_filters
 from cinemind.interaction.models import WatchMetrics
 from cinemind.interaction.repository import InteractionRepository
 
@@ -61,6 +61,7 @@ class InteractionService:
         session_id = uuid4()
         raw_session_token = new_session_token()
         with self.repository.transaction():
+            self._acquire_write_lock()
             created = self.repository.create_session(
                 session_id,
                 now,
@@ -91,18 +92,27 @@ class InteractionService:
         if result_count < 0:
             raise InteractionValidationError("result_count must be greater than or equal to zero")
         try:
-            normalized_filters = normalize_filters(filters)
+            normalized_filters = normalize_search_filters(filters)
         except ValueError as error:
             raise InteractionValidationError(str(error)) from error
         with self.repository.transaction():
+            self._acquire_write_lock()
             self._require_session(session_id, user_id, session_token)
             self._touch_session(session_id)
+            if (
+                normalized_filters["genre"] != "all"
+                and not self.repository.catalog_genre_exists(normalized_filters["genre"])
+            ):
+                raise InteractionValidationError("genre filter is not available")
+            authoritative_result_count = self.repository.count_catalog_results(
+                normalized_query, normalized_filters
+            )
             if client_mutation_id is None:
                 row = self.repository.create_search_event(
                     session_id,
                     query_text,
                     normalized_query,
-                    result_count,
+                    authoritative_result_count,
                     normalized_filters,
                 )
             else:
@@ -110,7 +120,7 @@ class InteractionService:
                     session_id,
                     query_text,
                     normalized_query,
-                    result_count,
+                    authoritative_result_count,
                     normalized_filters,
                     client_mutation_id,
                 )
@@ -118,7 +128,7 @@ class InteractionService:
                     row,
                     query_text=query_text,
                     normalized_query=normalized_query,
-                    result_count=result_count,
+                    result_count=authoritative_result_count,
                     filters=normalized_filters,
                 )
             return row
@@ -134,6 +144,7 @@ class InteractionService:
     ) -> dict:
         watch_session_id = uuid4()
         with self.repository.transaction():
+            self._acquire_write_lock()
             title, metrics = self._prepare_watch(
                 session_id, show_id, watch_minutes, user_id, session_token
             )
@@ -181,6 +192,7 @@ class InteractionService:
     ) -> dict:
         rating_value = self._normalize_rating(rating)
         with self.repository.transaction():
+            self._acquire_write_lock()
             self._require_session(session_id, user_id, session_token)
             title = self._require_title(show_id)
             if watch_session_id is not None:
@@ -229,6 +241,7 @@ class InteractionService:
         rating_value = self._normalize_rating(rating)
         watch_session_id = uuid4()
         with self.repository.transaction():
+            self._acquire_write_lock()
             title, metrics = self._prepare_watch(
                 session_id, show_id, watch_minutes, user_id, session_token
             )
@@ -397,6 +410,11 @@ class InteractionService:
         if title is None:
             raise InteractionTitleNotFoundError(f"Catalog title not found: {normalized}")
         return title
+
+    def _acquire_write_lock(self) -> None:
+        lock = getattr(self.repository, "acquire_write_lock", None)
+        if lock is not None:
+            lock()
 
     @staticmethod
     def normalize_query(value: str) -> str:

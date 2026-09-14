@@ -4,7 +4,7 @@ import { translate } from "./i18n";
 export { loadCatalog, localCatalogProvider } from "../services/catalogService";
 
 function normalizeSearchTerm(value) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "").trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
 function numericValue(value) {

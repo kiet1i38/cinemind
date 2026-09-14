@@ -1,18 +1,19 @@
 // Cookie-session client for the account API. No token is stored in JavaScript.
 
-import { authConfig, resolveApiBaseUrl } from "../config/appConfig";
+import { appConfig, authConfig, resolveApiBaseUrl } from "../config/appConfig";
 import { interactionSessionStore, promoteAuthenticatedInteraction } from "./interactionStore";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 
 export const AUTH_EVENT_STORAGE_KEY = authConfig.eventsStorageKey || "cinemind-auth-event";
 
 async function request(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const response = await fetch(`${resolveApiBaseUrl(authConfig.apiBaseUrl)}${path}`, {
+  const response = await fetchWithTimeout(`${resolveApiBaseUrl(authConfig.apiBaseUrl)}${path}`, {
     ...options,
     headers,
     credentials: "include"
-  });
+  }, appConfig.runtime?.requestTimeoutMs);
   const text = await response.text();
   let payload = null;
   if (text) {

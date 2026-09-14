@@ -72,6 +72,7 @@ class AuthService:
     ) -> dict:
         normalized_identifier = self._normalize_identifier(identifier)
         with self.repository.transaction():
+            self._acquire_write_lock()
             user = self.repository.get_user_by_identifier(normalized_identifier)
             password_hash = (
                 user.get("password_hash", "")
@@ -100,6 +101,7 @@ class AuthService:
         if not raw_token:
             return
         with self.repository.transaction():
+            self._acquire_write_lock()
             auth_token_hash = hash_session_token(raw_token)
             context = (
                 self.repository.get_auth_context(auth_token_hash)
@@ -116,6 +118,7 @@ class AuthService:
 
     def logout_all(self, user_id: UUID) -> None:
         with self.repository.transaction():
+            self._acquire_write_lock()
             self.repository.revoke_all_sessions(user_id)
             if hasattr(self.repository, "end_user_interaction_sessions"):
                 self.repository.end_user_interaction_sessions(user_id)
@@ -134,6 +137,7 @@ class AuthService:
         user_id = uuid4()
         raw_token = new_session_token()
         with self.repository.transaction():
+            self._acquire_write_lock()
             try:
                 self._raise_if_duplicate(email, username)
                 user = self.repository.create_user(
@@ -161,6 +165,7 @@ class AuthService:
                 now,
                 now + timedelta(days=self._session_ttl_days()),
                 user_agent,
+                self._max_active_sessions(),
             )
             user = self.repository.get_user(user_id) or user
         return self._result(user, raw_token, anonymous_session_id if attached else None)
@@ -187,6 +192,7 @@ class AuthService:
             now,
             now + timedelta(days=self._session_ttl_days()),
             user_agent,
+            self._max_active_sessions(),
         )
         refreshed_user = self.repository.get_user(user["user_id"]) or user
         return self._result(refreshed_user, raw_token, anonymous_session_id if attached else None)
@@ -234,6 +240,17 @@ class AuthService:
         if value < 1 or value > 365:
             raise AuthValidationError("Session lifetime must be between 1 and 365 days")
         return value
+
+    def _max_active_sessions(self) -> int:
+        value = int(getattr(self.settings, "auth_max_active_sessions_per_user", 5))
+        if value < 1 or value > 100:
+            raise AuthValidationError("Active session limit must be between 1 and 100")
+        return value
+
+    def _acquire_write_lock(self) -> None:
+        lock = getattr(self.repository, "acquire_write_lock", None)
+        if lock is not None:
+            lock()
 
     @staticmethod
     def _normalize_identifier(value: str) -> str:

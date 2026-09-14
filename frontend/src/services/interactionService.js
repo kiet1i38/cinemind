@@ -1,6 +1,7 @@
 // HTTP client for CineMind's anonymous interaction API.
 
 import { appConfig, resolveApiBaseUrl } from "../config/appConfig";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 import {
   acknowledgePendingSearch,
   acknowledgePendingSignal,
@@ -38,11 +39,11 @@ async function request(path, options = {}) {
     headers.set("X-Cinemind-Session-Token", sessionToken);
   }
 
-  const response = await fetch(`${resolveApiBaseUrl(interactionConfig.apiBaseUrl)}${path}`, {
+  const response = await fetchWithTimeout(`${resolveApiBaseUrl(interactionConfig.apiBaseUrl)}${path}`, {
     ...options,
     headers,
     credentials: "include"
-  });
+  }, appConfig.runtime?.requestTimeoutMs);
   const text = await response.text();
   let payload = null;
   if (text) {
@@ -246,7 +247,8 @@ async function syncPendingInteractionsOnce(records, metadata) {
     }));
   }
 
-  for (const [showId, signal] of Object.entries(pending.signals)) {
+  for (const [, signal] of Object.entries(pending.signals)) {
+    const showId = String(signal?.showId || "").trim();
     const record = recordsById.get(showId);
     if (!record || !signal || typeof signal !== "object" || !signal.mutationId) {
       if (signal?.mutationId) acknowledgePendingSignal(showId, signal.mutationId);

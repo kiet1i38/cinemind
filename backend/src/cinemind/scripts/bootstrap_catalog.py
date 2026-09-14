@@ -100,6 +100,8 @@ def bootstrap_catalog(settings: Settings) -> dict:
                     source_id=source_id,
                     checksum=checksum,
                     collected_at=source.collected_at,
+                    source_uri=source.source_uri,
+                    schema_version=source.schema_version,
                 )
 
             final_status = (
@@ -196,7 +198,9 @@ def _catalog_matches_source(repository, records, source_id, checksum: str) -> bo
 def _advisory_lock(connection):
     """Serialize bootstrap/migration work across multiple backend workers."""
 
-    lock_key = 271820260
+    from cinemind.db.locks import WRITE_MAINTENANCE_LOCK_KEY
+
+    lock_key = WRITE_MAINTENANCE_LOCK_KEY
     connection.execute("SELECT pg_advisory_lock(%s)", (lock_key,))
     try:
         yield

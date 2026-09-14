@@ -53,6 +53,11 @@ class SlidingWindowRateLimiter:
     def record_failure(self, key: str, now: float | None = None) -> None:
         """Consume one failure slot and keep the bucket collection bounded."""
 
+        self.record_attempt(key, now=now)
+
+    def record_attempt(self, key: str, now: float | None = None) -> None:
+        """Consume one request slot and keep the bucket collection bounded."""
+
         timestamp = time.monotonic() if now is None else now
         with self._lock:
             events = self._events.get(key)
@@ -63,6 +68,24 @@ class SlidingWindowRateLimiter:
                 self._events[key] = events
             self._prune(events, timestamp)
             events.append(timestamp)
+
+    def consume(self, key: str, now: float | None = None) -> RateLimitDecision:
+        """Atomically check and consume one request slot when available."""
+
+        timestamp = time.monotonic() if now is None else now
+        with self._lock:
+            events = self._events.get(key)
+            if events is None:
+                if len(self._events) >= self.max_keys:
+                    self._evict_oldest()
+                events = deque()
+                self._events[key] = events
+            self._prune(events, timestamp)
+            if len(events) >= self.max_attempts:
+                retry_after = max(1, ceil(self.window_seconds - (timestamp - events[0])))
+                return RateLimitDecision(allowed=False, retry_after_seconds=retry_after)
+            events.append(timestamp)
+            return RateLimitDecision(allowed=True)
 
     def record_success(self, key: str) -> None:
         """Reset failures after a successful authentication attempt."""

@@ -2,6 +2,7 @@
 
 import { appConfig, resolveApiBaseUrl } from "../config/appConfig";
 import { clearInteractionState, interactionSessionStore } from "./interactionStore";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 
 const resetConfig = appConfig.adminReset;
 
@@ -28,7 +29,7 @@ export async function resetDatabase({ username, password, scope, confirmation, s
   const payload = { scope, confirmation };
   if (scope === "interaction" && sessionId) payload.session_id = sessionId;
 
-  const response = await fetch(`${resolveApiBaseUrl(resetConfig.apiBaseUrl)}${resetConfig.resetPath}`, {
+  const response = await fetchWithTimeout(`${resolveApiBaseUrl(resetConfig.apiBaseUrl)}${resetConfig.resetPath}`, {
     method: "POST",
     headers: {
       Authorization: `Basic ${encodeBasicCredentials(username, password)}`,
@@ -36,7 +37,7 @@ export async function resetDatabase({ username, password, scope, confirmation, s
     },
     body: JSON.stringify(payload),
     credentials: "omit"
-  });
+  }, appConfig.runtime?.requestTimeoutMs);
   const result = await parseResponse(response);
   if (!response.ok) {
     const error = new Error(result?.detail || `Reset request failed with ${response.status}`);

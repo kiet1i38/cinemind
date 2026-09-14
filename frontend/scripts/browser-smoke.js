@@ -61,6 +61,33 @@ async (page) => {
   expect(report.home.catalogCount === "8807 titles", "catalog count is not 8807");
   expect(report.home.rails >= 4, "expected discovery rails are missing");
   expect(report.home.posters.broken === 0 && report.home.posters.withSource === report.home.posters.images, "home has missing or broken poster sources");
+  report.retiredPreferenceUi = {
+    preferenceActions: await page.locator(".catalog-card-action").count()
+  };
+  expect(report.retiredPreferenceUi.preferenceActions === 0, "retired favorite/watchlist controls are still rendered");
+
+  let delayedAuthRequest = true;
+  await page.route("**/api/auth/me", async (route) => {
+    if (!delayedAuthRequest) {
+      await route.continue();
+      return;
+    }
+    delayedAuthRequest = false;
+    await page.waitForTimeout(8500);
+    try {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "simulated upstream hang" }) });
+    } catch {
+      // The browser may abort the delayed route after the client timeout.
+    }
+  });
+  await page.reload();
+  await waitForHome();
+  report.authTimeout = {
+    browseAvailable: await page.getByTestId("home-page").isVisible(),
+    delayedRequestExpired: delayedAuthRequest === false
+  };
+  expect(report.authTimeout.browseAvailable, "auth timeout left the shell loading indefinitely");
+  await page.unroute("**/api/auth/me");
 
   const search = page.getByRole("searchbox", { name: "Search the catalog" });
   await search.fill("Stranger Things");
@@ -175,6 +202,26 @@ async (page) => {
   await page.unroute("**/api/interaction/signals");
   await clearOutbox();
 
+  await page.route("**/api/interaction/signals", async (route) => {
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "simulated offline write" }) });
+  });
+  for (const value of [6.5, 7.5, 8.5]) {
+    await openRating();
+    await chooseRating(value, "10");
+    await page.getByRole("button", { name: "Save signal" }).click();
+    await page.getByTestId("rating-modal").waitFor({ state: "detached" });
+  }
+  const offlineOutbox = await ownerScoped("cinemind-interaction-outbox");
+  const offlineSignalEntries = Object.entries(offlineOutbox.signals || {});
+  report.offlineEventLog = {
+    pendingSignals: offlineSignalEntries.length,
+    uniqueMutationIds: new Set(offlineSignalEntries.map(([key, entry]) => entry?.mutationId || key)).size,
+    showIds: [...new Set(offlineSignalEntries.map(([, entry]) => entry?.showId).filter(Boolean))]
+  };
+  expect(report.offlineEventLog.pendingSignals === 3 && report.offlineEventLog.uniqueMutationIds === 3, "offline signal events were overwritten instead of appended");
+  await clearOutbox();
+  await page.unroute("**/api/interaction/signals");
+
   const invalidRating = await page.evaluate(async () => {
     const raw = JSON.parse(localStorage.getItem("cinemind-interaction-session-id") || "null");
     const owner = JSON.parse(localStorage.getItem("cinemind-interaction-owner") || "\"anonymous\"");
@@ -197,6 +244,21 @@ async (page) => {
   await page.getByRole("heading", { name: "The catalog could not be loaded" }).waitFor({ state: "visible" });
   report.catalogVersionMismatch = true;
   await page.unroute(mismatchRoute);
+  await page.reload();
+  await waitForHome();
+
+  const invalidCatalogRoute = "**/data/catalog.json";
+  await page.route(invalidCatalogRoute, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{ id: "broken", title: "Broken" }])
+    });
+  });
+  await page.reload();
+  await page.getByRole("heading", { name: "The catalog could not be loaded" }).waitFor({ state: "visible" });
+  report.runtimeCatalogValidation = true;
+  await page.unroute(invalidCatalogRoute);
   await page.reload();
   await waitForHome();
 

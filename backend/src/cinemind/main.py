@@ -13,6 +13,7 @@ from cinemind.catalog.routes import router as catalog_router
 from cinemind.catalog.schemas import ReadinessResponse
 from cinemind.config import get_settings
 from cinemind.db.connection import close_pool, connection_scope
+from cinemind.db.migrations import MigrationRunner
 from cinemind.interaction.routes import router as interaction_router
 from cinemind.middleware import (
     CSRFMiddleware,
@@ -39,6 +40,17 @@ REQUIRED_TABLES = (
     ("interaction", "ratings"),
     ("auth", "users"),
     ("auth", "sessions"),
+)
+
+REQUIRED_COLUMNS = (
+    ("interaction", "sessions", "session_token_hash"),
+    ("interaction", "sessions", "expires_at"),
+    ("interaction", "search_events", "client_mutation_id"),
+    ("interaction", "watch_sessions", "client_mutation_id"),
+    ("interaction", "ratings", "client_mutation_id"),
+    ("catalog", "titles", "is_active"),
+    ("catalog", "titles", "source_checksum_sha256"),
+    ("auth", "sessions", "last_seen_at"),
 )
 
 
@@ -97,7 +109,8 @@ def create_app() -> FastAPI:
         """Verify that PostgreSQL and every runtime schema are available."""
 
         try:
-            with connection_scope(get_settings()) as connection:
+            settings = get_settings()
+            with connection_scope(settings) as connection:
                 required_values = ", ".join(
                     f"('{schema_name}', '{table_name}')"
                     for schema_name, table_name in REQUIRED_TABLES
@@ -111,7 +124,41 @@ def create_app() -> FastAPI:
                     FROM (VALUES {required_values}) AS required(schema_name, table_name)
                     """
                 ).fetchall()
-        except psycopg.Error as error:
+                column_placeholders = ", ".join(
+                    "(%s, %s, %s)" for _ in REQUIRED_COLUMNS
+                )
+                column_parameters = [
+                    value
+                    for column in REQUIRED_COLUMNS
+                    for value in column
+                ]
+                column_rows = connection.execute(
+                    f"""
+                    SELECT required.schema_name,
+                           required.table_name,
+                           required.column_name
+                    FROM (VALUES {column_placeholders}) AS required(
+                        schema_name, table_name, column_name
+                    )
+                    LEFT JOIN information_schema.columns available
+                      ON available.table_schema = required.schema_name
+                     AND available.table_name = required.table_name
+                     AND available.column_name = required.column_name
+                    WHERE available.column_name IS NULL
+                    """,
+                    column_parameters,
+                ).fetchall()
+                expected_migrations = MigrationRunner(
+                    connection, settings.migrations_path
+                ).expected_migrations()
+                applied_rows = connection.execute(
+                    """
+                    SELECT version, checksum_sha256
+                    FROM ops.schema_migrations
+                    """
+                ).fetchall()
+        except (OSError, ValueError, psycopg.Error) as error:
+            logger.warning("CineMind readiness probe failed: %s", error)
             raise HTTPException(status_code=503, detail="Database is unavailable") from error
 
         missing = [
@@ -119,13 +166,49 @@ def create_app() -> FastAPI:
             for row in rows
             if row["qualified_name"] is None
         ]
-        if missing:
-            logger.warning("CineMind readiness is missing required database objects: %s", missing)
+        missing_columns = [
+            f"{row['schema_name']}.{row['table_name']}.{row['column_name']}"
+            for row in column_rows
+        ]
+        expected_by_version = {
+            migration.version: migration.checksum_sha256
+            for migration in expected_migrations
+        }
+        applied_by_version = {
+            str(row["version"]): (
+                str(row["checksum_sha256"]).strip().lower()
+                if row["checksum_sha256"]
+                else None
+            )
+            for row in applied_rows
+        }
+        missing_migrations = sorted(set(expected_by_version) - set(applied_by_version))
+        extra_migrations = sorted(set(applied_by_version) - set(expected_by_version))
+        drifted_migrations = sorted(
+            version
+            for version, checksum in expected_by_version.items()
+            if applied_by_version.get(version) != checksum
+        )
+        if missing or missing_columns or missing_migrations or extra_migrations or drifted_migrations:
+            logger.warning(
+                "CineMind readiness failed: tables=%s columns=%s missing_migrations=%s "
+                "extra_migrations=%s drifted_migrations=%s",
+                missing,
+                missing_columns,
+                missing_migrations,
+                extra_migrations,
+                drifted_migrations,
+            )
             raise HTTPException(status_code=503, detail="Database schema is not ready")
+        latest_migration = expected_migrations[-1] if expected_migrations else None
         return ReadinessResponse(
             status="ready",
             catalog_table="catalog.titles",
             checked_at=datetime.now(timezone.utc),
+            migration_version=latest_migration.version if latest_migration else None,
+            migration_checksum_sha256=(
+                latest_migration.checksum_sha256 if latest_migration else None
+            ),
         )
 
     return application

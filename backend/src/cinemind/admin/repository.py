@@ -2,6 +2,8 @@
 
 from uuid import UUID
 
+from cinemind.db.locks import acquire_write_lock
+
 
 _SESSION_TABLES = (
     "interaction.ratings",
@@ -26,6 +28,11 @@ class ResetRepository:
         """Return the connection transaction context."""
 
         return self.connection.transaction()
+
+    def acquire_write_lock(self) -> None:
+        """Serialize reset deletes with every application write."""
+
+        acquire_write_lock(self.connection)
 
     def delete_session_interactions(self, session_id: UUID) -> dict[str, int]:
         """Delete all interaction rows belonging to one anonymous session."""

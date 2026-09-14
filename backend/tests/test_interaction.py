@@ -9,7 +9,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from cinemind.interaction.schemas import RatingCreateRequest, SessionCreateRequest, SignalCreateRequest
+from cinemind.interaction.schemas import RatingCreateRequest, SearchEventCreateRequest, SessionCreateRequest, SignalCreateRequest
 from cinemind.interaction.service import (
     InteractionConflictError,
     InteractionNotFoundError,
@@ -78,9 +78,13 @@ class FakeInteractionRepository:
         self.fail_rating = False
         self.watch_mutations = {}
         self.rating_mutations = {}
+        self.search_result_count = 17
 
     def transaction(self):
         return FakeTransaction(self)
+
+    def acquire_write_lock(self):
+        return None
 
     def create_session(self, session_id, started_at, expires_at, locale, platform, user_id=None, session_token_hash=None):
         row = {
@@ -109,6 +113,12 @@ class FakeInteractionRepository:
 
     def get_title(self, show_id):
         return self.titles.get(show_id)
+
+    def count_catalog_results(self, _normalized_query, _filters):
+        return self.search_result_count
+
+    def catalog_genre_exists(self, _genre):
+        return True
 
     def create_search_event(self, session_id, query_text, normalized_query, result_count, filters):
         return {
@@ -195,7 +205,29 @@ class InteractionServiceTests(unittest.TestCase):
 
         self.assertEqual(result["query_text"], "Stranger   Things")
         self.assertEqual(result["normalized_query"], "stranger things")
+        self.assertEqual(result["result_count"], 17)
         self.assertEqual(self.repository.transactions_committed, 1)
+
+    def test_search_telemetry_uses_server_count_not_client_claim(self):
+        result = self.service.record_search_event(
+            self.session_id,
+            "Drama",
+            2_147_483_647,
+            {"type": "Movie", "genre": "Drama", "year": "2020s"},
+        )
+
+        self.assertEqual(result["result_count"], self.repository.search_result_count)
+
+    def test_search_telemetry_rejects_unknown_catalog_genres(self):
+        self.repository.catalog_genre_exists = lambda _genre: False
+
+        with self.assertRaises(InteractionValidationError):
+            self.service.record_search_event(
+                self.session_id,
+                "Drama",
+                0,
+                {"type": "all", "genre": "Not a catalog genre", "year": "all"},
+            )
 
     def test_movie_duration_is_converted_to_seconds_and_completion_rate(self):
         result = self.service.record_watch_session(self.session_id, "movie-1", 60)
@@ -317,6 +349,15 @@ class InteractionSchemaTests(unittest.TestCase):
     def test_session_schema_rejects_blank_metadata(self):
         with self.assertRaises(ValidationError):
             SessionCreateRequest(locale="   ")
+
+    def test_search_schema_rejects_unknown_or_invalid_filter_values(self):
+        base = {"session_id": uuid4(), "query": "drama", "result_count": 0}
+        with self.assertRaises(ValidationError):
+            SearchEventCreateRequest(**base, filters={"sort": "new"})
+        with self.assertRaises(ValidationError):
+            SearchEventCreateRequest(**base, filters={"type": "Documentary"})
+        with self.assertRaises(ValidationError):
+            SearchEventCreateRequest(**base, filters={"year": "future"})
 
 
 if __name__ == "__main__":

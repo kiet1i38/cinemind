@@ -109,12 +109,13 @@
     "maxWatchMinutes": 10080,
     "searchDebounceMs": 700,
     "pendingRetryIntervalMs": 30000,
-    "pendingSearchMaxItems": 100,
-    "pendingSearchTtlMs": 86400000
+    "pendingMutationMaxItems": 100,
+    "pendingMutationTtlMs": 86400000
   },
   "runtime": {
     "frontendPathPrefix": "/cinemind/",
-    "apiPathPrefix": "/cinemind-api"
+    "apiPathPrefix": "/cinemind-api",
+    "requestTimeoutMs": 8000
   },
   "auth": {
     "apiBaseUrl": "/api/auth",

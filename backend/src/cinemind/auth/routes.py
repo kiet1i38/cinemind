@@ -2,6 +2,8 @@
 
 from collections.abc import Iterator
 import hashlib
+from threading import Lock
+import time
 
 import psycopg
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -38,10 +40,20 @@ auth_ip_rate_limiter = SlidingWindowRateLimiter(
     max_attempts=get_settings().auth_rate_limit_max_attempts,
     window_seconds=get_settings().auth_rate_limit_window_seconds,
 )
+auth_login_attempt_limiter = SlidingWindowRateLimiter(
+    max_attempts=get_settings().auth_login_rate_limit_max_attempts,
+    window_seconds=get_settings().auth_login_rate_limit_window_seconds,
+)
+auth_login_ip_attempt_limiter = SlidingWindowRateLimiter(
+    max_attempts=get_settings().auth_login_rate_limit_max_attempts,
+    window_seconds=get_settings().auth_login_rate_limit_window_seconds,
+)
 auth_registration_rate_limiter = SlidingWindowRateLimiter(
     max_attempts=get_settings().auth_rate_limit_max_attempts,
     window_seconds=get_settings().auth_rate_limit_window_seconds,
 )
+_auth_cleanup_lock = Lock()
+_last_auth_cleanup = 0.0
 
 
 def get_auth_service() -> Iterator[AuthService]:
@@ -49,7 +61,9 @@ def get_auth_service() -> Iterator[AuthService]:
 
     settings = get_settings()
     with connection_scope(settings) as connection:
-        yield AuthService(AuthRepository(connection), settings)
+        repository = AuthRepository(connection)
+        _maybe_cleanup_auth_sessions(repository, settings)
+        yield AuthService(repository, settings)
 
 
 def _prepare_register_request(request: Request, payload: RegisterRequest) -> str:
@@ -69,6 +83,8 @@ def _prepare_login_request(request: Request, payload: LoginRequest) -> str:
     settings = get_settings()
     _require_secure_transport(request, settings)
     rate_key = _auth_rate_limit_key(request, payload.identifier, "login")
+    account_rate_key = _auth_identifier_rate_limit_key(payload.identifier, "login")
+    _enforce_login_attempt_rate_limit(request, account_rate_key)
     _enforce_auth_rate_limit(request, rate_key)
     return rate_key
 
@@ -97,13 +113,13 @@ def register(
         )
     except DuplicateAccountError as error:
         _record_auth_failure(request, rate_key)
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        raise HTTPException(status_code=400, detail="Unable to create account") from error
     except AuthValidationError as error:
         _record_auth_failure(request, rate_key)
         raise HTTPException(status_code=400, detail=str(error)) from error
     except psycopg.errors.UniqueViolation as error:
         _record_auth_failure(request, rate_key)
-        raise HTTPException(status_code=409, detail="An account with these details already exists") from error
+        raise HTTPException(status_code=400, detail="Unable to create account") from error
     finally:
         # Count every registration attempt, including successful ones.  A
         # success must not create a loophole for automated account creation.
@@ -251,6 +267,15 @@ def _auth_rate_limit_key(request: Request, identifier: str, operation: str) -> s
     return f"{operation}:{address}:{identifier_hash}"
 
 
+def _auth_identifier_rate_limit_key(identifier: str, operation: str) -> str:
+    """Build an account bucket that cannot be bypassed by rotating IPs."""
+
+    identifier_hash = hashlib.sha256(
+        str(identifier).strip().casefold().encode("utf-8")
+    ).hexdigest()
+    return f"{operation}:account:{identifier_hash}"
+
+
 def _auth_ip_key(request: Request, operation: str) -> str:
     address = client_address_from_request(request, get_settings())
     return f"{operation}:{address}"
@@ -284,6 +309,22 @@ def _enforce_auth_rate_limit(request: Request, identifier_key: str) -> None:
     )
 
 
+def _enforce_login_attempt_rate_limit(request: Request, identifier_key: str) -> None:
+    """Consume a quota for every login, including valid-password attempts."""
+
+    operation = identifier_key.split(":", 1)[0]
+    identifier_decision = auth_login_attempt_limiter.consume(identifier_key)
+    ip_decision = auth_login_ip_attempt_limiter.consume(_auth_ip_key(request, operation))
+    if identifier_decision.allowed and ip_decision.allowed:
+        return
+    decision = ip_decision if not ip_decision.allowed else identifier_decision
+    raise HTTPException(
+        status_code=429,
+        detail="Too many login attempts. Please try again later.",
+        headers={"Retry-After": str(decision.retry_after_seconds)},
+    )
+
+
 def _enforce_registration_rate_limit(request: Request) -> None:
     """Bound total account-creation attempts from one client address."""
 
@@ -307,4 +348,26 @@ def _record_auth_success(request: Request, identifier_key: str) -> None:
 
 
 def _record_registration_attempt(request: Request) -> None:
-    auth_registration_rate_limiter.record_failure(_auth_ip_key(request, "register"))
+    auth_registration_rate_limiter.record_attempt(_auth_ip_key(request, "register"))
+
+
+def _maybe_cleanup_auth_sessions(repository: AuthRepository, settings: Settings) -> None:
+    """Run bounded session retention cleanup at most once per process interval."""
+
+    global _last_auth_cleanup
+    now = time.monotonic()
+    with _auth_cleanup_lock:
+        interval = max(1, int(getattr(settings, "auth_session_cleanup_interval_seconds", 300)))
+        if now - _last_auth_cleanup < interval:
+            return
+        try:
+            with repository.transaction():
+                repository.acquire_write_lock()
+                repository.cleanup_sessions(
+                    max(1, int(getattr(settings, "auth_session_retention_days", 30)))
+                )
+        except psycopg.Error:
+            # A later request retries cleanup; auth availability should not be
+            # hidden behind a best-effort retention task.
+            return
+        _last_auth_cleanup = now

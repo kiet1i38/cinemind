@@ -52,7 +52,8 @@ jobs:
         run: |
           for attempt in {1..60}; do
             if curl --fail --silent http://127.0.0.1:5173/ >/dev/null \
-              && curl --fail --silent http://127.0.0.1:8000/healthz >/dev/null; then
+              && curl --fail --silent http://127.0.0.1:8000/healthz >/dev/null \
+              && curl --fail --silent http://127.0.0.1:8000/readyz >/dev/null; then
               exit 0
             fi
             sleep 2

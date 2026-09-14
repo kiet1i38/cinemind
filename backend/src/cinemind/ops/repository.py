@@ -15,7 +15,7 @@ class OpsRepository:
         self.connection = connection
 
     def ensure_dataset_source(self, source: DatasetSource) -> UUID:
-        """Register source metadata without claiming the new import succeeded."""
+        """Reserve a source identity without publishing pending metadata."""
 
         row = self.connection.execute(
             """
@@ -30,11 +30,7 @@ class OpsRepository:
                 checksum_sha256
             )
             VALUES (%s, %s, %s, %s, %s, %s, FALSE, NULL)
-            ON CONFLICT (source_name, source_type)
-            DO UPDATE SET
-                source_uri = EXCLUDED.source_uri,
-                schema_version = EXCLUDED.schema_version,
-                updated_at = CURRENT_TIMESTAMP
+            ON CONFLICT (source_name, source_type) DO NOTHING
             RETURNING source_id
             """,
             (
@@ -46,24 +42,28 @@ class OpsRepository:
                 source.collected_at,
             ),
         ).fetchone()
-        if row is None:
-            raise RuntimeError("Could not register dataset source")
-        persisted_source_id = UUID(str(row["source_id"]))
-        # Only one configured source should be active for the served catalog.
-        # Keep historical rows for auditability, but prevent a renamed or
-        # replaced source from leaving stale active metadata behind.
-        self.connection.execute(
+        if row is not None:
+            return UUID(str(row["source_id"]))
+        existing = self.connection.execute(
             """
-            UPDATE ops.dataset_sources
-            SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-            WHERE source_id <> %s AND is_active = TRUE
+            SELECT source_id
+            FROM ops.dataset_sources
+            WHERE source_name = %s AND source_type = %s
             """,
-            (persisted_source_id,),
-        )
-        return persisted_source_id
+            (source.source_name, source.source_type),
+        ).fetchone()
+        if existing is None:
+            raise RuntimeError("Could not register dataset source")
+        return UUID(str(existing["source_id"]))
 
     def mark_dataset_source_ingested(
-        self, source_id: UUID, checksum: str, collected_at: datetime
+        self,
+        source_id: UUID,
+        checksum: str,
+        collected_at: datetime,
+        *,
+        source_uri: str | None = None,
+        schema_version: str | None = None,
     ) -> None:
         """Publish the checksum only after the catalog replacement succeeds."""
 
@@ -72,11 +72,13 @@ class OpsRepository:
             UPDATE ops.dataset_sources
             SET checksum_sha256 = %s,
                 collected_at = %s,
+                source_uri = COALESCE(%s, source_uri),
+                schema_version = COALESCE(%s, schema_version),
                 is_active = TRUE,
                 updated_at = CURRENT_TIMESTAMP
             WHERE source_id = %s
             """,
-            (checksum, collected_at, source_id),
+            (checksum, collected_at, source_uri, schema_version, source_id),
         )
         if result.rowcount != 1:
             raise RuntimeError(f"Dataset source not found: {source_id}")

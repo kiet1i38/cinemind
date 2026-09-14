@@ -66,24 +66,70 @@ function normalizeOutbox(value) {
   const signals = source.signals && typeof source.signals === "object" && !Array.isArray(source.signals) ? source.signals : {};
   const searches = source.searches && typeof source.searches === "object" && !Array.isArray(source.searches) ? source.searches : {};
   const now = Date.now();
-  const ttlMs = Number.isFinite(interactionConfig.pendingSearchTtlMs) && interactionConfig.pendingSearchTtlMs > 0
-    ? interactionConfig.pendingSearchTtlMs
+  const ttlMs = Number.isFinite(interactionConfig.pendingMutationTtlMs) && interactionConfig.pendingMutationTtlMs > 0
+    ? interactionConfig.pendingMutationTtlMs
     : 86400000;
-  const maxItems = Number.isInteger(interactionConfig.pendingSearchMaxItems) && interactionConfig.pendingSearchMaxItems > 0
-    ? interactionConfig.pendingSearchMaxItems
+  const maxItems = Number.isInteger(interactionConfig.pendingMutationMaxItems) && interactionConfig.pendingMutationMaxItems > 0
+    ? interactionConfig.pendingMutationMaxItems
     : 100;
+  const retainedSignals = Object.entries(signals)
+    .map(([key, entry]) => normalizePendingSignal(key, entry, now, ttlMs))
+    .filter(Boolean)
+    .sort(([, left], [, right]) => Date.parse(right.queuedAt) - Date.parse(left.queuedAt))
+    .slice(0, maxItems);
   const retainedSearches = Object.entries(searches)
-    .filter(([, entry]) => entry && typeof entry === "object" && !Array.isArray(entry) && entry.mutationId)
-    .filter(([, entry]) => {
-      const queuedAt = Date.parse(entry.queuedAt || "");
-      return !Number.isFinite(queuedAt) || now - queuedAt <= ttlMs;
-    })
-    .sort(([, left], [, right]) => Date.parse(right.queuedAt || "") - Date.parse(left.queuedAt || ""))
+    .map(([key, entry]) => normalizePendingSearch(key, entry, now, ttlMs))
+    .filter(Boolean)
+    .sort(([, left], [, right]) => Date.parse(right.queuedAt) - Date.parse(left.queuedAt))
     .slice(0, maxItems);
   return {
-    signals,
+    signals: Object.fromEntries(retainedSignals),
     searches: Object.fromEntries(retainedSearches)
   };
+}
+
+function normalizePendingSignal(key, entry, now, ttlMs) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+  // Migrate the pre-event-log shape, where signals were keyed by show id,
+  // exactly once when the normalized outbox is persisted.
+  const mutationId = isUuid(entry.mutationId)
+    ? String(entry.mutationId).toLowerCase()
+    : (isUuid(key) ? String(key).toLowerCase() : createMutationId());
+  const showId = String(entry.showId || (isUuid(key) ? "" : key)).trim();
+  const rating = Number(entry.rating);
+  const watchMinutes = Number(entry.watchMinutes);
+  const queuedAt = retainedTimestamp(entry.queuedAt, now, ttlMs);
+  if (!mutationId || !showId || showId.length > 32 || !isValidRating(rating) || !Number.isInteger(watchMinutes) || watchMinutes < 0 || watchMinutes > interactionConfig.maxWatchMinutes || !queuedAt) return null;
+  return [mutationId, {
+    showId,
+    rating,
+    watchMinutes,
+    queuedAt,
+    mutationId
+  }];
+}
+
+function normalizePendingSearch(key, entry, now, ttlMs) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const mutationId = isUuid(entry.mutationId) ? String(entry.mutationId).toLowerCase() : (isUuid(key) ? String(key).toLowerCase() : null);
+  if (!mutationId) return null;
+  const queuedAt = retainedTimestamp(entry.queuedAt, now, ttlMs);
+  if (!queuedAt) return null;
+  const query = String(entry.query ?? "").trim().slice(0, 200);
+  if (!query) return null;
+  return [mutationId, {
+    query,
+    resultCount: Math.max(0, Number(entry.resultCount) || 0),
+    filters: entry.filters && typeof entry.filters === "object" && !Array.isArray(entry.filters) ? { ...entry.filters } : {},
+    queuedAt,
+    mutationId
+  }];
+}
+
+function retainedTimestamp(value, now, ttlMs) {
+  const parsed = Date.parse(value || "");
+  if (Number.isFinite(parsed) && now - parsed > ttlMs) return null;
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date(now).toISOString();
 }
 
 export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null } = {}) {
@@ -203,51 +249,65 @@ export function pendingInteractionsPersisted() {
 }
 
 export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId = createMutationId()) {
+  const normalizedShowId = String(showId || "").trim();
   const normalizedRating = Number(rating);
   const normalizedWatchMinutes = Number(watchMinutes);
-  if (!isValidRating(normalizedRating) || !Number.isInteger(normalizedWatchMinutes) || normalizedWatchMinutes < 0 || normalizedWatchMinutes > interactionConfig.maxWatchMinutes) {
+  if (!normalizedShowId || normalizedShowId.length > 32 || !isUuid(mutationId) || !isValidRating(normalizedRating) || !Number.isInteger(normalizedWatchMinutes) || normalizedWatchMinutes < 0 || normalizedWatchMinutes > interactionConfig.maxWatchMinutes) {
     throw new Error("Invalid signal payload");
   }
   const outbox = readPendingInteractions();
-  outbox.signals[String(showId)] = { rating: normalizedRating, watchMinutes: normalizedWatchMinutes, queuedAt: new Date().toISOString(), mutationId };
+  const normalizedMutationId = String(mutationId).toLowerCase();
+  outbox.signals[normalizedMutationId] = { showId: normalizedShowId, rating: normalizedRating, watchMinutes: normalizedWatchMinutes, queuedAt: new Date().toISOString(), mutationId: normalizedMutationId };
   writePendingInteractions(outbox);
-  return mutationId;
+  return normalizedMutationId;
 }
 
 export function acknowledgePendingSignal(showId, mutationId) {
   const outbox = readPendingInteractions();
-  const key = String(showId);
-  if (outbox.signals[key]?.mutationId !== mutationId) return;
-  delete outbox.signals[key];
+  const normalizedMutationId = String(mutationId || "").toLowerCase();
+  const signal = outbox.signals[normalizedMutationId];
+  if (!signal || signal.mutationId !== normalizedMutationId || (showId && signal.showId !== String(showId))) return;
+  delete outbox.signals[normalizedMutationId];
   writePendingInteractions(outbox);
 }
 
 export function queuePendingSearch({ query, resultCount, filters }, mutationId = createMutationId()) {
+  const normalizedQuery = String(query ?? "").trim().slice(0, 200);
+  if (!normalizedQuery || !isUuid(mutationId)) throw new Error("Invalid search payload");
   const outbox = readPendingInteractions();
-  outbox.searches[String(mutationId)] = { query: String(query ?? "").trim().slice(0, 200), resultCount: Math.max(0, Number(resultCount) || 0), filters: filters && typeof filters === "object" && !Array.isArray(filters) ? { ...filters } : {}, queuedAt: new Date().toISOString(), mutationId };
+  const normalizedMutationId = String(mutationId).toLowerCase();
+  outbox.searches[normalizedMutationId] = { query: normalizedQuery, resultCount: Math.max(0, Number(resultCount) || 0), filters: filters && typeof filters === "object" && !Array.isArray(filters) ? { ...filters } : {}, queuedAt: new Date().toISOString(), mutationId: normalizedMutationId };
   writePendingInteractions(outbox);
-  return mutationId;
+  return normalizedMutationId;
 }
 
 export function acknowledgePendingSearch(mutationId) {
   const outbox = readPendingInteractions();
-  const key = String(mutationId);
-  if (!outbox.searches[key] || outbox.searches[key].mutationId !== mutationId) return;
+  const key = String(mutationId || "").toLowerCase();
+  if (!outbox.searches[key] || outbox.searches[key].mutationId !== key) return;
   delete outbox.searches[key];
   writePendingInteractions(outbox);
 }
 
 export function mergeInteractionState(remoteState, localState = {}) {
   const pending = readPendingInteractions();
-  const ratings = { ...(localState.ratings || {}) };
+  // The server is authoritative for acknowledged state. Local data is only
+  // allowed to override it while the corresponding mutation is still pending.
+  void localState;
+  const ratings = {};
   for (const item of Array.isArray(remoteState?.ratings) ? remoteState.ratings : []) {
     const remoteRating = Number(item?.rating);
     const remoteWatchMinutes = item?.watch_minutes === null ? 0 : Number(item?.watch_minutes);
     if (!item || typeof item !== "object" || !item.show_id || !isValidRating(remoteRating) || !Number.isInteger(remoteWatchMinutes) || remoteWatchMinutes < 0 || remoteWatchMinutes > interactionConfig.maxWatchMinutes) continue;
     ratings[String(item.show_id)] = { rating: remoteRating, watchMinutes: remoteWatchMinutes, savedAt: item.rated_at };
   }
-  for (const [showId, signal] of Object.entries(pending.signals)) {
-    if (!signal || !isValidRating(Number(signal.rating)) || !Number.isInteger(Number(signal.watchMinutes)) || Number(signal.watchMinutes) < 0 || Number(signal.watchMinutes) > interactionConfig.maxWatchMinutes) continue;
+  const latestPendingByShow = new Map();
+  for (const signal of Object.values(pending.signals)) {
+    if (!signal || !signal.showId || !isValidRating(Number(signal.rating)) || !Number.isInteger(Number(signal.watchMinutes)) || Number(signal.watchMinutes) < 0 || Number(signal.watchMinutes) > interactionConfig.maxWatchMinutes) continue;
+    const current = latestPendingByShow.get(signal.showId);
+    if (!current || Date.parse(signal.queuedAt) >= Date.parse(current.queuedAt)) latestPendingByShow.set(signal.showId, signal);
+  }
+  for (const [showId, signal] of latestPendingByShow) {
     ratings[showId] = { rating: Number(signal.rating), watchMinutes: Number(signal.watchMinutes), savedAt: signal.queuedAt };
   }
   return { ratings };

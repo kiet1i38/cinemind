@@ -261,7 +261,7 @@ class InteractionRateLimitMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
         self.middleware = InteractionRateLimitMiddleware(app, max_attempts=2, window_seconds=60)
 
-    async def request(self, path):
+    async def request(self, path, method="POST"):
         response_status = None
 
         async def receive():
@@ -275,7 +275,7 @@ class InteractionRateLimitMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         await self.middleware(
             {
                 "type": "http",
-                "method": "POST",
+                "method": method,
                 "path": path,
                 "headers": [],
                 "client": ("203.0.113.10", 1234),
@@ -287,17 +287,22 @@ class InteractionRateLimitMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_success_does_not_clear_previous_failures(self):
         self.status = 400
-        self.assertEqual(await self.request("/api/interaction/search-events"), 400)
+        self.assertEqual(await self.request("/api/interaction/search-events", "GET"), 400)
         self.status = 201
-        self.assertEqual(await self.request("/api/interaction/search-events"), 201)
+        self.assertEqual(await self.request("/api/interaction/search-events", "GET"), 201)
         self.status = 400
-        self.assertEqual(await self.request("/api/interaction/search-events"), 400)
-        self.assertEqual(await self.request("/api/interaction/search-events"), 429)
+        self.assertEqual(await self.request("/api/interaction/search-events", "GET"), 400)
+        self.assertEqual(await self.request("/api/interaction/search-events", "GET"), 429)
 
     async def test_successful_session_creation_is_bounded(self):
         self.assertEqual(await self.request("/api/interaction/sessions"), 201)
         self.assertEqual(await self.request("/api/interaction/sessions"), 201)
         self.assertEqual(await self.request("/api/interaction/sessions"), 429)
+
+    async def test_successful_writes_are_bounded_before_route_execution(self):
+        self.assertEqual(await self.request("/api/interaction/search-events"), 201)
+        self.assertEqual(await self.request("/api/interaction/search-events"), 201)
+        self.assertEqual(await self.request("/api/interaction/search-events"), 429)
 
 
 if __name__ == "__main__":
