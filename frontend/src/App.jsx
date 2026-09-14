@@ -52,6 +52,8 @@ export default function App() {
   const languageRef = useRef(language);
   const interactionRevisionRef = useRef(0);
   const authRequestRef = useRef(null);
+  const authRevisionRef = useRef(0);
+  const authCheckQueuedRef = useRef(false);
   const authRetryRef = useRef(null);
   const catalogRequestRef = useRef({ requestId: 0, controller: null });
   const authUserRef = useRef(null);

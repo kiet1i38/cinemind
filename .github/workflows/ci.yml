@@ -69,9 +69,6 @@ jobs:
       - name: Run browser smoke and regression flows
         working-directory: frontend
         run: npm run test:browser
-      - name: Dump stack logs on browser failure
-        if: failure()
-        run: docker compose logs --no-color
       - name: Stop the local stack
         if: always()
         run: docker compose down
