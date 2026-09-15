@@ -482,12 +482,12 @@ class InteractionRepository:
             WHERE rating_id = %s
               AND session_id = %s
               AND title_id = %s
-              AND watch_session_id IS NULL
+              AND (watch_session_id IS NULL OR watch_session_id = %s)
             RETURNING rating_id, session_id, watch_session_id, title_id,
                       rating_value, rated_at, client_occurred_at,
                       client_device_id, client_event_sequence
             """,
-            (watch_session_id, rating_id, session_id, title_id),
+            (watch_session_id, rating_id, session_id, title_id, watch_session_id),
         ).fetchone()
         return dict(row) if row else None
 

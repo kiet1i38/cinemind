@@ -15,6 +15,23 @@ class _Result:
     def fetchall(self):
         return self.rows
 
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+
+class _AttachConnection:
+    """SQL spy for the idempotent rating/watch repair link."""
+
+    def __init__(self, row):
+        self.row = row
+        self.statement = None
+        self.parameters = None
+
+    def execute(self, statement, params=()):
+        self.statement = statement
+        self.parameters = params
+        return _Result([self.row] if self.row else [])
+
 
 class _StateConnection:
     """Small SQL spy that models the device and server-time projection."""
@@ -130,6 +147,33 @@ class InteractionRepositoryTests(unittest.TestCase):
         state = InteractionRepository(connection).interaction_state(session_id)
 
         self.assertEqual(state["ratings"][0]["rating"], Decimal("6.0"))
+
+    def test_attach_rating_watch_session_allows_the_same_link_on_retry(self):
+        rating_id = 17
+        watch_session_id = uuid4()
+        session_id = uuid4()
+        title_id = 7
+        row = {
+            "rating_id": rating_id,
+            "session_id": session_id,
+            "watch_session_id": watch_session_id,
+            "title_id": title_id,
+            "rating_value": Decimal("8.0"),
+            "rated_at": datetime.now(timezone.utc),
+            "client_occurred_at": None,
+            "client_device_id": None,
+            "client_event_sequence": None,
+        }
+        connection = _AttachConnection(row)
+
+        result = InteractionRepository(connection).attach_rating_watch_session(
+            rating_id, watch_session_id, session_id, title_id
+        )
+
+        self.assertEqual(result["watch_session_id"], watch_session_id)
+        self.assertIn("watch_session_id = %s", connection.statement)
+        self.assertIn("OR watch_session_id = %s", connection.statement)
+        self.assertEqual(connection.parameters[-1], watch_session_id)
 
 
 if __name__ == "__main__":

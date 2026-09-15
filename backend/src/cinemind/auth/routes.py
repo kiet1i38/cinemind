@@ -82,10 +82,15 @@ def _prepare_login_request(request: Request, payload: LoginRequest) -> str:
 
     settings = get_settings()
     _require_secure_transport(request, settings)
+    # Reject an already-exhausted client before borrowing a database connection
+    # to resolve the account. The account bucket must still be resolved after
+    # this cheap preflight so email and username aliases share one quota.
+    _enforce_login_ip_preflight(request)
     # Resolve aliases before reserving the account-attempt bucket. Email and
     # username are both accepted login identifiers, so hashing the raw input
-    # would give one account two independent quotas. Unknown identifiers use one
-    # neutral principal and never reveal whether a user exists.
+    # would give one account two independent quotas. Unknown identifiers use a
+    # stable per-identifier principal, not a global bucket that could become an
+    # account-existence oracle.
     user_id = _lookup_login_user_id(payload.identifier, settings)
     principal = _login_rate_limit_principal(payload.identifier, user_id)
     rate_key = _auth_rate_limit_key(request, payload.identifier, "login", principal=principal)
@@ -311,11 +316,12 @@ def _lookup_login_user_id(identifier: str, settings: Settings) -> str | None:
 def _login_rate_limit_principal(identifier: str, user_id: str | None = None) -> str:
     if user_id:
         return f"user:{user_id}"
-    # Keep all unresolved aliases in one neutral bucket. It prevents an
-    # attacker from using arbitrary identifiers as a substitute for the
-    # stable account bucket, while the IP and total-attempt limiters still
-    # bound availability impact for invalid logins.
-    return "unknown"
+    # Unknown aliases must be isolated by their normalized value. A global
+    # "unknown" bucket lets an attacker pre-fill it and distinguish a 429 for
+    # a missing account from a 401 for a real account from another IP.
+    normalized = str(identifier).strip().casefold()
+    identifier_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"unknown:{identifier_hash}"
 
 
 def _auth_ip_key(request: Request, operation: str) -> str:
@@ -352,6 +358,24 @@ def _enforce_auth_rate_limit(request: Request, identifier_key: str) -> None:
     raise HTTPException(
         status_code=429,
         detail="Too many authentication attempts. Please try again later.",
+        headers={"Retry-After": str(decision.retry_after_seconds)},
+    )
+
+
+def _enforce_login_ip_preflight(request: Request) -> None:
+    """Fail fast when the request address already exhausted login quotas."""
+
+    ip_key = _auth_ip_key(request, "login")
+    decisions = (
+        auth_login_ip_attempt_limiter.check(ip_key),
+        auth_ip_rate_limiter.check(ip_key),
+    )
+    decision = next((candidate for candidate in decisions if not candidate.allowed), None)
+    if decision is None:
+        return
+    raise HTTPException(
+        status_code=429,
+        detail="Too many login attempts. Please try again later.",
         headers={"Retry-After": str(decision.retry_after_seconds)},
     )
 

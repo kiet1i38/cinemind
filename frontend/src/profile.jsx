@@ -80,7 +80,13 @@ export default function ProfilePage() {
         window.location.href = getAuthPageUrl("login", `${window.location.pathname}${window.location.search}`);
         return;
       }
-      setInteractionOwner(currentUser.user_id);
+      const transition = setInteractionOwner(currentUser.user_id);
+      if (transition?.promotionPending) {
+        // Wait for the login tab to finish its durable anonymous-session
+        // transfer before exposing account-owned activity in this tab.
+        setMessage(translate(language, "authInteractionTransferPending"));
+        return;
+      }
       userRef.current = currentUser;
       setUser(currentUser);
       setLoadState("ready");

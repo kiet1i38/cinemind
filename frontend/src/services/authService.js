@@ -1,7 +1,13 @@
 // Cookie-session client for the account API. No token is stored in JavaScript.
 
 import { appConfig, authConfig, resolveApiBaseUrl } from "../config/appConfig";
-import { getInteractionOwner, interactionSessionStore, promoteAuthenticatedInteraction } from "./interactionStore";
+import {
+  beginAuthenticatedInteractionPromotion,
+  clearPendingAuthenticatedInteractionPromotion,
+  getInteractionOwner,
+  interactionSessionStore,
+  promoteAuthenticatedInteraction
+} from "./interactionStore";
 import { fetchWithTimeout } from "./fetchWithTimeout";
 
 export const AUTH_EVENT_STORAGE_KEY = authConfig.eventsStorageKey || "cinemind-auth-event";
@@ -55,41 +61,72 @@ export async function getCurrentUser({ signal } = {}) {
 }
 
 export async function login({ identifier, password }) {
-  const result = await request("/login", {
-    method: "POST",
-    body: JSON.stringify({ identifier, password, ...interactionSessionPayload() })
+  return authenticate("/login", {
+    identifier,
+    password,
+    ...interactionSessionPayload()
   });
-  return completeAuthenticatedInteraction(result);
 }
 
 export async function register({ email, username, displayName, password }) {
-  const result = await request("/register", {
-    method: "POST",
-    body: JSON.stringify({
-      email,
-      username,
-      display_name: displayName,
-      password,
-      ...interactionSessionPayload()
-    })
+  return authenticate("/register", {
+    email,
+    username,
+    display_name: displayName,
+    password,
+    ...interactionSessionPayload()
   });
-  return completeAuthenticatedInteraction(result);
 }
 
-function completeAuthenticatedInteraction(result) {
+function promotionUnavailableError() {
+  const error = new Error("The browser cannot safely preserve the anonymous interaction session. Please enable site storage and try again.");
+  error.code = "INTERACTION_PROMOTION_UNAVAILABLE";
+  error.status = 503;
+  return error;
+}
+
+async function authenticate(path, payload) {
+  // Write the cross-tab promotion marker before the auth cookie can be set.
+  // Without this durable marker another tab may observe /me first and clear
+  // the anonymous namespace before the login response confirms the transfer.
+  const promotionId = beginAuthenticatedInteractionPromotion();
+  if (promotionId === false) throw promotionUnavailableError();
+  try {
+    const result = await request(path, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    return completeAuthenticatedInteraction(result, promotionId);
+  } catch (error) {
+    if (promotionId) clearPendingAuthenticatedInteractionPromotion(promotionId);
+    throw error;
+  }
+}
+
+function completeAuthenticatedInteraction(result, promotionId = null) {
   const interactionTransition = promoteAuthenticatedInteraction(
     result?.user?.user_id,
     result?.interaction_session_id,
   );
+  const transferReady = interactionTransition?.promotionPending !== true
+    && interactionTransition?.persisted !== false
+    && interactionTransition?.pendingOwnerTransfer !== true
+    && interactionTransition?.transferPersisted !== false;
+  const promotionCleared = transferReady
+    && clearPendingAuthenticatedInteractionPromotion(promotionId);
   // Other tabs must not react to the account cookie until this tab has a
   // durable recovery intent. Otherwise they can clear the anonymous source
   // while this tab still holds the only in-memory transfer state.
-  if (interactionTransition?.persisted !== false
-    && interactionTransition?.pendingOwnerTransfer !== true
-    && interactionTransition?.transferPersisted !== false) {
+  if (transferReady && promotionCleared) {
     broadcastAuthEvent("login");
   }
-  return { ...result, interactionTransition };
+  return {
+    ...result,
+    interactionTransition: {
+      ...interactionTransition,
+      promotionPending: interactionTransition?.promotionPending === true || !promotionCleared
+    }
+  };
 }
 
 export function retryAuthenticatedInteraction(result) {

@@ -42,6 +42,10 @@ const ownerTransferSessionStoreBase = createJsonStore(
   null,
   getBrowserSessionStorage,
 );
+const ownerPromotionStoreBase = createJsonStore(
+  `${interactionConfig.ownerStorageKey}:promotion-in-progress`,
+  null,
+);
 const outboxStoreBase = createJsonStore(interactionConfig.outboxStorageKey, () => ({ signals: {}, searches: {} }));
 const legacyFavoriteStore = createJsonStore("cinemind-favorites", null);
 const legacyWatchlistStore = createJsonStore("cinemind-watchlist", null);
@@ -62,6 +66,7 @@ let deviceStorageContext = null;
 const UNREADABLE_OPENER_STREAM = "__unreadable_opener_stream__";
 const DEVICE_STREAM_LEASE_MS = 15000;
 const DEVICE_STREAM_HEARTBEAT_MS = 5000;
+const OWNER_PROMOTION_TTL_MS = 120000;
 const deviceStreamClaimId = createMutationId();
 let activeDeviceStreamClaimKey = null;
 let deviceStreamHeartbeat = null;
@@ -237,9 +242,14 @@ function ensureUniqueDeviceStream() {
   let currentDevice = deviceStoreBase.read();
   let forked = false;
   if (isUuid(currentDevice) && !claimDeviceStream(currentDevice)) {
+    // The lease conflict path can return before the opener branch below. Keep
+    // the original stream id so a reloaded clone can prove which stream it
+    // forked from instead of rotating again on every reload.
+    const forkParent = String(currentDevice).toLowerCase();
     deviceStoreBase.write(createMutationId());
     sequenceStoreBase.write(0);
     currentDevice = deviceStoreBase.read();
+    deviceForkParentStore.write(forkParent);
     forked = true;
   }
   let opener = null;
@@ -293,6 +303,84 @@ function isValidSessionPair(value) {
   );
 }
 
+function normalizeOwnerPromotion(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const sourceSessionId = String(value.sourceSessionId || "").trim();
+  const promotionId = String(value.promotionId || "").trim();
+  const startedAt = normalizeTimestamp(value.startedAt, null);
+  const expiresAt = normalizeTimestamp(value.expiresAt, null);
+  if (!isUuid(sourceSessionId) || !isUuid(promotionId) || !startedAt || !expiresAt) return null;
+  const startedAtMs = Date.parse(startedAt);
+  const expiresAtMs = Date.parse(expiresAt);
+  const now = Date.now();
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(expiresAtMs)
+    || expiresAtMs <= now || now - startedAtMs > OWNER_PROMOTION_TTL_MS
+    || startedAtMs - now > OWNER_PROMOTION_TTL_MS) return null;
+  return {
+    version: 1,
+    sourceOwner: "anonymous",
+    sourceSessionId: sourceSessionId.toLowerCase(),
+    promotionId: promotionId.toLowerCase(),
+    startedAt,
+    expiresAt
+  };
+}
+
+function readPendingAuthenticatedInteractionPromotion() {
+  const raw = ownerPromotionStoreBase.read();
+  const normalized = normalizeOwnerPromotion(raw);
+  if (!normalized) {
+    if (raw !== null && raw !== undefined) ownerPromotionStoreBase.remove();
+    return null;
+  }
+  return normalized;
+}
+
+export function beginAuthenticatedInteractionPromotion() {
+  const source = ownerSessionData("anonymous");
+  const sourcePair = isValidSessionPair(source.pair) ? source.pair : null;
+  if (!sourcePair) return null;
+
+  const existing = readPendingAuthenticatedInteractionPromotion();
+  if (existing) {
+    return existing.sourceSessionId === String(sourcePair.sessionId).toLowerCase()
+      ? existing.promotionId
+      : false;
+  }
+
+  const storage = usableBrowserStorage();
+  if (!storage) return false;
+  const now = Date.now();
+  const value = {
+    version: 1,
+    sourceOwner: "anonymous",
+    sourceSessionId: String(sourcePair.sessionId).toLowerCase(),
+    promotionId: createMutationId(),
+    startedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + OWNER_PROMOTION_TTL_MS).toISOString()
+  };
+  const persisted = ownerPromotionStoreBase.write(value);
+  if (!persisted) {
+    // Do not let browserStore's in-memory fallback act as a cross-tab lock.
+    // A promotion marker is useful only when another tab can observe it after
+    // a reload, so an unwritable localStorage must fail closed.
+    ownerPromotionStoreBase.remove();
+    return false;
+  }
+  const confirmed = readPendingAuthenticatedInteractionPromotion();
+  return confirmed && confirmed.promotionId === value.promotionId
+    && confirmed.sourceSessionId === value.sourceSessionId
+    ? confirmed.promotionId
+    : false;
+}
+
+export function clearPendingAuthenticatedInteractionPromotion(expectedPromotionId = null) {
+  const current = readPendingAuthenticatedInteractionPromotion();
+  if (!current) return true;
+  if (expectedPromotionId && current.promotionId !== String(expectedPromotionId).toLowerCase()) return false;
+  return ownerPromotionStoreBase.remove();
+}
+
 function normalizeOwnerTransfer(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const sourceOwner = String(value.sourceOwner || "").trim();
@@ -335,18 +423,32 @@ function writePendingOwnerTransfer(sourceOwner, targetOwner, acceptedAnonymousSe
     acceptedAnonymousSessionId: String(acceptedAnonymousSessionId).toLowerCase(),
     createdAt
   };
-  // No browser storage means this is only a memory warning, never a durable
-  // journal. A sessionStorage copy is sufficient to survive a same-tab reload
-  // while remaining unavailable to unrelated tabs.
-  const persistent = ownerTransferStoreBase.write(value);
-  const session = sessionStorage ? ownerTransferSessionStoreBase.write(value) : false;
-  return Boolean((persistentStorage && persistent) || (sessionStorage && session));
+  // sessionStorage is a best-effort same-tab backup only. A transfer is
+  // considered durable only after localStorage contains the exact journal;
+  // otherwise a closed tab can leave an authenticated cookie with no way to
+  // recover the anonymous source safely.
+  let durable = false;
+  const journalKey = `${interactionConfig.ownerStorageKey}:pending-transfer`;
+  if (persistentStorage) {
+    const persistent = ownerTransferStoreBase.write(value);
+    durable = Boolean(
+      persistent
+      && JSON.stringify(readStorageJson(persistentStorage, journalKey)) === JSON.stringify(value)
+    );
+  } else {
+    ownerTransferStoreBase.write(value);
+  }
+  if (sessionStorage) ownerTransferSessionStoreBase.write(value);
+  return durable;
 }
 
 function clearPendingOwnerTransfer() {
   const persistent = ownerTransferStoreBase.remove();
-  const session = ownerTransferSessionStoreBase.remove();
-  return Boolean(persistent && session);
+  // sessionStorage is only a same-tab convenience copy. It must not make a
+  // transfer appear durable when localStorage removal failed or was never
+  // available.
+  ownerTransferSessionStoreBase.remove();
+  return Boolean(persistent && usableBrowserStorage());
 }
 
 function clearLegacySessionValues(owner) {
@@ -359,6 +461,7 @@ export function getInteractionDeviceId() {
   const current = deviceStoreBase.read();
   if (isUuid(current)) {
     if (claimDeviceStream(current)) return String(current).toLowerCase();
+    deviceForkParentStore.write(String(current).toLowerCase());
     const forkedDevice = createMutationId();
     deviceStoreBase.write(forkedDevice);
     sequenceStoreBase.write(0);
@@ -695,7 +798,11 @@ function replaceSignalSnapshotForOwner(owner, value) {
     if (Object.prototype.hasOwnProperty.call(incoming, showId) || pendingShowIds.has(showId)) continue;
     persisted = deleteSignalSnapshotForOwner(normalizedOwner, showId, { authoritative: true }) && persisted;
   }
-  persisted = writeSignalSnapshotForOwner(normalizedOwner, incoming) && persisted;
+  // This function is called after the server response has been merged with
+  // any still-pending local entries. For entries with no pending mutation, the
+  // server snapshot is authoritative even when a stale local sequence is
+  // higher, so bypass the local recency guard here.
+  persisted = writeSignalSnapshotForOwner(normalizedOwner, incoming, { force: true }) && persisted;
   // The aggregate key is legacy-only now. Remove it after materializing its
   // authoritative per-title replacement; per-title tombstones cover a failed
   // cleanup and prevent old deleted titles from being read again.
@@ -1122,6 +1229,29 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
     && isUuid(anonymousSessionId)
     && normalizedAcceptedSessionId === String(anonymousSessionId).toLowerCase()
   );
+  const pendingPromotion = readPendingAuthenticatedInteractionPromotion();
+  const promotionProtectsSource = Boolean(
+    previousOwner === "anonymous"
+    && nextOwner !== "anonymous"
+    && pendingPromotion
+    && isUuid(anonymousSessionId)
+    && pendingPromotion.sourceSessionId === String(anonymousSessionId).toLowerCase()
+  );
+  if (promotionProtectsSource && !acceptedSessionMatchesSource) {
+    // Another tab can observe the new auth cookie before the login tab has
+    // received the accepted anonymous session id. Keep the owner boundary on
+    // anonymous until the login tab writes the transfer journal and completes
+    // the copy; this prevents /me from clearing the shared source namespace.
+    return {
+      previousOwner,
+      nextOwner,
+      changed: false,
+      persisted: true,
+      promotionPending: true,
+      pendingOwnerTransfer: Boolean(readPendingOwnerTransfer()),
+      revision: interactionRevision
+    };
+  }
 
   // A later login can confirm a newly rotated anonymous session. Replace an
   // older journal for the same account before retrying transfer; otherwise a
@@ -1146,6 +1276,7 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
         nextOwner,
         changed: false,
         persisted: false,
+        promotionPending: true,
         pendingOwnerTransfer: true,
         revision: interactionRevision
       };
@@ -1162,7 +1293,28 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
   // /me runs after a reload without the original login response. A durable
   // journal must therefore be replayed even when the owner already matches.
   if (previousOwner === nextOwner) {
-    if (!transferForNextOwner) return { previousOwner, nextOwner, changed: false, revision: interactionRevision };
+    if (!transferForNextOwner && acceptedSessionMatchesSource) {
+      const journalPersisted = writePendingOwnerTransfer(
+        "anonymous",
+        nextOwner,
+        normalizedAcceptedSessionId,
+      );
+      if (!journalPersisted) {
+        return {
+          previousOwner,
+          nextOwner,
+          changed: false,
+          persisted: false,
+          promotionPending: true,
+          pendingOwnerTransfer: true,
+          revision: interactionRevision
+        };
+      }
+      pendingTransfer = readPendingOwnerTransfer();
+    }
+    if (!pendingTransfer || pendingTransfer.targetOwner !== nextOwner) {
+      return { previousOwner, nextOwner, changed: false, revision: interactionRevision };
+    }
     const transferPersisted = transferOwnerData(
       "anonymous",
       nextOwner,
@@ -1176,6 +1328,7 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
       changed: false,
       persisted: true,
       transferPersisted,
+      promotionPending: !transferPersisted || !journalCleared,
       pendingOwnerTransfer: !transferPersisted || !journalCleared,
       revision: interactionRevision
     };
@@ -1205,6 +1358,7 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
         nextOwner,
         changed: false,
         persisted: false,
+        promotionPending: true,
         pendingOwnerTransfer: true,
         revision: interactionRevision
       };

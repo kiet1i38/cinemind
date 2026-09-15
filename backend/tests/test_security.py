@@ -346,11 +346,39 @@ class SecurityPrimitiveTests(unittest.TestCase):
 
         self.assertEqual(email_key, username_key)
 
-    def test_unknown_login_aliases_use_one_neutral_principal(self):
-        self.assertEqual(
-            auth_routes._login_rate_limit_principal("missing@example.com"),
-            auth_routes._login_rate_limit_principal("another-missing-user"),
+    def test_unknown_login_aliases_use_stable_per_identifier_principals(self):
+        first = auth_routes._login_rate_limit_principal("missing@example.com")
+        same_alias = auth_routes._login_rate_limit_principal("  MISSING@example.com ")
+        other = auth_routes._login_rate_limit_principal("another-missing-user")
+
+        self.assertEqual(first, same_alias)
+        self.assertNotEqual(first, other)
+        self.assertTrue(first.startswith("unknown:"))
+
+    def test_blocked_login_ip_is_rejected_before_identifier_lookup(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.44"),
+            headers={},
         )
+        ip_key = auth_routes._auth_ip_key(request, "login")
+        auth_routes.auth_login_ip_attempt_limiter.clear()
+        auth_routes.auth_ip_rate_limiter.clear()
+        try:
+            for _ in range(auth_routes.auth_login_ip_attempt_limiter.max_attempts):
+                auth_routes.auth_login_ip_attempt_limiter.record_attempt(ip_key)
+
+            payload = SimpleNamespace(identifier="victim@example.com")
+            with patch.object(
+                auth_routes,
+                "_lookup_login_user_id",
+                side_effect=AssertionError("blocked login must not query the database"),
+            ):
+                with self.assertRaises(HTTPException) as blocked:
+                    auth_routes._prepare_login_request(request, payload)
+            self.assertEqual(blocked.exception.status_code, 429)
+        finally:
+            auth_routes.auth_login_ip_attempt_limiter.clear()
+            auth_routes.auth_ip_rate_limiter.clear()
 
     def test_blank_boolean_environment_uses_the_environment_default(self):
         with patch.dict(os.environ, {"REQUIRE_HTTPS": "", "RESET_ENABLED": ""}):

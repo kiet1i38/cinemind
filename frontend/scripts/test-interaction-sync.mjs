@@ -31,6 +31,8 @@ require.extensions[".js"] = (module, filename) => {
 const { appConfig } = require(resolve(sourceDir, "config/appConfig.js"));
 const {
   clearInteractionState,
+  beginAuthenticatedInteractionPromotion,
+  clearPendingAuthenticatedInteractionPromotion,
   deleteOwnerScopedSignal,
   getInteractionDeviceId,
   getInteractionOwner,
@@ -405,6 +407,26 @@ test("signal tombstones prevent rejected titles and stale legacy values from ret
     const replaced = signalStore.read();
     assert.equal(replaced["rejected-title"], undefined);
     assert.equal(replaced["authoritative-title"].rating, 9);
+
+    // A delayed server snapshot must replace a stale optimistic value even
+    // when the stale value has the later local timestamp.
+    signalStore.write({
+      "authoritative-title": {
+        rating: 2,
+        watchMinutes: 3,
+        savedAt: "2026-09-15T11:00:00.000Z",
+        serverSavedAt: "2026-09-15T11:00:00.000Z"
+      }
+    });
+    replaceOwnerScopedSignalState({
+      "authoritative-title": {
+        rating: 6,
+        watchMinutes: 12,
+        savedAt: "2026-09-15T10:30:00.000Z",
+        serverSavedAt: "2026-09-15T10:30:00.000Z"
+      }
+    });
+    assert.equal(signalStore.read()["authoritative-title"].rating, 6);
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
@@ -657,17 +679,130 @@ test("login exposes a blocked non-durable promotion instead of completing naviga
     assert.equal(result.interactionTransition.pendingOwnerTransfer, true);
     assert.equal(getInteractionOwner(), "anonymous");
     assert.equal(values.has(journalKey), false);
+    assert.ok(values.has(`${appConfig.interaction.ownerStorageKey}:promotion-in-progress`));
     assert.equal(readPendingInteractions("anonymous").searches[mutationId].query, "login-must-retry");
   } finally {
     if (originalFetch === undefined) delete globalThis.fetch;
     else globalThis.fetch = originalFetch;
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
+    clearPendingAuthenticatedInteractionPromotion();
     clearInteractionState({ resetOwner: true });
   }
 });
 
-test("sessionStorage fallback keeps a promotion journal durable when localStorage is full", { concurrency: false }, () => {
+test("promotion marker must be durable before an auth request starts", { concurrency: false }, async () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const values = new Map();
+  const storage = mapStorage(values);
+  const promotionKey = `${appConfig.interaction.ownerStorageKey}:promotion-in-progress`;
+  const originalSetItem = storage.setItem;
+  storage.setItem = (key, value) => {
+    if (key === promotionKey) throw new Error("quota exceeded");
+    originalSetItem(key, value);
+  };
+  globalThis.window = {
+    localStorage: storage,
+    location: { pathname: "/auth.html" }
+  };
+  let requestCount = 0;
+  try {
+    interactionSessionStore.write(
+      "00000000-0000-4000-8000-000000000641",
+      "anonymous-session-token-0123456789",
+      "anonymous",
+    );
+    globalThis.fetch = async () => {
+      requestCount += 1;
+      return response(200, { user: { user_id: "marker-account" } });
+    };
+
+    await assert.rejects(
+      login({ identifier: "marker@example.com", password: "correct-password" }),
+      (error) => error.code === "INTERACTION_PROMOTION_UNAVAILABLE" && error.status === 503,
+    );
+    assert.equal(requestCount, 0);
+    assert.equal(values.has(promotionKey), false);
+    assert.equal(getInteractionOwner(), "anonymous");
+  } finally {
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearPendingAuthenticatedInteractionPromotion();
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("successful auth clears the promotion marker after the transfer is durable", { concurrency: false }, async () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const values = new Map();
+  globalThis.window = {
+    localStorage: mapStorage(values),
+    location: { pathname: "/auth.html" }
+  };
+  const anonymousSessionId = "00000000-0000-4000-8000-000000000651";
+  try {
+    interactionSessionStore.write(anonymousSessionId, "anonymous-session-token-0123456789", "anonymous");
+    globalThis.fetch = async () => response(200, {
+      user: { user_id: "successful-promotion-account" },
+      interaction_session_id: anonymousSessionId
+    });
+
+    const result = await login({ identifier: "success@example.com", password: "correct-password" });
+
+    assert.equal(result.interactionTransition.pendingOwnerTransfer, false);
+    assert.equal(result.interactionTransition.promotionPending, false);
+    assert.equal(getInteractionOwner(), "successful-promotion-account");
+    assert.equal(values.has(`${appConfig.interaction.ownerStorageKey}:promotion-in-progress`), false);
+  } finally {
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearPendingAuthenticatedInteractionPromotion();
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("missing server session confirmation keeps promotion pending", { concurrency: false }, async () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const values = new Map();
+  globalThis.window = {
+    localStorage: mapStorage(values),
+    location: { pathname: "/auth.html" }
+  };
+  const anonymousSessionId = "00000000-0000-4000-8000-000000000661";
+  const promotionKey = `${appConfig.interaction.ownerStorageKey}:promotion-in-progress`;
+  try {
+    interactionSessionStore.write(anonymousSessionId, "anonymous-session-token-0123456789", "anonymous");
+    globalThis.fetch = async () => response(200, {
+      user: { user_id: "unconfirmed-promotion-account" }
+    });
+
+    const result = await login({ identifier: "missing-confirmation@example.com", password: "correct-password" });
+
+    assert.equal(result.interactionTransition.promotionPending, true);
+    assert.equal(result.interactionTransition.pendingOwnerTransfer, false);
+    assert.equal(getInteractionOwner(), "anonymous");
+    assert.ok(values.has(promotionKey));
+  } finally {
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearPendingAuthenticatedInteractionPromotion();
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("sessionStorage fallback is not treated as a durable promotion journal", { concurrency: false }, () => {
   clearInteractionState({ resetOwner: true });
   const originalWindow = globalThis.window;
   const localValues = new Map();
@@ -694,15 +829,55 @@ test("sessionStorage fallback keeps a promotion journal durable when localStorag
       { acceptedAnonymousSessionId: anonymousSessionId }
     );
 
-    assert.equal(transition.persisted, true);
-    assert.equal(transition.transferPersisted, true);
-    assert.equal(getInteractionOwner(), "session-fallback-account");
-    assert.equal(readPendingOwnerTransfer(), null);
-    assert.equal(readPendingInteractions("anonymous").searches[mutationId], undefined);
-    assert.equal(readPendingInteractions("session-fallback-account").searches[mutationId].query, "session-fallback");
+    assert.equal(transition.persisted, false);
+    assert.equal(transition.transferPersisted, undefined);
+    assert.equal(transition.promotionPending, true);
+    assert.equal(getInteractionOwner(), "anonymous");
+    assert.equal(readPendingOwnerTransfer().targetOwner, "session-fallback-account");
+    assert.equal(localValues.has(journalKey), false);
+    assert.equal(JSON.parse(sessionValues.get(journalKey)).targetOwner, "session-fallback-account");
+    assert.equal(readPendingInteractions("anonymous").searches[mutationId].query, "session-fallback");
+    assert.equal(readPendingInteractions("session-fallback-account").searches[mutationId], undefined);
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("promotion marker blocks a cross-tab owner switch until the server accepts the source session", { concurrency: false }, () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const values = new Map();
+  globalThis.window = {
+    localStorage: mapStorage(values),
+    sessionStorage: mapStorage(new Map()),
+    location: { pathname: "/auth.html" }
+  };
+  const anonymousSessionId = "00000000-0000-4000-8000-000000000631";
+  try {
+    interactionSessionStore.write(anonymousSessionId, "anonymous-session-token-0123456789", "anonymous");
+    const promotionId = beginAuthenticatedInteractionPromotion();
+    assert.match(promotionId, /^[0-9a-f-]{36}$/iu);
+
+    const blocked = setInteractionOwner("promotion-account");
+    assert.equal(blocked.changed, false);
+    assert.equal(blocked.promotionPending, true);
+    assert.equal(getInteractionOwner(), "anonymous");
+
+    const accepted = setInteractionOwner(
+      "promotion-account",
+      { acceptedAnonymousSessionId: anonymousSessionId },
+    );
+    assert.equal(accepted.changed, true);
+    assert.equal(accepted.pendingOwnerTransfer, false);
+    assert.equal(getInteractionOwner(), "promotion-account");
+    assert.equal(clearPendingAuthenticatedInteractionPromotion(promotionId), true);
+    assert.equal(values.has(`${appConfig.interaction.ownerStorageKey}:promotion-in-progress`), false);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearPendingAuthenticatedInteractionPromotion();
     clearInteractionState({ resetOwner: true });
   }
 });

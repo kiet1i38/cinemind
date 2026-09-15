@@ -119,6 +119,15 @@ export default function App() {
     };
     const applyConfirmedIdentity = (user) => {
       const transition = setInteractionOwner(user?.user_id);
+      if (transition?.promotionPending) {
+        // A different tab may observe the auth cookie before the login tab has
+        // confirmed and journaled the anonymous-session transfer. Stay in the
+        // anonymous view until that tab broadcasts a completed promotion.
+        setAuthUser(null);
+        setRatings(signalStore.read());
+        setAuthStatus("anonymous");
+        return;
+      }
       if (transition.changed) {
         interactionRevisionRef.current += 1;
         interactionHydrationGenerationRef.current += 1;
