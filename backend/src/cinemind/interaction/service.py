@@ -367,7 +367,7 @@ class InteractionService:
                         # using the retained title id without consulting the
                         # current active catalog.
                         rating_row = self.repository.create_rating(
-                            session_id,
+                            existing_watch["session_id"],
                             existing_watch["title_id"],
                             rating_value,
                             existing_watch["watch_session_id"],
