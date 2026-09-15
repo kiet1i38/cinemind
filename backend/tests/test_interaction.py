@@ -278,6 +278,28 @@ class InteractionServiceTests(unittest.TestCase):
 
         self.assertEqual(result["result_count"], self.repository.search_result_count)
 
+    def test_search_replay_survives_catalog_count_change(self):
+        mutation_id = uuid4()
+        filters = {"type": "all", "genre": "all", "year": "all"}
+        self.service.record_search_event(
+            self.session_id,
+            "Drama",
+            2,
+            filters,
+            client_mutation_id=mutation_id,
+        )
+        self.repository.search_result_count += 1
+
+        replay = self.service.record_search_event(
+            self.session_id,
+            "Drama",
+            2,
+            filters,
+            client_mutation_id=mutation_id,
+        )
+
+        self.assertEqual(replay["result_count"], 17)
+
     def test_client_event_time_is_preserved_when_clock_skew_is_bounded(self):
         occurred_at = datetime.now(timezone.utc) - timedelta(hours=2)
 
@@ -398,6 +420,26 @@ class InteractionServiceTests(unittest.TestCase):
                 self.session_id, "show-1", Decimal("8.5"), 30,
                 client_mutation_id=mutation_id,
             )
+
+    def test_watch_replay_ignores_catalog_derived_duration_changes(self):
+        mutation_id = uuid4()
+        first = self.service.record_watch_session(
+            self.session_id,
+            "movie-1",
+            30,
+            client_mutation_id=mutation_id,
+        )
+        self.repository.titles["movie-1"]["movie_duration_min"] = 90
+
+        replay = self.service.record_watch_session(
+            self.session_id,
+            "movie-1",
+            30,
+            client_mutation_id=mutation_id,
+        )
+
+        self.assertEqual(replay["watch_session_id"], first["watch_session_id"])
+        self.assertEqual(replay["runtime_seconds"], 7200)
 
     def test_signal_replay_after_session_rotation_reuses_the_original_event(self):
         mutation_id = uuid4()

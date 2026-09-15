@@ -44,8 +44,19 @@ class MigrationChecksumTests(unittest.TestCase):
         migrations_path = Path(__file__).parents[1] / "migrations"
         manifest = MigrationRunner(_FakeConnection(), migrations_path).expected_migrations()
 
-        self.assertEqual(manifest[-1].version, "011_global_interaction_idempotency")
+        self.assertEqual(manifest[-1].version, "012_repair_global_interaction_idempotency")
         self.assertTrue(all(len(item.checksum_sha256) == 64 for item in manifest))
+
+    def test_global_idempotency_repair_deduplicates_before_unique_indexes(self):
+        migration = (Path(__file__).parents[1] / "migrations" / "012_repair_global_interaction_idempotency.sql").read_text(encoding="utf-8")
+
+        self.assertLess(migration.index("DELETE FROM interaction.search_events"), migration.index("CREATE UNIQUE INDEX"))
+        self.assertIn("DELETE FROM interaction.ratings", migration)
+        self.assertIn("UPDATE interaction.ratings AS rating", migration)
+        self.assertIn("DELETE FROM interaction.watch_sessions", migration)
+        self.assertIn("search_events_mutation_global_uidx", migration)
+        self.assertIn("watch_sessions_mutation_global_uidx", migration)
+        self.assertIn("ratings_mutation_global_uidx", migration)
 
     def test_missing_migration_is_applied_and_recorded_with_checksum(self):
         with tempfile.TemporaryDirectory() as directory:

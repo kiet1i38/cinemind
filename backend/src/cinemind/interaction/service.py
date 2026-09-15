@@ -143,7 +143,6 @@ class InteractionService:
                     row,
                     query_text=query_text,
                     normalized_query=normalized_query,
-                    result_count=authoritative_result_count,
                     filters=normalized_filters,
                     client_occurred_at=client_event_time,
                     client_device_id=client_device_id,
@@ -204,9 +203,6 @@ class InteractionService:
                     watch_session,
                     title_id=title["title_id"],
                     watch_seconds=metrics.watch_seconds,
-                    runtime_seconds=metrics.runtime_seconds,
-                    completion_rate=metrics.completion_rate,
-                    duration_basis=metrics.duration_basis,
                     client_occurred_at=client_event_time,
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
@@ -347,9 +343,6 @@ class InteractionService:
                     watch_session,
                     title_id=title["title_id"],
                     watch_seconds=metrics.watch_seconds,
-                    runtime_seconds=metrics.runtime_seconds,
-                    completion_rate=metrics.completion_rate,
-                    duration_basis=metrics.duration_basis,
                     client_occurred_at=client_event_time,
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
@@ -427,7 +420,14 @@ class InteractionService:
 
     @staticmethod
     def _require_idempotent_match(row: dict, **expected) -> None:
-        """Reject reuse of one mutation id for semantically different input."""
+        """Reject reuse of one mutation id for a different client intent.
+
+        Callers deliberately pass only fields supplied by the client (plus
+        stable normalized intent). Catalog-derived metrics such as search
+        counts and movie runtime can legitimately change between the original
+        commit and a delayed retry, so they must never turn an acknowledged
+        mutation into a conflict.
+        """
 
         for field_name, expected_value in expected.items():
             actual_value = row.get(field_name)

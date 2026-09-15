@@ -212,7 +212,7 @@ class InteractionRepository:
                     client_event_sequence
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (session_id, client_mutation_id)
+                ON CONFLICT (client_mutation_id)
                     WHERE client_mutation_id IS NOT NULL DO NOTHING
                     RETURNING search_event_id, session_id, query_text, normalized_query,
                           result_count, filters, occurred_at, client_occurred_at,
@@ -285,7 +285,7 @@ class InteractionRepository:
                 client_event_sequence
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (session_id, client_mutation_id)
+            ON CONFLICT (client_mutation_id)
                 WHERE client_mutation_id IS NOT NULL DO NOTHING
             RETURNING watch_session_id, session_id, title_id, watch_seconds,
                       runtime_seconds, completion_rate, duration_basis, recorded_at,
@@ -356,7 +356,7 @@ class InteractionRepository:
                 client_event_sequence
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (session_id, client_mutation_id)
+            ON CONFLICT (client_mutation_id)
                 WHERE client_mutation_id IS NOT NULL DO NOTHING
             RETURNING rating_id, session_id, watch_session_id, title_id,
                       rating_value, rated_at, client_occurred_at

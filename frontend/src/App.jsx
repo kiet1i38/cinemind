@@ -348,12 +348,28 @@ export default function App() {
   const ratedRecords = useMemo(() => Object.keys(ratings).map((id) => catalog.find((record) => record.id === id)).filter(Boolean), [catalog, ratings]);
   const lastRated = useMemo(() => {
     let latestRecord = null;
+    let latestSignal = null;
     let latestTimestamp = Number.NEGATIVE_INFINITY;
     for (const [id, signal] of Object.entries(ratings)) {
       const timestamp = Date.parse(signal?.savedAt || "");
       const record = catalog.find((candidate) => String(candidate.id) === String(id));
-      if (record && Number.isFinite(timestamp) && timestamp > latestTimestamp) {
+      if (!record) continue;
+      const sameDevice = signal?.clientDeviceId
+        && latestSignal?.clientDeviceId
+        && String(signal.clientDeviceId).toLowerCase() === String(latestSignal.clientDeviceId).toLowerCase();
+      const currentSequence = Number(signal?.clientEventSequence);
+      const latestSequence = Number(latestSignal?.clientEventSequence);
+      const hasComparableSequence = sameDevice
+        && Number.isSafeInteger(currentSequence)
+        && currentSequence > 0
+        && Number.isSafeInteger(latestSequence)
+        && latestSequence > 0;
+      const isNewer = hasComparableSequence
+        ? currentSequence > latestSequence || (currentSequence === latestSequence && timestamp > latestTimestamp)
+        : Number.isFinite(timestamp) && timestamp > latestTimestamp;
+      if (isNewer) {
         latestRecord = record;
+        latestSignal = signal;
         latestTimestamp = timestamp;
       }
     }

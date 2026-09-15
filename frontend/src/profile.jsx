@@ -50,19 +50,28 @@ export default function ProfilePage() {
   const [loadState, setLoadState] = useState("loading");
   const [message, setMessage] = useState("");
   const userRef = useRef(null);
+  const profileRequestRef = useRef({ id: 0, controller: null });
+  const authCheckRef = useRef(0);
 
   useEffect(() => {
-    let cancelled = false;
+    let disposed = false;
     const metadata = {
       locale: language,
       platform: typeof navigator !== "undefined" ? String(navigator.platform || "web").slice(0, 32) : "web"
     };
     const localInteractionState = () => ({ ratings: signalStore.read() });
     const mergeProfileState = (remoteState) => mergeInteractionState(remoteState, localInteractionState());
+    const isCurrentRequest = (requestId) => !disposed && profileRequestRef.current.id === requestId;
 
     async function loadProfile({ refresh = false } = {}) {
+      authCheckRef.current += 1;
+      const requestId = profileRequestRef.current.id + 1;
+      profileRequestRef.current.controller?.abort();
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      profileRequestRef.current = { id: requestId, controller };
       if (!refresh) setLoadState("loading");
-      const currentUser = await getCurrentUser();
+      const currentUser = await getCurrentUser({ signal: controller?.signal });
+      if (!isCurrentRequest(requestId)) return;
       if (!currentUser) {
         window.location.href = getAuthPageUrl("login", `${window.location.pathname}${window.location.search}`);
         return;
@@ -74,16 +83,14 @@ export default function ProfilePage() {
 
       let records = [];
       try {
-        records = await loadCatalog();
-        if (!cancelled) {
-          setCatalog(records);
-          setMessage("");
-        }
+        records = await loadCatalog(controller?.signal);
+        if (!isCurrentRequest(requestId)) return;
+        setCatalog(records);
+        setMessage("");
       } catch {
-        if (!cancelled) {
-          setCatalog([]);
-          setMessage(translate(language, "profileCatalogUnavailable"));
-        }
+        if (!isCurrentRequest(requestId)) return;
+        setCatalog([]);
+        setMessage(translate(language, "profileCatalogUnavailable"));
       }
 
       let interactionState = null;
@@ -92,7 +99,7 @@ export default function ProfilePage() {
       } catch {
         // Keep pending browser activity visible while the interaction API recovers.
       }
-      if (cancelled) return;
+      if (!isCurrentRequest(requestId)) return;
       setState(mergeProfileState(interactionState));
 
       (records.length ? syncPendingInteractions(records, metadata) : Promise.resolve([]))
@@ -104,7 +111,7 @@ export default function ProfilePage() {
           return definitiveFailure ? getInteractionState(metadata) : null;
         })
         .then((reconciledState) => {
-          if (!cancelled && reconciledState) setState(mergeProfileState(reconciledState));
+          if (isCurrentRequest(requestId) && reconciledState) setState(mergeProfileState(reconciledState));
         })
         .catch(() => undefined);
     }
@@ -117,23 +124,31 @@ export default function ProfilePage() {
     };
     const refreshAuth = () => {
       if (document.visibilityState !== "visible") return;
+      const checkId = authCheckRef.current + 1;
+      authCheckRef.current = checkId;
       getCurrentUser().then((currentUser) => {
-        if (!userRef.current) return;
-        if (!currentUser || String(currentUser.user_id) !== String(userRef.current.user_id)) {
-          window.location.href = getAuthPageUrl("login", `${window.location.pathname}${window.location.search}`);
+        if (disposed || checkId !== authCheckRef.current) return;
+        if (!currentUser || !userRef.current || String(currentUser.user_id) !== String(userRef.current.user_id)) {
+          loadProfile({ refresh: true }).catch(() => undefined);
         }
       }).catch(() => undefined);
     };
 
-    loadProfile().catch(() => {
-      if (!cancelled) setLoadState("error");
+    const initialLoad = loadProfile();
+    const initialRequestId = profileRequestRef.current.id;
+    initialLoad.catch(() => {
+      if (!disposed && profileRequestRef.current.id === initialRequestId) setLoadState("error");
     });
     window.addEventListener("storage", handleAuthStorage);
     window.addEventListener("cinemind-auth-required", refreshAuth);
     document.addEventListener("visibilitychange", refreshAuth);
     const authPoll = window.setInterval(refreshAuth, 60000);
     return () => {
-      cancelled = true;
+      disposed = true;
+      authCheckRef.current += 1;
+      profileRequestRef.current.id += 1;
+      profileRequestRef.current.controller?.abort();
+      profileRequestRef.current.controller = null;
       window.clearInterval(authPoll);
       window.removeEventListener("storage", handleAuthStorage);
       window.removeEventListener("cinemind-auth-required", refreshAuth);

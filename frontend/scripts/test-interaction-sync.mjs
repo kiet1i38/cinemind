@@ -277,6 +277,51 @@ test("a session id without its token is treated as unusable", { concurrency: fal
   }
 });
 
+test("session id and proof stay atomic when the pair write is rejected", { concurrency: false }, () => {
+  const originalWindow = globalThis.window;
+  const sessionKey = `${appConfig.interaction.sessionStorageKey}:pair`;
+  const ownerKey = appConfig.interaction.ownerStorageKey;
+  const owner = "atomic-session-owner";
+  const firstSession = "00000000-0000-4000-8000-000000000101";
+  const nextSession = "00000000-0000-4000-8000-000000000102";
+  const firstToken = "first-session-token-0123456789";
+  const nextToken = "next-session-token-0123456789";
+  const values = new Map([
+    [ownerKey, JSON.stringify("anonymous")],
+    [sessionKey, JSON.stringify({ version: 2, owners: { [owner]: { sessionId: firstSession, sessionToken: firstToken } } })]
+  ]);
+  globalThis.window = {
+    localStorage: {
+      get length() { return values.size; },
+      key(index) { return [...values.keys()][index] ?? null; },
+      getItem(key) { return values.get(key) ?? null; },
+      setItem(key, value) {
+        if (key === sessionKey) throw new Error("quota exceeded");
+        values.set(key, String(value));
+      },
+      removeItem(key) { values.delete(key); }
+    },
+    location: { pathname: "/" }
+  };
+  try {
+    clearInteractionState({ resetOwner: true });
+    values.set(ownerKey, JSON.stringify("anonymous"));
+    values.set(sessionKey, JSON.stringify({ version: 2, owners: { [owner]: { sessionId: firstSession, sessionToken: firstToken } } }));
+    setInteractionOwner(owner);
+    interactionSessionStore.write(nextSession, nextToken, owner);
+    assert.equal(interactionSessionStore.read(owner), nextSession);
+    assert.equal(interactionSessionStore.readToken(owner), nextToken);
+    assert.deepEqual(JSON.parse(values.get(sessionKey)).owners[owner], {
+      sessionId: firstSession,
+      sessionToken: firstToken
+    });
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
 after(() => {
   appConfig.interaction.pendingSyncBatchSize = originalSyncConfig.batchSize;
   appConfig.interaction.pendingSyncPacingMs = originalSyncConfig.pacingMs;

@@ -7,6 +7,9 @@ const interactionConfig = appConfig.interaction;
 const ownerStoreBase = createJsonStore(interactionConfig.ownerStorageKey, "anonymous");
 const sessionStoreBase = createJsonStore(interactionConfig.sessionStorageKey, null);
 const sessionTokenStoreBase = createJsonStore(`${interactionConfig.sessionStorageKey}:token`, null);
+// Keep the session proof and its id in one JSON value. A pair written through
+// one storage operation can never be observed after only the id has changed.
+const sessionPairStoreBase = createJsonStore(`${interactionConfig.sessionStorageKey}:pair`, null);
 const deviceStoreBase = createJsonStore(interactionConfig.deviceStorageKey || "cinemind-interaction-device-id", null);
 const sequenceStoreBase = createJsonStore(interactionConfig.sequenceStorageKey || "cinemind-interaction-event-sequence", 0);
 const signalStoreBase = createJsonStore(appConfig.signals.storageKey, {});
@@ -76,6 +79,25 @@ function removeScopedValueForOwner(store, owner) {
 
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(String(value || "").trim());
+}
+
+function isValidSessionToken(value) {
+  return typeof value === "string" && value.trim().length >= 20 && value.trim().length <= 256;
+}
+
+function isValidSessionPair(value) {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && isUuid(value.sessionId)
+    && isValidSessionToken(value.sessionToken)
+  );
+}
+
+function clearLegacySessionValues(owner) {
+  removeScopedValueForOwner(sessionStoreBase, owner);
+  removeScopedValueForOwner(sessionTokenStoreBase, owner);
 }
 
 export function getInteractionDeviceId() {
@@ -265,7 +287,9 @@ function outboxEntryKeys(owner) {
       if (key?.startsWith(prefix) && !keys.includes(key)) keys.push(key);
     }
   } catch {
-    return [];
+    // `storage.key()` may be blocked even when memory fallback entries are
+    // available. Never hide those entries from the current-page sync path.
+    return keys;
   }
   return keys;
 }
@@ -519,18 +543,36 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
   if (previousOwner === "anonymous" && nextOwner !== "anonymous") {
     const anonymousSession = ownerScopedValue(sessionStoreBase, previousOwner, null);
     const anonymousToken = ownerScopedValue(sessionTokenStoreBase, previousOwner, null);
+    const anonymousPair = ownerScopedValue(sessionPairStoreBase, previousOwner, null);
     const accountSession = ownerScopedValue(sessionStoreBase, nextOwner, null);
     const accountToken = ownerScopedValue(sessionTokenStoreBase, nextOwner, null);
+    const accountPair = ownerScopedValue(sessionPairStoreBase, nextOwner, null);
+    const anonymousSessionId = isValidSessionPair(anonymousPair) ? anonymousPair.sessionId : anonymousSession;
     const canMergeAnonymousSession = isUuid(acceptedAnonymousSessionId)
-      && isUuid(anonymousSession)
-      && String(acceptedAnonymousSessionId).toLowerCase() === String(anonymousSession).toLowerCase();
+      && isUuid(anonymousSessionId)
+      && String(acceptedAnonymousSessionId).toLowerCase() === String(anonymousSessionId).toLowerCase();
     if (canMergeAnonymousSession) {
-      writeScopedValueForOwner(sessionStoreBase, nextOwner, isUuid(anonymousSession) ? String(anonymousSession).toLowerCase() : accountSession);
-      if (typeof anonymousToken === "string" && anonymousToken.trim().length >= 20 && anonymousToken.trim().length <= 256) {
-        writeScopedValueForOwner(sessionTokenStoreBase, nextOwner, anonymousToken.trim());
-      } else if (accountToken !== null && accountToken !== undefined) {
-        writeScopedValueForOwner(sessionTokenStoreBase, nextOwner, accountToken);
+      const anonymousPairIsValid = isValidSessionPair(anonymousPair);
+      const accountPairIsValid = isValidSessionPair(accountPair);
+      let pairPersisted = false;
+      if (anonymousPairIsValid) {
+        pairPersisted = writeScopedValueForOwner(sessionPairStoreBase, nextOwner, anonymousPair);
+      } else if (accountPairIsValid) {
+        pairPersisted = writeScopedValueForOwner(sessionPairStoreBase, nextOwner, accountPair);
+      } else {
+        const mergedSession = isUuid(anonymousSessionId) ? String(anonymousSessionId).toLowerCase() : accountSession;
+        const mergedToken = isValidSessionToken(anonymousToken) ? anonymousToken.trim() : accountToken;
+        pairPersisted = writeScopedValueForOwner(
+          sessionPairStoreBase,
+          nextOwner,
+          isUuid(mergedSession) && isValidSessionToken(mergedToken)
+            ? { sessionId: String(mergedSession).toLowerCase(), sessionToken: mergedToken.trim() }
+            : null
+        );
       }
+      // Remove legacy copies after the atomic pair has been promoted. They
+      // remain readable only as a migration fallback for older deployments.
+      if (pairPersisted) clearLegacySessionValues(nextOwner);
       const anonymousSignals = ownerScopedValue(signalStoreBase, previousOwner, {});
       const accountSignals = ownerScopedValue(signalStoreBase, nextOwner, {});
       writeScopedValueForOwner(signalStoreBase, nextOwner, {
@@ -549,6 +591,7 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
     // different account after a cross-tab logout or a failed attach.
     removeScopedValueForOwner(sessionStoreBase, previousOwner);
     removeScopedValueForOwner(sessionTokenStoreBase, previousOwner);
+    removeScopedValueForOwner(sessionPairStoreBase, previousOwner);
     removeScopedValueForOwner(signalStoreBase, previousOwner);
     clearOutboxForOwner(previousOwner);
   }
@@ -577,34 +620,44 @@ export function removeOwnerScopedSignalState() {
 export const interactionSessionStore = {
   read(ownerId = getInteractionOwner()) {
     const owner = String(ownerId || "anonymous");
+    const pair = ownerScopedValue(sessionPairStoreBase, owner, null);
+    if (pair !== null && pair !== undefined) {
+      if (isValidSessionPair(pair)) return pair.sessionId;
+      clearLegacySessionValues(owner);
+      writeScopedValueForOwner(sessionPairStoreBase, owner, null);
+      return null;
+    }
+
+    // Migrate sessions created by older bundles. If either legacy value is
+    // incomplete or invalid, clear both instead of sending a bad proof.
     const value = ownerScopedValue(sessionStoreBase, owner, null);
-    if (!isUuid(value)) {
-      if (value !== null && value !== undefined) writeScopedValueForOwner(sessionStoreBase, owner, null);
-      return null;
-    }
     const token = ownerScopedValue(sessionTokenStoreBase, owner, null);
-    if (typeof token !== "string" || token.trim().length < 20 || token.trim().length > 256) {
-      // A session id without its proof is not a usable session. Clear the
-      // pair together so an auth-cookie user cannot loop on 401 responses.
-      writeScopedValueForOwner(sessionStoreBase, owner, null);
-      writeScopedValueForOwner(sessionTokenStoreBase, owner, null);
+    if (!isUuid(value) || !isValidSessionToken(token)) {
+      if ((value !== null && value !== undefined) || (token !== null && token !== undefined)) {
+        clearLegacySessionValues(owner);
+      }
       return null;
     }
-    return String(value).toLowerCase();
+    const migratedPair = { sessionId: String(value).toLowerCase(), sessionToken: token.trim() };
+    const migrated = writeScopedValueForOwner(sessionPairStoreBase, owner, migratedPair);
+    if (migrated) clearLegacySessionValues(owner);
+    return migratedPair.sessionId;
   },
   readToken(ownerId = getInteractionOwner()) {
     const owner = String(ownerId || "anonymous");
-    const value = ownerScopedValue(sessionTokenStoreBase, owner, null);
-    if (typeof value !== "string" || value.trim().length < 20 || value.trim().length > 256) {
-      if (value !== null && value !== undefined) writeScopedValueForOwner(sessionTokenStoreBase, owner, null);
-      return null;
-    }
-    return value.trim();
+    const pair = ownerScopedValue(sessionPairStoreBase, owner, null);
+    if (isValidSessionPair(pair)) return pair.sessionToken;
+    const sessionId = interactionSessionStore.read(owner);
+    const migratedPair = ownerScopedValue(sessionPairStoreBase, owner, null);
+    return sessionId && isValidSessionPair(migratedPair) ? migratedPair.sessionToken : null;
   },
   write(value, token = null, ownerId = getInteractionOwner()) {
     const owner = String(ownerId || "anonymous");
-    writeScopedValueForOwner(sessionStoreBase, owner, isUuid(value) ? String(value).toLowerCase() : null);
-    writeScopedValueForOwner(sessionTokenStoreBase, owner, typeof token === "string" && token.trim().length >= 20 && token.trim().length <= 256 ? token.trim() : null);
+    const pair = isUuid(value) && isValidSessionToken(token)
+      ? { sessionId: String(value).toLowerCase(), sessionToken: token.trim() }
+      : null;
+    const persisted = writeScopedValueForOwner(sessionPairStoreBase, owner, pair);
+    if (persisted) clearLegacySessionValues(owner);
   }
 };
 
@@ -731,7 +784,12 @@ export function mergeInteractionState(remoteState, localState = {}) {
       rating: remoteRating,
       watchMinutes: remoteWatchMinutes,
       savedAt: item.event_at || item.client_occurred_at || item.rated_at,
-      serverSavedAt: item.rated_at
+      serverSavedAt: item.rated_at,
+      clientDeviceId: isUuid(item.client_device_id) ? String(item.client_device_id).toLowerCase() : null,
+      clientEventSequence: Number.isSafeInteger(Number(item.client_event_sequence))
+        && Number(item.client_event_sequence) > 0
+        ? Number(item.client_event_sequence)
+        : null
     };
   }
   const latestPendingByShow = new Map();
@@ -741,7 +799,13 @@ export function mergeInteractionState(remoteState, localState = {}) {
     if (!current || Date.parse(signal.firstQueuedAt || signal.queuedAt) >= Date.parse(current.firstQueuedAt || current.queuedAt)) latestPendingByShow.set(signal.showId, signal);
   }
   for (const [showId, signal] of latestPendingByShow) {
-    ratings[showId] = { rating: Number(signal.rating), watchMinutes: Number(signal.watchMinutes), savedAt: signal.firstQueuedAt || signal.queuedAt };
+    ratings[showId] = {
+      rating: Number(signal.rating),
+      watchMinutes: Number(signal.watchMinutes),
+      savedAt: signal.firstQueuedAt || signal.queuedAt,
+      clientDeviceId: signal.clientDeviceId || null,
+      clientEventSequence: signal.clientEventSequence || null
+    };
   }
   return { ratings };
 }
@@ -756,6 +820,7 @@ export function clearInteractionState({ preserveSession = false, clearPending = 
   if (!preserveSession) {
     removeScopedValueForOwner(sessionStoreBase, owner);
     removeScopedValueForOwner(sessionTokenStoreBase, owner);
+    removeScopedValueForOwner(sessionPairStoreBase, owner);
   }
   removeScopedValueForOwner(signalStoreBase, owner);
   if (clearPending) clearOutboxForOwner(owner);
@@ -764,6 +829,7 @@ export function clearInteractionState({ preserveSession = false, clearPending = 
   if (resetOwner && owner !== "anonymous") {
     removeScopedValueForOwner(sessionStoreBase, "anonymous");
     removeScopedValueForOwner(sessionTokenStoreBase, "anonymous");
+    removeScopedValueForOwner(sessionPairStoreBase, "anonymous");
     removeScopedValueForOwner(signalStoreBase, "anonymous");
     if (clearPending) clearOutboxForOwner("anonymous");
   }
