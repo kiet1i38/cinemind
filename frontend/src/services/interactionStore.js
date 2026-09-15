@@ -24,6 +24,11 @@ const sequenceStoreBase = createJsonStore(
   getBrowserSessionStorage,
 );
 const signalStoreBase = createJsonStore(appConfig.signals.storageKey, {});
+const signalEntryPrefix = `${appConfig.signals.storageKey}:entry:`;
+const ownerTransferStoreBase = createJsonStore(
+  `${interactionConfig.ownerStorageKey}:pending-transfer`,
+  null,
+);
 const outboxStoreBase = createJsonStore(interactionConfig.outboxStorageKey, () => ({ signals: {}, searches: {} }));
 const legacyFavoriteStore = createJsonStore("cinemind-favorites", null);
 const legacyWatchlistStore = createJsonStore("cinemind-watchlist", null);
@@ -37,8 +42,10 @@ let lastPendingWritePersisted = true;
 let interactionRevision = 0;
 const memoryOutboxEntries = new Map();
 const memoryOutboxTombstones = new Set();
+const memorySignalEntries = new Set();
 const reportedPendingLosses = new Set();
 let pendingInteractionLossCount = 0;
+let deviceStorageContext = null;
 
 // Remove obsolete preference data as soon as the new bundle loads.
 legacyFavoriteStore.remove();
@@ -68,14 +75,6 @@ function writeScopedValueForOwner(store, owner, value) {
   return store.write({ version: 2, owners });
 }
 
-function writeScopedValue(store, value) {
-  return writeScopedValueForOwner(store, getInteractionOwner(), value);
-}
-
-function removeScopedValue(store) {
-  removeScopedValueForOwner(store, getInteractionOwner());
-}
-
 function removeScopedValueForOwner(store, owner) {
   const raw = store.read();
   if (!(raw && typeof raw === "object" && !Array.isArray(raw) && raw.owners)) {
@@ -92,6 +91,28 @@ function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(String(value || "").trim());
 }
 
+function ensureUniqueDeviceStream() {
+  const storage = getBrowserSessionStorage();
+  if (!storage || storage === deviceStorageContext) return;
+  deviceStorageContext = storage;
+  let opener = null;
+  try {
+    opener = typeof window !== "undefined" ? window.opener : null;
+  } catch {
+    opener = null;
+  }
+  if (!opener) return;
+  // A new browsing context opened with an opener starts with a cloned
+  // sessionStorage. Fork the stream before any new mutation is allocated so
+  // the clone cannot reuse the opener's device/sequence pair.
+  deviceStoreBase.write(createMutationId());
+  sequenceStoreBase.write(0);
+}
+
+// Run the fork check during document boot as well as before allocation. This
+// makes the stream unique before startup hydration can observe the cloned tab.
+ensureUniqueDeviceStream();
+
 function isValidSessionToken(value) {
   return typeof value === "string" && value.trim().length >= 20 && value.trim().length <= 256;
 }
@@ -106,12 +127,50 @@ function isValidSessionPair(value) {
   );
 }
 
+function normalizeOwnerTransfer(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const sourceOwner = String(value.sourceOwner || "").trim();
+  const targetOwner = String(value.targetOwner || "").trim();
+  const acceptedAnonymousSessionId = String(value.acceptedAnonymousSessionId || "").trim();
+  if (sourceOwner !== "anonymous" || !targetOwner || targetOwner === "anonymous" || !isUuid(acceptedAnonymousSessionId)) return null;
+  return {
+    version: 1,
+    sourceOwner,
+    targetOwner,
+    acceptedAnonymousSessionId: acceptedAnonymousSessionId.toLowerCase(),
+    createdAt: normalizeTimestamp(value.createdAt, new Date().toISOString())
+  };
+}
+
+function readPendingOwnerTransfer() {
+  const value = ownerTransferStoreBase.read();
+  const normalized = normalizeOwnerTransfer(value);
+  if (!normalized && value !== null && value !== undefined) ownerTransferStoreBase.remove();
+  return normalized;
+}
+
+function writePendingOwnerTransfer(sourceOwner, targetOwner, acceptedAnonymousSessionId) {
+  if (!usableBrowserStorage()) return false;
+  return ownerTransferStoreBase.write({
+    version: 1,
+    sourceOwner,
+    targetOwner,
+    acceptedAnonymousSessionId: String(acceptedAnonymousSessionId).toLowerCase(),
+    createdAt: new Date().toISOString()
+  });
+}
+
+function clearPendingOwnerTransfer() {
+  return ownerTransferStoreBase.remove();
+}
+
 function clearLegacySessionValues(owner) {
   removeScopedValueForOwner(sessionStoreBase, owner);
   removeScopedValueForOwner(sessionTokenStoreBase, owner);
 }
 
 export function getInteractionDeviceId() {
+  ensureUniqueDeviceStream();
   const current = deviceStoreBase.read();
   if (isUuid(current)) return String(current).toLowerCase();
   const deviceId = createMutationId();
@@ -120,6 +179,7 @@ export function getInteractionDeviceId() {
 }
 
 export function nextInteractionEventSequence() {
+  ensureUniqueDeviceStream();
   const current = Number(sequenceStoreBase.read());
   const safeCurrent = Number.isSafeInteger(current) && current >= 0 ? current : 0;
   const next = safeCurrent >= Number.MAX_SAFE_INTEGER ? 1 : safeCurrent + 1;
@@ -251,6 +311,153 @@ function usableBrowserStorage() {
 
 function encodedOwner(owner) {
   return encodeURIComponent(String(owner || "anonymous"));
+}
+
+function signalOwnerPrefix(owner) {
+  return `${signalEntryPrefix}${encodedOwner(owner)}:`;
+}
+
+function signalEntryKey(owner, showId) {
+  return `${signalOwnerPrefix(owner)}${encodeURIComponent(String(showId))}`;
+}
+
+function signalEntryKeys(owner) {
+  const normalizedOwner = String(owner || "anonymous");
+  const prefix = signalOwnerPrefix(normalizedOwner);
+  const keys = [];
+  for (const key of memorySignalEntries) {
+    if (key.startsWith(prefix)) keys.push(key);
+  }
+  const storage = usableBrowserStorage();
+  if (!storage) return keys;
+  try {
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(prefix) && !keys.includes(key)) keys.push(key);
+    }
+  } catch {
+    // Keep memory-backed entries visible when storage enumeration is blocked.
+  }
+  return keys;
+}
+
+function decodeSignalEntryShowId(owner, key) {
+  const suffix = key.slice(signalOwnerPrefix(owner).length);
+  if (!suffix) return null;
+  try {
+    const showId = decodeURIComponent(suffix).trim();
+    return showId || null;
+  } catch {
+    return null;
+  }
+}
+
+function signalValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function readSignalEntry(owner, showId) {
+  return signalValue(createJsonStore(signalEntryKey(owner, showId), null).read());
+}
+
+function readSignalSnapshotForOwner(owner) {
+  const normalizedOwner = String(owner || "anonymous");
+  const legacy = signalValue(ownerScopedValue(signalStoreBase, normalizedOwner, {}));
+  const snapshot = legacy ? { ...legacy } : {};
+  for (const key of signalEntryKeys(normalizedOwner)) {
+    const showId = decodeSignalEntryShowId(normalizedOwner, key);
+    if (!showId) continue;
+    const value = signalValue(createJsonStore(key, null).read());
+    if (!value) continue;
+    const current = signalValue(snapshot[showId]);
+    if (!current || compareSignalRecency(value, current) >= 0) snapshot[showId] = value;
+  }
+  return snapshot;
+}
+
+function mergeSignalSnapshots(base, incoming) {
+  const merged = signalValue(base) ? { ...base } : {};
+  const source = signalValue(incoming) ? incoming : {};
+  for (const [showId, value] of Object.entries(source)) {
+    const normalizedShowId = String(showId || "").trim();
+    const normalizedValue = signalValue(value);
+    if (!normalizedShowId || !normalizedValue) continue;
+    const current = signalValue(merged[normalizedShowId]);
+    if (!current || compareSignalRecency(normalizedValue, current) >= 0) {
+      merged[normalizedShowId] = normalizedValue;
+    }
+  }
+  return merged;
+}
+
+function writeSignalSnapshotForOwner(owner, value) {
+  const normalizedOwner = String(owner || "anonymous");
+  const source = signalValue(value) ? value : {};
+  const storage = usableBrowserStorage();
+  let persisted = Boolean(storage);
+  for (const [showId, signal] of Object.entries(source)) {
+    const normalizedShowId = String(showId || "").trim();
+    const normalizedSignal = signalValue(signal);
+    if (!normalizedShowId || !normalizedSignal) continue;
+    const key = signalEntryKey(normalizedOwner, normalizedShowId);
+    const current = readSignalEntry(normalizedOwner, normalizedShowId);
+    if (current && compareSignalRecency(normalizedSignal, current) < 0) continue;
+    const wrote = createJsonStore(key, null).write(normalizedSignal);
+    if (wrote && storage) memorySignalEntries.delete(key);
+    else memorySignalEntries.add(key);
+    persisted = Boolean(wrote && storage) && persisted;
+  }
+  return persisted;
+}
+
+function removeSignalSnapshotForOwner(owner) {
+  const normalizedOwner = String(owner || "anonymous");
+  const storage = usableBrowserStorage();
+  let removed = Boolean(storage);
+  for (const key of signalEntryKeys(normalizedOwner)) {
+    const didRemove = createJsonStore(key, null).remove();
+    if (!didRemove || !storage) removed = false;
+    memorySignalEntries.delete(key);
+  }
+  removeScopedValueForOwner(signalStoreBase, normalizedOwner);
+  return removed;
+}
+
+function signalTimestamp(value, field) {
+  const parsed = Date.parse(value?.[field] || "");
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function compareSignalRecency(left, right) {
+  const leftValue = signalValue(left) || {};
+  const rightValue = signalValue(right) || {};
+  const leftDevice = leftValue.clientDeviceId ? String(leftValue.clientDeviceId).toLowerCase() : "";
+  const rightDevice = rightValue.clientDeviceId ? String(rightValue.clientDeviceId).toLowerCase() : "";
+  const leftSequence = Number(leftValue.clientEventSequence);
+  const rightSequence = Number(rightValue.clientEventSequence);
+  if (leftDevice && leftDevice === rightDevice
+    && Number.isSafeInteger(leftSequence) && leftSequence > 0
+    && Number.isSafeInteger(rightSequence) && rightSequence > 0) {
+    return leftSequence - rightSequence
+      || compareSignalTimestamps(leftValue, rightValue);
+  }
+
+  const leftServer = signalTimestamp(leftValue, "serverSavedAt");
+  const rightServer = signalTimestamp(rightValue, "serverSavedAt");
+  if (leftServer !== null || rightServer !== null) {
+    if (leftServer === null) return -1;
+    if (rightServer === null) return 1;
+    return leftServer - rightServer || compareSignalTimestamps(leftValue, rightValue);
+  }
+  return compareSignalTimestamps(leftValue, rightValue);
+}
+
+function compareSignalTimestamps(left, right) {
+  const leftSaved = signalTimestamp(left, "savedAt");
+  const rightSaved = signalTimestamp(right, "savedAt");
+  if (leftSaved === null && rightSaved !== null) return -1;
+  if (leftSaved !== null && rightSaved === null) return 1;
+  return (leftSaved ?? 0) - (rightSaved ?? 0);
 }
 
 function outboxOwnerPrefix(owner) {
@@ -422,6 +629,16 @@ function pruneOutboxType(owner, type) {
 function clearOutboxForOwner(owner) {
   const storage = usableBrowserStorage();
   if (!storage) {
+    const keys = new Set(outboxEntryKeys(owner));
+    const prefix = outboxOwnerPrefix(owner);
+    for (const key of memoryOutboxTombstones) {
+      if (key.startsWith(prefix)) keys.add(key);
+    }
+    for (const key of keys) {
+      createJsonStore(key, null).remove();
+      memoryOutboxEntries.delete(key);
+      memoryOutboxTombstones.delete(key);
+    }
     writeScopedValueForOwner(outboxStoreBase, owner, { signals: {}, searches: {} });
     return;
   }
@@ -532,15 +749,141 @@ function readOutboxForOwner(owner) {
   return normalizeOutbox(raw);
 }
 
+function ownerSessionData(owner) {
+  const pair = ownerScopedValue(sessionPairStoreBase, owner, null);
+  const session = ownerScopedValue(sessionStoreBase, owner, null);
+  const token = ownerScopedValue(sessionTokenStoreBase, owner, null);
+  return {
+    pair,
+    session,
+    token,
+    sessionId: isValidSessionPair(pair) ? pair.sessionId : session
+  };
+}
+
+function transferOwnerData(sourceOwner, targetOwner, expectedSourceSessionId = null) {
+  const storageAvailable = Boolean(usableBrowserStorage());
+  const source = ownerSessionData(sourceOwner);
+  const target = ownerSessionData(targetOwner);
+  if (expectedSourceSessionId && source.sessionId
+    && String(expectedSourceSessionId).toLowerCase() !== String(source.sessionId).toLowerCase()) {
+    return false;
+  }
+  const sourcePairIsValid = isValidSessionPair(source.pair);
+  const targetPairIsValid = isValidSessionPair(target.pair);
+  let pairPersisted = false;
+  if (sourcePairIsValid) {
+    pairPersisted = writeScopedValueForOwner(sessionPairStoreBase, targetOwner, source.pair);
+  } else if (targetPairIsValid) {
+    pairPersisted = writeScopedValueForOwner(sessionPairStoreBase, targetOwner, target.pair);
+  } else {
+    const mergedSession = isUuid(source.sessionId) ? String(source.sessionId).toLowerCase() : target.session;
+    const mergedToken = isValidSessionToken(source.token) ? source.token.trim() : target.token;
+    pairPersisted = writeScopedValueForOwner(
+      sessionPairStoreBase,
+      targetOwner,
+      isUuid(mergedSession) && isValidSessionToken(mergedToken)
+        ? { sessionId: String(mergedSession).toLowerCase(), sessionToken: mergedToken.trim() }
+        : null
+    );
+  }
+  // Remove legacy copies after the atomic pair has been promoted. They
+  // remain readable only as a migration fallback for older deployments.
+  if (pairPersisted) clearLegacySessionValues(targetOwner);
+
+  const sourceSignals = readSignalSnapshotForOwner(sourceOwner);
+  const targetSignals = readSignalSnapshotForOwner(targetOwner);
+  const signalsPersisted = writeSignalSnapshotForOwner(
+    targetOwner,
+    mergeSignalSnapshots(targetSignals, sourceSignals),
+  );
+  const sourceOutbox = readOutboxForOwner(sourceOwner);
+  const targetOutbox = readOutboxForOwner(targetOwner);
+  writeOutboxEntriesForOwner(targetOwner, {
+    signals: { ...targetOutbox.signals, ...sourceOutbox.signals },
+    searches: { ...targetOutbox.searches, ...sourceOutbox.searches }
+  });
+  const outboxPersisted = lastPendingWritePersisted;
+  return Boolean(storageAvailable && pairPersisted && signalsPersisted && outboxPersisted);
+}
+
+function clearOwnerData(owner) {
+  removeScopedValueForOwner(sessionStoreBase, owner);
+  removeScopedValueForOwner(sessionTokenStoreBase, owner);
+  removeScopedValueForOwner(sessionPairStoreBase, owner);
+  removeSignalSnapshotForOwner(owner);
+  clearOutboxForOwner(owner);
+}
+
 export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null } = {}) {
   const nextOwner = userId ? String(userId) : "anonymous";
   const previousOwner = getInteractionOwner();
-  if (previousOwner === nextOwner) return { previousOwner, nextOwner, changed: false, revision: interactionRevision };
+  const pendingTransfer = readPendingOwnerTransfer();
+  const transferForNextOwner = Boolean(
+    pendingTransfer
+    && pendingTransfer.sourceOwner === "anonymous"
+    && pendingTransfer.targetOwner === nextOwner
+  );
+
+  // /me runs after a reload without the original login response. A durable
+  // journal must therefore be replayed even when the owner already matches.
+  if (previousOwner === nextOwner) {
+    if (!transferForNextOwner) return { previousOwner, nextOwner, changed: false, revision: interactionRevision };
+    const transferPersisted = transferOwnerData(
+      "anonymous",
+      nextOwner,
+      pendingTransfer.acceptedAnonymousSessionId,
+    );
+    const journalCleared = transferPersisted && clearPendingOwnerTransfer();
+    if (transferPersisted && journalCleared) clearOwnerData("anonymous");
+    return {
+      previousOwner,
+      nextOwner,
+      changed: false,
+      persisted: true,
+      transferPersisted,
+      pendingOwnerTransfer: !transferPersisted || !journalCleared,
+      revision: interactionRevision
+    };
+  }
+
+  const anonymous = ownerSessionData("anonymous");
+  const anonymousSessionId = anonymous.sessionId;
+  const requestedCanMerge = previousOwner === "anonymous"
+    && nextOwner !== "anonymous"
+    && isUuid(acceptedAnonymousSessionId)
+    && isUuid(anonymousSessionId)
+    && String(acceptedAnonymousSessionId).toLowerCase() === String(anonymousSessionId).toLowerCase();
+  const conflictingTransfer = Boolean(
+    pendingTransfer
+    && pendingTransfer.sourceOwner === "anonymous"
+    && pendingTransfer.targetOwner !== nextOwner
+  );
+  const shouldTransfer = transferForNextOwner || (requestedCanMerge && !conflictingTransfer);
+  if (requestedCanMerge && !transferForNextOwner && !conflictingTransfer) {
+    // Journal the recovery intent before changing the owner namespace. If
+    // this write cannot be durable, leave the anonymous owner in place so a
+    // reload cannot strand the source data without a recovery record.
+    const journalPersisted = writePendingOwnerTransfer(
+      "anonymous",
+      nextOwner,
+      acceptedAnonymousSessionId,
+    );
+    if (!journalPersisted) {
+      return {
+        previousOwner,
+        nextOwner,
+        changed: false,
+        persisted: false,
+        pendingOwnerTransfer: true,
+        revision: interactionRevision
+      };
+    }
+  }
 
   // Persist the namespace boundary before moving or deleting any data. If
   // storage is full/restricted, browserStore keeps this value in memory and
-  // reports the durable-write failure; never continue a transition while the
-  // owner still resolves to the old persistent namespace.
+  // reports the durable-write failure; do not copy or clear source data.
   const ownerPersisted = ownerStoreBase.write(nextOwner);
   if (getInteractionOwner() !== nextOwner) {
     return {
@@ -548,97 +891,70 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
       nextOwner,
       changed: false,
       persisted: false,
+      pendingOwnerTransfer: shouldTransfer || Boolean(readPendingOwnerTransfer()),
+      revision: interactionRevision
+    };
+  }
+  if (!ownerPersisted) {
+    return {
+      previousOwner,
+      nextOwner,
+      changed: true,
+      persisted: false,
+      pendingOwnerTransfer: shouldTransfer || Boolean(readPendingOwnerTransfer()),
       revision: interactionRevision
     };
   }
 
-  if (previousOwner === "anonymous" && nextOwner !== "anonymous") {
-    const anonymousSession = ownerScopedValue(sessionStoreBase, previousOwner, null);
-    const anonymousToken = ownerScopedValue(sessionTokenStoreBase, previousOwner, null);
-    const anonymousPair = ownerScopedValue(sessionPairStoreBase, previousOwner, null);
-    const accountSession = ownerScopedValue(sessionStoreBase, nextOwner, null);
-    const accountToken = ownerScopedValue(sessionTokenStoreBase, nextOwner, null);
-    const accountPair = ownerScopedValue(sessionPairStoreBase, nextOwner, null);
-    const anonymousSessionId = isValidSessionPair(anonymousPair) ? anonymousPair.sessionId : anonymousSession;
-    const canMergeAnonymousSession = isUuid(acceptedAnonymousSessionId)
-      && isUuid(anonymousSessionId)
-      && String(acceptedAnonymousSessionId).toLowerCase() === String(anonymousSessionId).toLowerCase();
-    let anonymousTransferPersisted = false;
-    if (canMergeAnonymousSession) {
-      const anonymousPairIsValid = isValidSessionPair(anonymousPair);
-      const accountPairIsValid = isValidSessionPair(accountPair);
-      let pairPersisted = false;
-      if (anonymousPairIsValid) {
-        pairPersisted = writeScopedValueForOwner(sessionPairStoreBase, nextOwner, anonymousPair);
-      } else if (accountPairIsValid) {
-        pairPersisted = writeScopedValueForOwner(sessionPairStoreBase, nextOwner, accountPair);
-      } else {
-        const mergedSession = isUuid(anonymousSessionId) ? String(anonymousSessionId).toLowerCase() : accountSession;
-        const mergedToken = isValidSessionToken(anonymousToken) ? anonymousToken.trim() : accountToken;
-        pairPersisted = writeScopedValueForOwner(
-          sessionPairStoreBase,
-          nextOwner,
-          isUuid(mergedSession) && isValidSessionToken(mergedToken)
-            ? { sessionId: String(mergedSession).toLowerCase(), sessionToken: mergedToken.trim() }
-            : null
-        );
-      }
-      // Remove legacy copies after the atomic pair has been promoted. They
-      // remain readable only as a migration fallback for older deployments.
-      if (pairPersisted) clearLegacySessionValues(nextOwner);
-      const anonymousSignals = ownerScopedValue(signalStoreBase, previousOwner, {});
-      const accountSignals = ownerScopedValue(signalStoreBase, nextOwner, {});
-      const signalsPersisted = writeScopedValueForOwner(signalStoreBase, nextOwner, {
-        ...(accountSignals && typeof accountSignals === "object" && !Array.isArray(accountSignals) ? accountSignals : {}),
-        ...(anonymousSignals && typeof anonymousSignals === "object" && !Array.isArray(anonymousSignals) ? anonymousSignals : {})
-      });
-      const anonymousOutbox = readOutboxForOwner(previousOwner);
-      const accountOutbox = readOutboxForOwner(nextOwner);
-      writeOutboxEntriesForOwner(nextOwner, {
-        signals: { ...accountOutbox.signals, ...anonymousOutbox.signals },
-        searches: { ...accountOutbox.searches, ...anonymousOutbox.searches }
-      });
-      anonymousTransferPersisted = Boolean(
-        ownerPersisted
-        && pairPersisted
-        && signalsPersisted
-        && lastPendingWritePersisted
-      );
-    }
-    // Anonymous data is copied only when the server explicitly confirms the
-    // exact session id. Otherwise discard it instead of offering it to a
-    // different account after a cross-tab logout or a failed attach. When the
-    // copy was requested, retain the source namespace until every durable
-    // destination write succeeds; memory-only copies disappear on reload.
-    if (!canMergeAnonymousSession || anonymousTransferPersisted) {
-      removeScopedValueForOwner(sessionStoreBase, previousOwner);
-      removeScopedValueForOwner(sessionTokenStoreBase, previousOwner);
-      removeScopedValueForOwner(sessionPairStoreBase, previousOwner);
-      removeScopedValueForOwner(signalStoreBase, previousOwner);
-      clearOutboxForOwner(previousOwner);
-    }
+  let transferPersisted = true;
+  if (shouldTransfer) {
+    transferPersisted = transferOwnerData(
+      "anonymous",
+      nextOwner,
+      pendingTransfer?.acceptedAnonymousSessionId || acceptedAnonymousSessionId,
+    );
+    if (transferPersisted) clearPendingOwnerTransfer();
+  }
+
+  // Anonymous data is copied only when the server explicitly confirms the
+  // exact session id. Otherwise discard it instead of offering it to a
+  // different account after a cross-tab logout or a failed attach. A pending
+  // journal protects its source namespace until the copy succeeds.
+  if (shouldTransfer) {
+    if (transferPersisted) clearOwnerData("anonymous");
+  } else if (!readPendingOwnerTransfer()) {
+    clearOwnerData("anonymous");
   }
 
   interactionRevision += 1;
-  return { previousOwner, nextOwner, changed: true, persisted: ownerPersisted, revision: interactionRevision };
+  return {
+    previousOwner,
+    nextOwner,
+    changed: true,
+    persisted: ownerPersisted,
+    transferPersisted,
+    pendingOwnerTransfer: Boolean(readPendingOwnerTransfer()),
+    revision: interactionRevision
+  };
 }
 
 export function promoteAuthenticatedInteraction(userId, acceptedAnonymousSessionId) {
   return setInteractionOwner(userId, { acceptedAnonymousSessionId });
 }
 
+export { readPendingOwnerTransfer };
+
 export function readOwnerScopedSignalState(ownerId = getInteractionOwner()) {
   const owner = String(ownerId || "anonymous");
-  const value = ownerScopedValue(signalStoreBase, owner, {});
-  return mergePendingSignalState(value, owner);
+  return mergePendingSignalState(readSignalSnapshotForOwner(owner), owner);
 }
 
 export function writeOwnerScopedSignalState(value) {
-  writeScopedValue(signalStoreBase, value && typeof value === "object" ? value : {});
+  return writeSignalSnapshotForOwner(getInteractionOwner(), value && typeof value === "object" ? value : {});
 }
 
 export function removeOwnerScopedSignalState() {
-  removeScopedValue(signalStoreBase);
+  removeSignalSnapshotForOwner(getInteractionOwner());
 }
 
 export const interactionSessionStore = {
@@ -861,24 +1177,43 @@ function pendingSignalRatings(pending) {
   }]));
 }
 
-export function clearInteractionState({ preserveSession = false, clearPending = true, resetOwner = true, ownerId = null } = {}) {
+export function clearInteractionState({
+  preserveSession = false,
+  clearPending = true,
+  resetOwner = true,
+  ownerId = null,
+  preservePendingOwnerTransfer = false
+} = {}) {
   const owner = ownerId ? String(ownerId) : getInteractionOwner();
   const currentOwner = getInteractionOwner();
-  if (!preserveSession) {
-    removeScopedValueForOwner(sessionStoreBase, owner);
-    removeScopedValueForOwner(sessionTokenStoreBase, owner);
-    removeScopedValueForOwner(sessionPairStoreBase, owner);
+  const pendingTransfer = readPendingOwnerTransfer();
+  const preserveTransferSource = Boolean(
+    preservePendingOwnerTransfer
+    && pendingTransfer
+    && pendingTransfer.sourceOwner === "anonymous"
+  );
+  const preserveCurrentNamespace = preserveTransferSource && pendingTransfer.sourceOwner === owner;
+  if (!preserveCurrentNamespace) {
+    if (!preserveSession) {
+      removeScopedValueForOwner(sessionStoreBase, owner);
+      removeScopedValueForOwner(sessionTokenStoreBase, owner);
+      removeScopedValueForOwner(sessionPairStoreBase, owner);
+    }
+    removeSignalSnapshotForOwner(owner);
+    if (clearPending) clearOutboxForOwner(owner);
   }
-  removeScopedValueForOwner(signalStoreBase, owner);
-  if (clearPending) clearOutboxForOwner(owner);
   legacyFavoriteStore.remove();
   legacyWatchlistStore.remove();
-  if (resetOwner && owner !== "anonymous") {
+  if (resetOwner && owner !== "anonymous" && !preserveTransferSource) {
     removeScopedValueForOwner(sessionStoreBase, "anonymous");
     removeScopedValueForOwner(sessionTokenStoreBase, "anonymous");
     removeScopedValueForOwner(sessionPairStoreBase, "anonymous");
-    removeScopedValueForOwner(signalStoreBase, "anonymous");
+    removeSignalSnapshotForOwner("anonymous");
     if (clearPending) clearOutboxForOwner("anonymous");
+  }
+  if (!preservePendingOwnerTransfer && pendingTransfer
+    && (pendingTransfer.sourceOwner === owner || (resetOwner && owner !== "anonymous"))) {
+    clearPendingOwnerTransfer();
   }
   if (resetOwner) {
     ownerStoreBase.write("anonymous");

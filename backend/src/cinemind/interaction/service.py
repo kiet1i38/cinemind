@@ -557,22 +557,27 @@ class InteractionService:
         Mutation ids are retry identifiers, not authorization credentials. An
         authenticated request may replay an event from a rotated interaction
         session only when that original session is owned by the same account.
-        Anonymous rotation retains the historical global-idempotency behavior;
-        protected routes always supply ``current_user_id``.
+        An anonymous request may replay an event from another anonymous session
+        for rotation recovery, but never an event that was already attached to
+        an authenticated account.
         """
 
-        if current_user_id is None:
-            return
         existing_session_id = existing.get("session_id")
         if existing_session_id is None:
             raise InteractionUnauthorizedError("Interaction mutation ownership cannot be verified")
         if str(existing_session_id).casefold() == str(current_session_id).casefold():
             return
         original_session = self.repository.get_session(existing_session_id)
+        if original_session is None:
+            raise InteractionUnauthorizedError("Interaction mutation ownership cannot be verified")
+        original_user_id = original_session.get("user_id")
+        if current_user_id is None:
+            if original_user_id is not None:
+                raise InteractionUnauthorizedError("Interaction mutation belongs to an account")
+            return
         if (
-            original_session is None
-            or original_session.get("user_id") is None
-            or str(original_session.get("user_id")).casefold() != str(current_user_id).casefold()
+            original_user_id is None
+            or str(original_user_id).casefold() != str(current_user_id).casefold()
         ):
             raise InteractionUnauthorizedError("Interaction mutation does not belong to this account")
 

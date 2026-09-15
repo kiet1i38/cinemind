@@ -7,7 +7,7 @@ import { getRuntimeLabel, getTypeLabel } from "./lib/catalog";
 import { translate } from "./lib/i18n";
 import { AUTH_EVENT_STORAGE_KEY, getCurrentUser, getAuthPageUrl, logout, logoutAll } from "./services/authService";
 import { loadCatalog } from "./services/catalogService";
-import { getInteractionState, syncPendingInteractions } from "./services/interactionService";
+import { getInteractionState, hasFulfilledSignal, syncPendingInteractions } from "./services/interactionService";
 import { clearInteractionState, hasPendingInteractions, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./styles.css";
@@ -108,7 +108,7 @@ export default function ProfilePage() {
             && result.reason?.status >= 400
             && result.reason?.status < 500
             && result.reason?.code !== "CATALOG_RECORD_UNAVAILABLE");
-          return definitiveFailure ? getInteractionState(metadata) : null;
+          return (hasFulfilledSignal(results) || definitiveFailure) ? getInteractionState(metadata) : null;
         })
         .then((reconciledState) => {
           if (isCurrentRequest(requestId) && reconciledState) setState(mergeProfileState(reconciledState));
@@ -177,7 +177,10 @@ export default function ProfilePage() {
     try {
       if (allDevices) await logoutAll({ preservePendingInteractions });
       else await logout({ preservePendingInteractions });
-      clearInteractionState({ clearPending: !preservePendingInteractions });
+      clearInteractionState({
+        clearPending: !preservePendingInteractions,
+        preservePendingOwnerTransfer: true
+      });
       window.location.href = "./";
     } catch {
       setMessage(translate(language, "authGenericError"));

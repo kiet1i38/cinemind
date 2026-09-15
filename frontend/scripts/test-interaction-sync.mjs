@@ -37,6 +37,7 @@ const {
   interactionSessionStore,
   mergeInteractionState,
   nextInteractionEventSequence,
+  readPendingOwnerTransfer,
   queuePendingSignal,
   queuePendingSearch,
   readOwnerScopedSignalState,
@@ -44,7 +45,7 @@ const {
   setInteractionOwner
 } = require(resolve(sourceDir, "services/interactionStore.js"));
 const { signalStore } = require(resolve(sourceDir, "services/signalStore.js"));
-const { syncPendingInteractions } = require(resolve(sourceDir, "services/interactionService.js"));
+const { hasFulfilledSignal, syncPendingInteractions } = require(resolve(sourceDir, "services/interactionService.js"));
 
 function response(status, payload = {}, headers = {}) {
   const normalizedHeaders = Object.fromEntries(
@@ -254,7 +255,12 @@ test("device and sequence state are isolated per browser tab", { concurrency: fa
     assert.equal(localValues.has(sequenceKey), false);
     assert.equal(JSON.parse(firstTabValues.get(sequenceKey)), secondSequence);
 
+    // A tab opened with an opener starts from a clone of the opener's
+    // sessionStorage. It must fork the stream before allocating a new event.
+    secondTabValues.clear();
+    for (const [key, value] of firstTabValues) secondTabValues.set(key, value);
     globalThis.window.sessionStorage = mapStorage(secondTabValues);
+    globalThis.window.opener = {};
     const secondDevice = getInteractionDeviceId();
     const secondTabSequence = nextInteractionEventSequence();
     assert.notEqual(secondDevice, firstDevice);
@@ -282,6 +288,138 @@ test("signalStore overlays pending per-entry signals on its aggregate snapshot",
   assert.equal(initialState["aggregate-title"].rating, 3);
   assert.equal(initialState["pending-title"].rating, 9);
   assert.equal(readOwnerScopedSignalState()["pending-title"].watchMinutes, 22);
+});
+
+test("acknowledged signal cache keeps entries from a stale tab snapshot", { concurrency: false }, () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const values = new Map();
+  globalThis.window = {
+    localStorage: mapStorage(values),
+    location: { pathname: "/" }
+  };
+  try {
+    setInteractionOwner("sync-test-signal-cache");
+    clearInteractionState({ resetOwner: false });
+    signalStore.write({
+      "show-from-tab-a": { rating: 8, watchMinutes: 10, savedAt: "2026-09-15T10:00:00.000Z" }
+    });
+    signalStore.write({
+      "show-from-tab-b": { rating: 4, watchMinutes: 5, savedAt: "2026-09-15T10:01:00.000Z" }
+    });
+    // Tab A writes its stale whole-snapshot view again. Per-show keys must
+    // not delete the acknowledged entry written by tab B.
+    signalStore.write({
+      "show-from-tab-a": { rating: 8, watchMinutes: 10, savedAt: "2026-09-15T10:00:00.000Z" }
+    });
+
+    const merged = signalStore.read();
+    assert.equal(merged["show-from-tab-a"].rating, 8);
+    assert.equal(merged["show-from-tab-b"].rating, 4);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("owner transfer journal retries after reload and logout preserve the source", { concurrency: false }, () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const values = new Map();
+  const storage = mapStorage(values);
+  const outboxEntryPrefix = `${appConfig.interaction.outboxStorageKey}:entry:`;
+  let rejectOutboxWrites = true;
+  const originalSetItem = storage.setItem;
+  storage.setItem = (key, value) => {
+    if (rejectOutboxWrites && key.startsWith(outboxEntryPrefix)) throw new Error("quota exceeded");
+    originalSetItem(key, value);
+  };
+  globalThis.window = {
+    localStorage: storage,
+    location: { pathname: "/" }
+  };
+  const anonymousSessionId = "00000000-0000-4000-8000-000000000501";
+  const mutationId = "00000000-0000-4000-8000-000000000502";
+  try {
+    interactionSessionStore.write(anonymousSessionId, "anonymous-session-token-0123456789");
+    queuePendingSearch(
+      { query: "journal-safe", resultCount: 1, filters: {} },
+      mutationId
+    );
+
+    const firstAttempt = setInteractionOwner(
+      "journal-account",
+      { acceptedAnonymousSessionId: anonymousSessionId }
+    );
+    assert.equal(firstAttempt.transferPersisted, false);
+    assert.equal(readPendingOwnerTransfer().targetOwner, "journal-account");
+    assert.equal(readPendingInteractions("anonymous").searches[mutationId].query, "journal-safe");
+
+    // This is the /me path after reload: the owner is already the account,
+    // so recovery must not return from the same-owner fast path.
+    const retryWhileFull = setInteractionOwner("journal-account");
+    assert.equal(retryWhileFull.transferPersisted, false);
+    assert.equal(readPendingOwnerTransfer().targetOwner, "journal-account");
+
+    rejectOutboxWrites = false;
+    const recoveredInPlace = setInteractionOwner("journal-account");
+    assert.equal(recoveredInPlace.transferPersisted, true);
+    assert.equal(readPendingOwnerTransfer(), null);
+    assert.equal(readPendingInteractions("anonymous").searches[mutationId], undefined);
+    assert.equal(readPendingInteractions("journal-account").searches[mutationId].query, "journal-safe");
+
+    // Recreate the failure journal so the logout branch below exercises its
+    // source-preservation contract independently of the in-place recovery.
+    clearInteractionState({ resetOwner: true });
+    rejectOutboxWrites = true;
+    interactionSessionStore.write(anonymousSessionId, "anonymous-session-token-0123456789");
+    queuePendingSearch(
+      { query: "journal-safe-after-reload", resultCount: 1, filters: {} },
+      "00000000-0000-4000-8000-000000000503"
+    );
+    setInteractionOwner("journal-account", { acceptedAnonymousSessionId: anonymousSessionId });
+    assert.equal(readPendingOwnerTransfer().targetOwner, "journal-account");
+
+    // Logout must not clear the source namespace while the journal is live.
+    clearInteractionState({ preservePendingOwnerTransfer: true });
+    assert.equal(getInteractionOwner(), "anonymous");
+    assert.equal(readPendingInteractions("anonymous").searches["00000000-0000-4000-8000-000000000503"].query, "journal-safe-after-reload");
+    assert.equal(readPendingOwnerTransfer().targetOwner, "journal-account");
+
+    rejectOutboxWrites = false;
+    const recovered = setInteractionOwner("journal-account");
+    assert.equal(recovered.transferPersisted, true);
+    assert.equal(readPendingOwnerTransfer(), null);
+    assert.equal(readPendingInteractions("anonymous").searches["00000000-0000-4000-8000-000000000503"], undefined);
+    assert.equal(readPendingInteractions("journal-account").searches["00000000-0000-4000-8000-000000000503"].query, "journal-safe-after-reload");
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("sync marks a successful signal batch for post-commit hydration", { concurrency: false }, async () => {
+  appConfig.interaction.pendingSyncBatchSize = 10;
+  appConfig.interaction.pendingSyncPacingMs = 0;
+  setInteractionOwner("sync-test-hydration");
+  clearInteractionState({ resetOwner: false });
+  queuePendingSignal(
+    "hydrated-title",
+    { rating: 8, watchMinutes: 15 },
+    "00000000-0000-4000-8000-000000000511"
+  );
+  const calls = installFetch([
+    response(201, sessionPayload),
+    response(201, { accepted: true })
+  ]);
+
+  const results = await syncPendingInteractions([{ id: "hydrated-title" }]);
+
+  assert.equal(results[0].kind, "signal");
+  assert.equal(hasFulfilledSignal(results), true);
+  assert.equal(calls.filter(({ url }) => url.endsWith("/signals")).length, 1);
 });
 
 test("owner changes stop a captured replay before the next event", { concurrency: false }, async () => {

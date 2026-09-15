@@ -282,6 +282,19 @@ class InteractionServiceTests(unittest.TestCase):
         }
         return session_id
 
+    def _add_anonymous_session(self):
+        session_id = uuid4()
+        now = datetime.now(timezone.utc)
+        self.repository.sessions[session_id] = {
+            "session_id": session_id,
+            "started_at": now,
+            "last_seen_at": now,
+            "ended_at": None,
+            "user_id": None,
+            "session_token_hash": None,
+        }
+        return session_id
+
     def test_search_normalizes_whitespace_and_case(self):
         result = self.service.record_search_event(
             self.session_id,
@@ -661,6 +674,51 @@ class InteractionServiceTests(unittest.TestCase):
 
         self.assertEqual(len(self.repository.watch_sessions), 1)
         self.assertEqual(len(self.repository.ratings), 0)
+
+    def test_anonymous_replay_cannot_reuse_an_authenticated_search_mutation(self):
+        account_id = uuid4()
+        anonymous_session = self._add_anonymous_session()
+        self.repository.sessions[self.session_id]["user_id"] = account_id
+        mutation_id = uuid4()
+
+        self.service.record_search_event(
+            self.session_id,
+            "Drama",
+            0,
+            {},
+            user_id=account_id,
+            client_mutation_id=mutation_id,
+        )
+
+        with self.assertRaises(InteractionUnauthorizedError):
+            self.service.record_search_event(
+                anonymous_session,
+                "Drama",
+                0,
+                {},
+                client_mutation_id=mutation_id,
+            )
+
+    def test_anonymous_replay_can_follow_a_rotated_anonymous_session(self):
+        rotated_session = self._add_anonymous_session()
+        mutation_id = uuid4()
+        first = self.service.record_search_event(
+            self.session_id,
+            "Drama",
+            0,
+            {},
+            client_mutation_id=mutation_id,
+        )
+
+        replay = self.service.record_search_event(
+            rotated_session,
+            "Drama",
+            0,
+            {},
+            client_mutation_id=mutation_id,
+        )
+
+        self.assertEqual(replay["search_event_id"], first["search_event_id"])
 
     def test_rating_replay_after_session_rotation_reuses_linked_watch(self):
         mutation_id = uuid4()

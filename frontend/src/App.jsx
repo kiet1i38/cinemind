@@ -19,6 +19,7 @@ import { loadCatalog } from "./services/catalogService";
 import {
   getInteractionContext,
   getInteractionState,
+  hasFulfilledSignal,
   isRetryableInteractionError,
   recordSearchEvent,
   submitSignal,
@@ -207,7 +208,8 @@ export default function App() {
           || hasPendingInteractions(ownerId);
         clearInteractionState({
           ownerId,
-          clearPending: !preservePendingInteractions
+          clearPending: !preservePendingInteractions,
+          preservePendingOwnerTransfer: true
         });
         setAuthUser(null);
         setRatings({});
@@ -283,6 +285,12 @@ export default function App() {
       })
       .then((results) => {
         notifyPendingLoss();
+        if (hasFulfilledSignal(results) && !cancelled) {
+          // The pre-sync state response cannot contain events that have not
+          // committed yet. Refresh once after a successful signal batch so
+          // recommendation recency uses the server receipt timestamp.
+          return getInteractionState(interactionMetadata()).then(applyRemoteState);
+        }
         const hasDefinitiveFailure = Array.isArray(results)
           && results.some((result) => result.status === "rejected"
             && !isRetryableInteractionError(result.reason)
@@ -312,6 +320,16 @@ export default function App() {
       const requestOwner = getInteractionOwner();
       syncPendingInteractions(catalog, interactionMetadata())
         .then((results) => {
+          if (hasFulfilledSignal(results)) {
+            return getInteractionState(interactionMetadata()).then((state) => {
+              if (
+                authReady
+                && requestGeneration === interactionHydrationGenerationRef.current
+                && requestRevision === interactionRevisionRef.current
+                && requestOwner === getInteractionOwner()
+              ) setRatings(mergeInteractionState(state, { ratings: signalStore.read() }).ratings);
+            });
+          }
           const hasDefinitiveFailure = Array.isArray(results)
             && results.some((result) => result.status === "rejected"
               && !isRetryableInteractionError(result.reason)

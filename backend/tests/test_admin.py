@@ -1,5 +1,6 @@
 """Unit tests for protected reset scopes and the public OpenAPI boundary."""
 
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest import TestCase
 from uuid import uuid4
@@ -8,6 +9,7 @@ from fastapi import HTTPException
 from fastapi.security import HTTPBasicCredentials
 
 from cinemind.admin.routes import _require_admin
+from cinemind.admin.repository import ResetRepository
 from cinemind.admin.schemas import ResetRequest, ResetScope
 from cinemind.admin.service import ResetService, ResetValidationError
 from cinemind.main import app
@@ -59,6 +61,24 @@ class FakeResetRepository:
             "interaction.sessions": 4,
             "interaction.ratings": 5,
         }
+
+
+class FakeExecuteResult:
+    """Minimal database result exposing the row count used by reset code."""
+
+    def __init__(self, rowcount):
+        self.rowcount = rowcount
+
+
+class FakeConnection:
+    """Capture reset SQL so repair rows can be tested without PostgreSQL."""
+
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, query, parameters=()):
+        self.calls.append((query, parameters))
+        return FakeExecuteResult(1)
 
 
 class ResetServiceTests(TestCase):
@@ -121,15 +141,41 @@ class ResetServiceTests(TestCase):
             ))
 
 
+class ResetRepositoryTests(TestCase):
+    """Ensure a source-session reset removes cross-scope repair telemetry."""
+
+    def test_session_reset_neutralizes_repair_links_before_deleting_repairs(self):
+        connection = FakeConnection()
+        repository = ResetRepository(connection)
+        session_id = uuid4()
+
+        deleted = repository.delete_session_interactions(session_id)
+
+        self.assertEqual(deleted["interaction.watch_sessions"], 2)
+        self.assertIn("SET watch_session_id = NULL", connection.calls[0][0])
+        self.assertIn("repair.is_repair = TRUE", connection.calls[1][0])
+        self.assertEqual(len(connection.calls), 6)
+        self.assertEqual(connection.calls[0][1], (session_id,))
+        self.assertEqual(connection.calls[1][1], (session_id,))
+
+
 class AdminBoundaryTests(TestCase):
     """Ensure credentials are server-side and the reset route stays out of docs."""
 
     def setUp(self):
+        from cinemind.admin.routes import admin_rate_limiter
+
+        admin_rate_limiter.clear()
         self.settings = SimpleNamespace(
             reset_enabled=True,
             admin_reset_username="maintainer",
             admin_reset_password="long-local-secret",
         )
+
+    def tearDown(self):
+        from cinemind.admin.routes import admin_rate_limiter
+
+        admin_rate_limiter.clear()
 
     def test_valid_basic_auth_is_accepted(self):
         _require_admin(
@@ -150,6 +196,23 @@ class AdminBoundaryTests(TestCase):
         with self.assertRaises(HTTPException) as context:
             _require_admin(None, self.settings)
         self.assertEqual(context.exception.status_code, 401)
+
+    def test_concurrent_invalid_credentials_honor_the_hard_attempt_cap(self):
+        def attempt():
+            try:
+                _require_admin(
+                    HTTPBasicCredentials(username="maintainer", password="wrong"),
+                    self.settings,
+                )
+            except HTTPException as error:
+                return error.status_code
+            return 200
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            statuses = list(executor.map(lambda _index: attempt(), range(20)))
+
+        self.assertEqual(statuses.count(401), 8)
+        self.assertEqual(statuses.count(429), 12)
 
     def test_reset_route_is_not_exposed_in_openapi(self):
         self.assertNotIn("/api/admin/reset", app.openapi()["paths"])

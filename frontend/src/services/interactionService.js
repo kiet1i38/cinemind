@@ -339,6 +339,11 @@ export async function syncPendingInteractions(records, metadata = {}) {
   return promise;
 }
 
+export function hasFulfilledSignal(results) {
+  return Array.isArray(results)
+    && results.some((result) => result?.status === "fulfilled" && result.kind === "signal");
+}
+
 async function syncPendingInteractionsOnce(records, metadata, interactionContext) {
   assertInteractionContext(interactionContext);
   const existingBackoff = pendingSyncBackoffs.get(interactionContext.owner);
@@ -401,7 +406,7 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
   results.push(...unavailableEntries.map((event) => {
     const reason = new Error(`Catalog title ${event.entry.showId} is not available yet`);
     reason.code = "CATALOG_RECORD_UNAVAILABLE";
-    return { status: "rejected", reason, entry: event.entry };
+    return { status: "rejected", reason, entry: event.entry, kind: "signal" };
   }));
   const batch = orderedPending.filter((event) => !event.unavailable).slice(0, batchSize);
   for (const { kind, entry, record } of batch) {
@@ -411,7 +416,7 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
     } catch (reason) {
       // Stop the snapshot when the owner changes. Remaining entries stay in
       // the captured owner's outbox and cannot be replayed into a new owner.
-      results.push({ status: "rejected", reason });
+      results.push({ status: "rejected", reason, kind });
       break;
     }
     attempted += 1;
@@ -432,9 +437,9 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
           mutationId: entry.mutationId,
           firstQueuedAt: entry.firstQueuedAt
         }, interactionContext);
-      results.push({ status: "fulfilled", value: await task, entry });
+      results.push({ status: "fulfilled", value: await task, entry, kind });
     } catch (reason) {
-      results.push({ status: "rejected", reason, entry });
+      results.push({ status: "rejected", reason, entry, kind });
       if (reason?.status === 429) {
         rateLimited = true;
         setPendingSyncBackoff(interactionContext.owner, reason);

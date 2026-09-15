@@ -78,7 +78,10 @@ def _require_admin(
 
     address = _admin_client_address(request, settings)
     key = f"admin-reset:{address}"
-    decision = admin_rate_limiter.check(key)
+    # Reserve the attempt while holding the limiter lock. A separate
+    # check-then-record sequence lets concurrent wrong-password requests all
+    # pass the check before any of them records its failure.
+    decision = admin_rate_limiter.consume(key)
     if not decision.allowed:
         raise HTTPException(
             status_code=429,
@@ -95,7 +98,6 @@ def _require_admin(
         settings.admin_reset_password,
     )
     if not (valid_username and valid_password):
-        admin_rate_limiter.record_failure(key)
         raise HTTPException(
             status_code=401,
             detail="Invalid admin credentials",
