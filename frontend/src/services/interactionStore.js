@@ -1,7 +1,7 @@
 // Owner-scoped client fallback stores for interaction state.
 
 import { appConfig } from "../config/appConfig";
-import { createJsonStore, getBrowserStorage } from "./browserStore";
+import { createJsonStore, getBrowserSessionStorage, getBrowserStorage } from "./browserStore";
 
 const interactionConfig = appConfig.interaction;
 const ownerStoreBase = createJsonStore(interactionConfig.ownerStorageKey, "anonymous");
@@ -10,8 +10,19 @@ const sessionTokenStoreBase = createJsonStore(`${interactionConfig.sessionStorag
 // Keep the session proof and its id in one JSON value. A pair written through
 // one storage operation can never be observed after only the id has changed.
 const sessionPairStoreBase = createJsonStore(`${interactionConfig.sessionStorageKey}:pair`, null);
-const deviceStoreBase = createJsonStore(interactionConfig.deviceStorageKey || "cinemind-interaction-device-id", null);
-const sequenceStoreBase = createJsonStore(interactionConfig.sequenceStorageKey || "cinemind-interaction-event-sequence", 0);
+// These values describe one top-level browser tab. Keeping them in
+// sessionStorage gives each tab its own sequence namespace, so allocating a
+// sequence never depends on a cross-tab read/modify/write race in localStorage.
+const deviceStoreBase = createJsonStore(
+  interactionConfig.deviceStorageKey || "cinemind-interaction-device-id",
+  null,
+  getBrowserSessionStorage,
+);
+const sequenceStoreBase = createJsonStore(
+  interactionConfig.sequenceStorageKey || "cinemind-interaction-event-sequence",
+  0,
+  getBrowserSessionStorage,
+);
 const signalStoreBase = createJsonStore(appConfig.signals.storageKey, {});
 const outboxStoreBase = createJsonStore(interactionConfig.outboxStorageKey, () => ({ signals: {}, searches: {} }));
 const legacyFavoriteStore = createJsonStore("cinemind-favorites", null);
@@ -110,25 +121,8 @@ export function getInteractionDeviceId() {
 
 export function nextInteractionEventSequence() {
   const current = Number(sequenceStoreBase.read());
-  // localStorage has no compare-and-swap primitive, so a plain read/write
-  // counter can hand the same value to two tabs. Use a safe-integer hybrid
-  // logical clock: wall time gives independent tabs an ordering domain while
-  // a cryptographic slot makes same-millisecond allocations distinct; the
-  // persisted value still prevents backwards movement when the system clock
-  // is adjusted.
-  const now = Date.now();
-  const randomSlotLimit = 1_000_000;
-  let randomSlot = Math.floor(Math.random() * randomSlotLimit);
-  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
-    const random = new Uint32Array(1);
-    crypto.getRandomValues(random);
-    randomSlot = random[0] % randomSlotLimit;
-  }
-  // Keep the value below Number.MAX_SAFE_INTEGER while retaining a million
-  // independent slots per wall-clock second.
-  const wallClockCandidate = Math.floor(now / 1000) * randomSlotLimit + randomSlot;
   const safeCurrent = Number.isSafeInteger(current) && current >= 0 ? current : 0;
-  const next = Math.max(safeCurrent + 1, wallClockCandidate, 1);
+  const next = safeCurrent >= Number.MAX_SAFE_INTEGER ? 1 : safeCurrent + 1;
   sequenceStoreBase.write(next);
   return next;
 }
@@ -569,6 +563,7 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
     const canMergeAnonymousSession = isUuid(acceptedAnonymousSessionId)
       && isUuid(anonymousSessionId)
       && String(acceptedAnonymousSessionId).toLowerCase() === String(anonymousSessionId).toLowerCase();
+    let anonymousTransferPersisted = false;
     if (canMergeAnonymousSession) {
       const anonymousPairIsValid = isValidSessionPair(anonymousPair);
       const accountPairIsValid = isValidSessionPair(accountPair);
@@ -593,7 +588,7 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
       if (pairPersisted) clearLegacySessionValues(nextOwner);
       const anonymousSignals = ownerScopedValue(signalStoreBase, previousOwner, {});
       const accountSignals = ownerScopedValue(signalStoreBase, nextOwner, {});
-      writeScopedValueForOwner(signalStoreBase, nextOwner, {
+      const signalsPersisted = writeScopedValueForOwner(signalStoreBase, nextOwner, {
         ...(accountSignals && typeof accountSignals === "object" && !Array.isArray(accountSignals) ? accountSignals : {}),
         ...(anonymousSignals && typeof anonymousSignals === "object" && !Array.isArray(anonymousSignals) ? anonymousSignals : {})
       });
@@ -603,15 +598,25 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
         signals: { ...accountOutbox.signals, ...anonymousOutbox.signals },
         searches: { ...accountOutbox.searches, ...anonymousOutbox.searches }
       });
+      anonymousTransferPersisted = Boolean(
+        ownerPersisted
+        && pairPersisted
+        && signalsPersisted
+        && lastPendingWritePersisted
+      );
     }
     // Anonymous data is copied only when the server explicitly confirms the
     // exact session id. Otherwise discard it instead of offering it to a
-    // different account after a cross-tab logout or a failed attach.
-    removeScopedValueForOwner(sessionStoreBase, previousOwner);
-    removeScopedValueForOwner(sessionTokenStoreBase, previousOwner);
-    removeScopedValueForOwner(sessionPairStoreBase, previousOwner);
-    removeScopedValueForOwner(signalStoreBase, previousOwner);
-    clearOutboxForOwner(previousOwner);
+    // different account after a cross-tab logout or a failed attach. When the
+    // copy was requested, retain the source namespace until every durable
+    // destination write succeeds; memory-only copies disappear on reload.
+    if (!canMergeAnonymousSession || anonymousTransferPersisted) {
+      removeScopedValueForOwner(sessionStoreBase, previousOwner);
+      removeScopedValueForOwner(sessionTokenStoreBase, previousOwner);
+      removeScopedValueForOwner(sessionPairStoreBase, previousOwner);
+      removeScopedValueForOwner(signalStoreBase, previousOwner);
+      clearOutboxForOwner(previousOwner);
+    }
   }
 
   interactionRevision += 1;
@@ -622,9 +627,10 @@ export function promoteAuthenticatedInteraction(userId, acceptedAnonymousSession
   return setInteractionOwner(userId, { acceptedAnonymousSessionId });
 }
 
-export function readOwnerScopedSignalState() {
-  const value = ownerScopedValue(signalStoreBase, getInteractionOwner(), {});
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+export function readOwnerScopedSignalState(ownerId = getInteractionOwner()) {
+  const owner = String(ownerId || "anonymous");
+  const value = ownerScopedValue(signalStoreBase, owner, {});
+  return mergePendingSignalState(value, owner);
 }
 
 export function writeOwnerScopedSignalState(value) {
@@ -810,21 +816,7 @@ export function mergeInteractionState(remoteState, localState = {}) {
         : null
     };
   }
-  const latestPendingByShow = new Map();
-  for (const signal of Object.values(pending.signals)) {
-    if (!signal || !signal.showId || !isValidRating(Number(signal.rating)) || !Number.isInteger(Number(signal.watchMinutes)) || Number(signal.watchMinutes) < 0 || Number(signal.watchMinutes) > interactionConfig.maxWatchMinutes) continue;
-    const current = latestPendingByShow.get(signal.showId);
-    if (!current || comparePendingRecency(signal, current) > 0) latestPendingByShow.set(signal.showId, signal);
-  }
-  for (const [showId, signal] of latestPendingByShow) {
-    ratings[showId] = {
-      rating: Number(signal.rating),
-      watchMinutes: Number(signal.watchMinutes),
-      savedAt: signal.firstQueuedAt || signal.queuedAt,
-      clientDeviceId: signal.clientDeviceId || null,
-      clientEventSequence: signal.clientEventSequence || null
-    };
-  }
+  Object.assign(ratings, pendingSignalRatings(pending));
   return { ratings };
 }
 
@@ -846,6 +838,27 @@ function comparePendingRecency(left, right) {
 
 function isValidRating(value) {
   return Number.isFinite(value) && value >= 0.5 && value <= 10 && Math.abs(value * 2 - Math.round(value * 2)) < Number.EPSILON * 100;
+}
+
+function mergePendingSignalState(value, owner) {
+  const base = value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
+  return { ...base, ...pendingSignalRatings(readOutboxForOwner(owner)) };
+}
+
+function pendingSignalRatings(pending) {
+  const latestPendingByShow = new Map();
+  for (const signal of Object.values(pending?.signals || {})) {
+    if (!signal || !signal.showId || !isValidRating(Number(signal.rating)) || !Number.isInteger(Number(signal.watchMinutes)) || Number(signal.watchMinutes) < 0 || Number(signal.watchMinutes) > interactionConfig.maxWatchMinutes) continue;
+    const current = latestPendingByShow.get(signal.showId);
+    if (!current || comparePendingRecency(signal, current) > 0) latestPendingByShow.set(signal.showId, signal);
+  }
+  return Object.fromEntries([...latestPendingByShow.entries()].map(([showId, signal]) => [showId, {
+    rating: Number(signal.rating),
+    watchMinutes: Number(signal.watchMinutes),
+    savedAt: signal.firstQueuedAt || signal.queuedAt,
+    clientDeviceId: signal.clientDeviceId || null,
+    clientEventSequence: signal.clientEventSequence || null
+  }]));
 }
 
 export function clearInteractionState({ preserveSession = false, clearPending = true, resetOwner = true, ownerId = null } = {}) {

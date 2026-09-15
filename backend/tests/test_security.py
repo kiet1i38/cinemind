@@ -91,6 +91,40 @@ class SecurityPrimitiveTests(unittest.TestCase):
             "10.0.0.1",
         )
 
+    def test_interaction_session_header_cannot_rotate_the_principal_bucket(self):
+        client = "10.0.0.1"
+        first_spoof = _interaction_principal(
+            {"x-cinemind-session": "00000000-0000-4000-8000-000000000001"},
+            client,
+            auth_cookie_name="cinemind_auth",
+        )
+        second_spoof = _interaction_principal(
+            {"x-cinemind-session": "00000000-0000-4000-8000-000000000002"},
+            client,
+            auth_cookie_name="cinemind_auth",
+        )
+
+        self.assertEqual(first_spoof, client)
+        self.assertEqual(second_spoof, client)
+        self.assertEqual(
+            _interaction_principal(
+                {
+                    "cookie": "cinemind_auth=secret-token",
+                    "x-cinemind-session": "00000000-0000-4000-8000-000000000001",
+                },
+                client,
+                auth_cookie_name="cinemind_auth",
+            ),
+            _interaction_principal(
+                {
+                    "cookie": "cinemind_auth=secret-token",
+                    "x-cinemind-session": "00000000-0000-4000-8000-000000000002",
+                },
+                client,
+                auth_cookie_name="cinemind_auth",
+            ),
+        )
+
     def test_filter_normalization_rejects_oversized_or_non_string_values(self):
         with self.assertRaises(ValueError):
             normalize_filters({str(index): "value" for index in range(9)})

@@ -110,6 +110,7 @@ class InteractionService:
             if client_mutation_id is not None:
                 existing = self.repository.get_search_event_by_mutation(client_mutation_id)
                 if existing is not None:
+                    self._require_existing_mutation_owner(existing, session_id, user_id)
                     self._require_idempotent_match(
                         existing,
                         query_text=query_text,
@@ -152,6 +153,7 @@ class InteractionService:
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
                 )
+                self._require_existing_mutation_owner(row, session_id, user_id)
                 self._require_idempotent_match(
                     row,
                     query_text=query_text,
@@ -187,6 +189,7 @@ class InteractionService:
             if client_mutation_id is not None:
                 existing = self.repository.get_watch_session_by_mutation(client_mutation_id)
                 if existing is not None:
+                    self._require_existing_mutation_owner(existing, session_id, user_id)
                     self._require_idempotent_match(
                         existing,
                         show_id=normalized_show_id,
@@ -226,6 +229,7 @@ class InteractionService:
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
                 )
+                self._require_existing_mutation_owner(watch_session, session_id, user_id)
                 self._require_idempotent_match(
                     watch_session,
                     title_id=title["title_id"],
@@ -261,6 +265,7 @@ class InteractionService:
             if client_mutation_id is not None:
                 existing = self.repository.get_rating_by_mutation(client_mutation_id)
                 if existing is not None:
+                    self._require_existing_mutation_owner(existing, session_id, user_id)
                     self._require_idempotent_match(
                         existing,
                         show_id=normalized_show_id,
@@ -306,6 +311,7 @@ class InteractionService:
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
                 )
+                self._require_existing_mutation_owner(row, session_id, user_id)
                 self._require_idempotent_match(
                     row,
                     title_id=title["title_id"],
@@ -342,7 +348,9 @@ class InteractionService:
             self._require_session(session_id, user_id, session_token)
             if client_mutation_id is not None:
                 existing_watch = self.repository.get_watch_session_by_mutation(client_mutation_id)
+                existing_rating = self.repository.get_rating_by_mutation(client_mutation_id)
                 if existing_watch is not None:
+                    self._require_existing_mutation_owner(existing_watch, session_id, user_id)
                     self._require_idempotent_match(
                         existing_watch,
                         show_id=normalized_show_id,
@@ -350,8 +358,8 @@ class InteractionService:
                         client_device_id=client_device_id,
                         client_event_sequence=client_event_sequence,
                     )
-                    existing_rating = self.repository.get_rating_by_mutation(client_mutation_id)
                     if existing_rating is not None:
+                        self._require_existing_mutation_owner(existing_rating, session_id, user_id)
                         self._require_idempotent_match(
                             existing_rating,
                             show_id=normalized_show_id,
@@ -376,6 +384,7 @@ class InteractionService:
                             client_device_id=client_device_id,
                             client_event_sequence=client_event_sequence,
                         )
+                        self._require_existing_mutation_owner(rating_row, session_id, user_id)
                         self._require_idempotent_match(
                             rating_row,
                             show_id=normalized_show_id,
@@ -393,6 +402,11 @@ class InteractionService:
                             "rating": rating_value,
                         },
                     }
+                elif existing_rating is not None:
+                    # A partial historical write may contain only the rating.
+                    # It still belongs to the original account and must not be
+                    # used as an oracle or completed by another account.
+                    self._require_existing_mutation_owner(existing_rating, session_id, user_id)
             title, metrics = self._prepare_watch(
                 session_id, normalized_show_id, watch_minutes, user_id, session_token
             )
@@ -423,6 +437,7 @@ class InteractionService:
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
                 )
+                self._require_existing_mutation_owner(watch_session, session_id, user_id)
                 self._require_idempotent_match(
                     watch_session,
                     title_id=title["title_id"],
@@ -452,6 +467,7 @@ class InteractionService:
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
                 )
+                self._require_existing_mutation_owner(rating_row, session_id, user_id)
                 self._require_idempotent_match(
                     rating_row,
                     title_id=title["title_id"],
@@ -529,6 +545,36 @@ class InteractionService:
                 raise InteractionConflictError(
                     "client_mutation_id was already used with a different payload"
                 )
+
+    def _require_existing_mutation_owner(
+        self,
+        existing: dict,
+        current_session_id: UUID,
+        current_user_id: UUID | None,
+    ) -> None:
+        """Keep global idempotency lookups inside the current account boundary.
+
+        Mutation ids are retry identifiers, not authorization credentials. An
+        authenticated request may replay an event from a rotated interaction
+        session only when that original session is owned by the same account.
+        Anonymous rotation retains the historical global-idempotency behavior;
+        protected routes always supply ``current_user_id``.
+        """
+
+        if current_user_id is None:
+            return
+        existing_session_id = existing.get("session_id")
+        if existing_session_id is None:
+            raise InteractionUnauthorizedError("Interaction mutation ownership cannot be verified")
+        if str(existing_session_id).casefold() == str(current_session_id).casefold():
+            return
+        original_session = self.repository.get_session(existing_session_id)
+        if (
+            original_session is None
+            or original_session.get("user_id") is None
+            or str(original_session.get("user_id")).casefold() != str(current_user_id).casefold()
+        ):
+            raise InteractionUnauthorizedError("Interaction mutation does not belong to this account")
 
     def _prepare_watch(
         self,

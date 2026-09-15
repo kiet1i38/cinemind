@@ -44,7 +44,7 @@ class MigrationChecksumTests(unittest.TestCase):
         migrations_path = Path(__file__).parents[1] / "migrations"
         manifest = MigrationRunner(_FakeConnection(), migrations_path).expected_migrations()
 
-        self.assertEqual(manifest[-1].version, "013_repair_rating_watch_links")
+        self.assertEqual(manifest[-1].version, "014_mark_rating_watch_repairs")
         self.assertTrue(all(len(item.checksum_sha256) == 64 for item in manifest))
 
     def test_global_idempotency_repair_deduplicates_before_unique_indexes(self):
@@ -65,6 +65,16 @@ class MigrationChecksumTests(unittest.TestCase):
         self.assertIn("client_mutation_id", migration)
         self.assertIn("watch_session_id = repair.repaired_watch_session_id", migration)
         self.assertIn("client_mutation_id,", migration)
+
+    def test_rating_watch_repairs_are_excluded_from_mining_projection(self):
+        migration = (Path(__file__).parents[1] / "migrations" / "014_mark_rating_watch_repairs.sql").read_text(encoding="utf-8")
+
+        self.assertIn("is_repair BOOLEAN NOT NULL DEFAULT FALSE", migration)
+        self.assertIn("repair_source_watch_session_id UUID", migration)
+        self.assertIn("watch_sessions_repair_source_fk", migration)
+        self.assertIn("watch_sessions_for_mining", migration)
+        self.assertIn("WHERE is_repair = FALSE", migration)
+        self.assertIn("rating-watch-repair:", migration)
 
     def test_missing_migration_is_applied_and_recorded_with_checksum(self):
         with tempfile.TemporaryDirectory() as directory:

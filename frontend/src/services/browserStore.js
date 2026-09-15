@@ -10,16 +10,35 @@ function getStorage() {
   }
 }
 
+function getSessionStorage() {
+  try {
+    return typeof window !== "undefined" ? window.sessionStorage : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getBrowserStorage() {
   return getStorage();
 }
 
-export function createJsonStore(key, fallback) {
+export function getBrowserSessionStorage() {
+  return getSessionStorage();
+}
+
+export function createJsonStore(key, fallback, storageGetter = getStorage) {
   const getFallback = () => (typeof fallback === "function" ? fallback() : fallback);
+  const readStorage = () => {
+    try {
+      return typeof storageGetter === "function" ? storageGetter() : null;
+    } catch {
+      return null;
+    }
+  };
 
   return {
     read() {
-      const storage = getStorage();
+      const storage = readStorage();
       if (removedKeys.has(key)) {
         if (!storage) return getFallback();
         try {
@@ -70,7 +89,7 @@ export function createJsonStore(key, fallback) {
     write(value) {
       memoryValues.set(key, value);
       removedKeys.delete(key);
-      const storage = getStorage();
+      const storage = readStorage();
       if (!storage) return true;
       try {
         storage.setItem(key, JSON.stringify(value));
@@ -86,7 +105,7 @@ export function createJsonStore(key, fallback) {
       memoryValues.delete(key);
       memoryOnlyKeys.delete(key);
       removedKeys.add(key);
-      const storage = getStorage();
+      const storage = readStorage();
       if (!storage) return true;
       try {
         storage.removeItem(key);

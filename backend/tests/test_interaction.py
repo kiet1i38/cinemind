@@ -269,6 +269,19 @@ class InteractionServiceTests(unittest.TestCase):
             SimpleNamespace(max_watch_minutes=10080),
         )
 
+    def _add_account_session(self, user_id):
+        session_id = uuid4()
+        now = datetime.now(timezone.utc)
+        self.repository.sessions[session_id] = {
+            "session_id": session_id,
+            "started_at": now,
+            "last_seen_at": now,
+            "ended_at": None,
+            "user_id": user_id,
+            "session_token_hash": None,
+        }
+        return session_id
+
     def test_search_normalizes_whitespace_and_case(self):
         result = self.service.record_search_event(
             self.session_id,
@@ -581,6 +594,73 @@ class InteractionServiceTests(unittest.TestCase):
         self.assertEqual(replay["rating"]["rating_id"], first["rating"]["rating_id"])
         self.assertEqual(len(self.repository.watch_sessions), 1)
         self.assertEqual(len(self.repository.ratings), 1)
+
+    def test_authenticated_mutation_replay_cannot_cross_account_boundaries(self):
+        account_a = uuid4()
+        account_b = uuid4()
+        self.repository.sessions[self.session_id]["user_id"] = account_a
+        other_session = self._add_account_session(account_b)
+
+        cases = (
+            (
+                self.service.record_search_event,
+                (self.session_id, "Drama", 0, {}),
+                (other_session, "Drama", 0, {}),
+            ),
+            (
+                self.service.record_watch_session,
+                (self.session_id, "movie-1", 30),
+                (other_session, "movie-1", 30),
+            ),
+            (
+                self.service.record_rating,
+                (self.session_id, "movie-1", Decimal("8.5")),
+                (other_session, "movie-1", Decimal("8.5")),
+            ),
+            (
+                self.service.record_signal,
+                (self.session_id, "movie-1", Decimal("8.5"), 30),
+                (other_session, "movie-1", Decimal("8.5"), 30),
+            ),
+        )
+
+        for record, first_args, replay_args in cases:
+            with self.subTest(endpoint=record.__name__):
+                mutation_id = uuid4()
+                record(*first_args, user_id=account_a, client_mutation_id=mutation_id)
+                with self.assertRaises(InteractionUnauthorizedError):
+                    record(*replay_args, user_id=account_b, client_mutation_id=mutation_id)
+
+        self.assertEqual(len(self.repository.search_events), 1)
+        self.assertEqual(len(self.repository.watch_sessions), 2)
+        self.assertEqual(len(self.repository.ratings), 2)
+
+    def test_partial_signal_cannot_attach_a_foreign_watch_to_current_account(self):
+        account_a = uuid4()
+        account_b = uuid4()
+        self.repository.sessions[self.session_id]["user_id"] = account_a
+        other_session = self._add_account_session(account_b)
+        mutation_id = uuid4()
+        self.service.record_watch_session(
+            self.session_id,
+            "movie-1",
+            30,
+            user_id=account_a,
+            client_mutation_id=mutation_id,
+        )
+
+        with self.assertRaises(InteractionUnauthorizedError):
+            self.service.record_signal(
+                other_session,
+                "movie-1",
+                Decimal("8.5"),
+                30,
+                user_id=account_b,
+                client_mutation_id=mutation_id,
+            )
+
+        self.assertEqual(len(self.repository.watch_sessions), 1)
+        self.assertEqual(len(self.repository.ratings), 0)
 
     def test_rating_replay_after_session_rotation_reuses_linked_watch(self):
         mutation_id = uuid4()

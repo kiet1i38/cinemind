@@ -53,6 +53,8 @@ REQUIRED_COLUMNS = (
     ("interaction", "watch_sessions", "client_occurred_at"),
     ("interaction", "watch_sessions", "client_device_id"),
     ("interaction", "watch_sessions", "client_event_sequence"),
+    ("interaction", "watch_sessions", "is_repair"),
+    ("interaction", "watch_sessions", "repair_source_watch_session_id"),
     ("interaction", "ratings", "client_mutation_id"),
     ("interaction", "ratings", "client_occurred_at"),
     ("interaction", "ratings", "client_device_id"),

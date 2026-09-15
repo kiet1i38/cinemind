@@ -31,6 +31,7 @@ require.extensions[".js"] = (module, filename) => {
 const { appConfig } = require(resolve(sourceDir, "config/appConfig.js"));
 const {
   clearInteractionState,
+  getInteractionDeviceId,
   getInteractionOwner,
   hasPendingInteractions,
   interactionSessionStore,
@@ -38,9 +39,11 @@ const {
   nextInteractionEventSequence,
   queuePendingSignal,
   queuePendingSearch,
+  readOwnerScopedSignalState,
   readPendingInteractions,
   setInteractionOwner
 } = require(resolve(sourceDir, "services/interactionStore.js"));
+const { signalStore } = require(resolve(sourceDir, "services/signalStore.js"));
 const { syncPendingInteractions } = require(resolve(sourceDir, "services/interactionService.js"));
 
 function response(status, payload = {}, headers = {}) {
@@ -52,6 +55,16 @@ function response(status, payload = {}, headers = {}) {
     status,
     headers: { get(name) { return normalizedHeaders[String(name).toLowerCase()] ?? null; } },
     async text() { return JSON.stringify(payload); }
+  };
+}
+
+function mapStorage(values) {
+  return {
+    get length() { return values.size; },
+    key(index) { return [...values.keys()][index] ?? null; },
+    getItem(key) { return values.get(key) ?? null; },
+    setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); }
   };
 }
 
@@ -217,6 +230,60 @@ test("event sequence allocations remain distinct in one millisecond", { concurre
   }
 });
 
+test("device and sequence state are isolated per browser tab", { concurrency: false }, () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const localValues = new Map();
+  const firstTabValues = new Map();
+  const secondTabValues = new Map();
+  const deviceKey = appConfig.interaction.deviceStorageKey;
+  const sequenceKey = appConfig.interaction.sequenceStorageKey;
+  globalThis.window = {
+    localStorage: mapStorage(localValues),
+    sessionStorage: mapStorage(firstTabValues),
+    location: { pathname: "/" }
+  };
+  try {
+    const firstDevice = getInteractionDeviceId();
+    const firstSequence = nextInteractionEventSequence();
+    const secondSequence = nextInteractionEventSequence();
+
+    assert.match(firstDevice, /^[0-9a-f-]{36}$/iu);
+    assert.equal(secondSequence, firstSequence + 1);
+    assert.equal(localValues.has(deviceKey), false);
+    assert.equal(localValues.has(sequenceKey), false);
+    assert.equal(JSON.parse(firstTabValues.get(sequenceKey)), secondSequence);
+
+    globalThis.window.sessionStorage = mapStorage(secondTabValues);
+    const secondDevice = getInteractionDeviceId();
+    const secondTabSequence = nextInteractionEventSequence();
+    assert.notEqual(secondDevice, firstDevice);
+    assert.equal(secondTabSequence, 1);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("signalStore overlays pending per-entry signals on its aggregate snapshot", { concurrency: false }, () => {
+  setInteractionOwner("sync-test-signal-store");
+  clearInteractionState({ resetOwner: false });
+  signalStore.write({
+    "aggregate-title": { rating: 3, watchMinutes: 4 }
+  });
+  queuePendingSignal(
+    "pending-title",
+    { rating: 9, watchMinutes: 22 },
+    "00000000-0000-4000-8000-000000000321"
+  );
+
+  const initialState = signalStore.read();
+  assert.equal(initialState["aggregate-title"].rating, 3);
+  assert.equal(initialState["pending-title"].rating, 9);
+  assert.equal(readOwnerScopedSignalState()["pending-title"].watchMinutes, 22);
+});
+
 test("owner changes stop a captured replay before the next event", { concurrency: false }, async () => {
   appConfig.interaction.pendingSyncBatchSize = 10;
   appConfig.interaction.pendingSyncPacingMs = 0;
@@ -269,6 +336,49 @@ test("owner switch stays memory-consistent when localStorage rejects the write",
     assert.equal(transition.persisted, false);
     assert.equal(getInteractionOwner(), "storage-failure-user");
     assert.equal(JSON.parse(values.get(ownerKey)), "anonymous");
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("anonymous outbox survives account promotion when its durable copy fails", { concurrency: false }, () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const values = new Map();
+  const storage = mapStorage(values);
+  const outboxEntryPrefix = `${appConfig.interaction.outboxStorageKey}:entry:`;
+  const originalSetItem = storage.setItem;
+  storage.setItem = (key, value) => {
+    if (key.startsWith(outboxEntryPrefix)) throw new Error("quota exceeded");
+    originalSetItem(key, value);
+  };
+  globalThis.window = {
+    localStorage: storage,
+    location: { pathname: "/" }
+  };
+  const anonymousSessionId = "00000000-0000-4000-8000-000000000401";
+  const mutationId = "00000000-0000-4000-8000-000000000402";
+  try {
+    interactionSessionStore.write(anonymousSessionId, "anonymous-session-token-0123456789");
+    queuePendingSearch(
+      { query: "quota-safe", resultCount: 1, filters: {} },
+      mutationId
+    );
+    assert.equal(Object.keys(readPendingInteractions("anonymous").searches).length, 1);
+
+    const transition = setInteractionOwner(
+      "quota-copy-account",
+      { acceptedAnonymousSessionId: anonymousSessionId }
+    );
+
+    assert.equal(transition.changed, true);
+    assert.equal(getInteractionOwner(), "quota-copy-account");
+    assert.equal(
+      readPendingInteractions("anonymous").searches[mutationId].query,
+      "quota-safe"
+    );
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;

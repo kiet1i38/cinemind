@@ -2,7 +2,6 @@
 
 from collections.abc import Callable
 import hashlib
-from uuid import UUID
 
 from starlette.responses import JSONResponse
 
@@ -300,24 +299,18 @@ def _interaction_principal(
     *,
     auth_cookie_name: str,
 ) -> str:
-    """Derive a stable limiter principal using the configured auth cookie."""
+    """Derive a stable limiter principal from server-controlled identity.
 
-    session = _validated_session_header(headers.get("x-cinemind-session", ""))
+    ``X-Cinemind-Session`` is a client-supplied interaction identifier. It is
+    useful to the route layer, but it is not authenticated and therefore must
+    never select a rate-limit bucket. Anonymous callers share the client
+    address bucket; authenticated callers are grouped by the opaque cookie
+    hash, which the browser cannot rotate from JavaScript.
+    """
+
     auth_cookie = _cookie_value(headers.get("cookie", ""), auth_cookie_name)
-    return session or (
+    return (
         hashlib.sha256(auth_cookie.encode("utf-8")).hexdigest()
         if auth_cookie
         else client
     )
-
-
-def _validated_session_header(value: str) -> str:
-    """Use only canonical UUID session headers as limiter principals."""
-
-    normalized = str(value or "").strip()
-    if len(normalized) > 64:
-        return ""
-    try:
-        return str(UUID(normalized))
-    except (ValueError, AttributeError, TypeError):
-        return ""
