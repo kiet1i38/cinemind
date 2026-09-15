@@ -5,6 +5,7 @@ import { fetchWithTimeout } from "./fetchWithTimeout";
 import {
   acknowledgePendingSearch,
   acknowledgePendingSignal,
+  cacheSignalReceipt,
   createMutationId,
   getInteractionOwner,
   getInteractionRevision,
@@ -257,6 +258,12 @@ export function submitSignal({ record, rating, watchMinutes, ...metadata }, cont
       }, interactionContext), interactionContext);
       assertInteractionContext(interactionContext);
       acknowledgePendingSignal(record.id, mutationId, interactionContext.owner);
+      cacheSignalReceipt(
+        pendingEntry?.showId || record.id,
+        pendingEntry || { rating, watchMinutes, savedAt: clientOccurredAt },
+        result,
+        interactionContext.owner,
+      );
       return result;
     } catch (error) {
       error.pendingPersisted = pendingPersisted;

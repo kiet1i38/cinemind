@@ -28,7 +28,7 @@ import {
 import { getDiscoverableTitles, getRecentTitles, getRelatedTitles, getTitlesByType } from "./services/recommendationService";
 import { catalogPageSizeStore } from "./services/catalogPreferencesStore";
 import { AUTH_EVENT_STORAGE_KEY, getAuthPageUrl, getCurrentUser } from "./services/authService";
-import { clearInteractionState, consumePendingInteractionLossNotice, getInteractionOwner, hasPendingInteractions, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
+import { clearInteractionState, consumePendingInteractionLossNotice, deleteOwnerScopedSignal, getInteractionOwner, hasPendingInteractions, mergeInteractionState, replaceOwnerScopedSignalState, setInteractionOwner, signalWithServerReceipt } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./authGate.css";
 
@@ -270,6 +270,7 @@ export default function App() {
         const merged = mergeInteractionState(state, {
           ratings: signalStore.read()
         });
+        replaceOwnerScopedSignalState(merged.ratings);
         setRatings(merged.ratings);
     };
     const notifyPendingLoss = () => {
@@ -327,7 +328,11 @@ export default function App() {
                 && requestGeneration === interactionHydrationGenerationRef.current
                 && requestRevision === interactionRevisionRef.current
                 && requestOwner === getInteractionOwner()
-              ) setRatings(mergeInteractionState(state, { ratings: signalStore.read() }).ratings);
+              ) {
+                const merged = mergeInteractionState(state, { ratings: signalStore.read() });
+                replaceOwnerScopedSignalState(merged.ratings);
+                setRatings(merged.ratings);
+              }
             });
           }
           const hasDefinitiveFailure = Array.isArray(results)
@@ -336,12 +341,16 @@ export default function App() {
               && result.reason?.code !== "CATALOG_RECORD_UNAVAILABLE");
           if (!hasDefinitiveFailure) return null;
           return getInteractionState(interactionMetadata()).then((state) => {
-            if (
-              authReady
-              && requestGeneration === interactionHydrationGenerationRef.current
-              && requestRevision === interactionRevisionRef.current
-              && requestOwner === getInteractionOwner()
-            ) setRatings(mergeInteractionState(state, { ratings: signalStore.read() }).ratings);
+              if (
+                authReady
+                && requestGeneration === interactionHydrationGenerationRef.current
+                && requestRevision === interactionRevisionRef.current
+                && requestOwner === getInteractionOwner()
+            ) {
+              const merged = mergeInteractionState(state, { ratings: signalStore.read() });
+              replaceOwnerScopedSignalState(merged.ratings);
+              setRatings(merged.ratings);
+            }
           });
         })
         .catch(() => undefined);
@@ -544,8 +553,11 @@ export default function App() {
     const isCurrentRequest = () => requestRevision === signalRequestRevisionsRef.current.get(showId)
       && requestOwner === getInteractionOwner();
     try {
-      await submitSignal({ record: item, ...signal, ...interactionMetadata() }, interactionContext);
+      const result = await submitSignal({ record: item, ...signal, ...interactionMetadata() }, interactionContext);
       if (!isCurrentRequest()) return;
+      const committedSignal = signalWithServerReceipt(signal, result);
+      setRatings((current) => ({ ...current, [item.id]: committedSignal }));
+      signalStore.write({ [item.id]: committedSignal });
       // The submit may have overlapped a state request that read the database
       // before the POST committed. Invalidate every older hydration and fetch
       // a post-commit projection before allowing it to replace the optimistic
@@ -556,6 +568,7 @@ export default function App() {
         const refreshedState = await getInteractionState(interactionMetadata());
         if (isCurrentRequest()) {
           const refreshedRatings = mergeInteractionState(refreshedState, { ratings: signalStore.read() }).ratings;
+          replaceOwnerScopedSignalState(refreshedRatings);
           setRatings((current) => refreshedRatings[item.id]
             ? refreshedRatings
             : { ...refreshedRatings, [item.id]: current[item.id] || { ...signal, savedAt: new Date().toISOString() } });
@@ -584,6 +597,8 @@ export default function App() {
         else delete next[item.id];
         return next;
       });
+      if (previousSignal) signalStore.restore(showId, previousSignal);
+      else deleteOwnerScopedSignal(showId);
       if (error.authRequired || error.status === 401) {
         if (String(modalItemRef.current?.id) === showId) {
           setModalItem(null);

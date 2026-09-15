@@ -23,11 +23,24 @@ const sequenceStoreBase = createJsonStore(
   0,
   getBrowserSessionStorage,
 );
+const deviceForkParentStore = createJsonStore(
+  `${interactionConfig.deviceStorageKey || "cinemind-interaction-device-id"}:fork-parent`,
+  null,
+  getBrowserSessionStorage,
+);
 const signalStoreBase = createJsonStore(appConfig.signals.storageKey, {});
 const signalEntryPrefix = `${appConfig.signals.storageKey}:entry:`;
 const ownerTransferStoreBase = createJsonStore(
   `${interactionConfig.ownerStorageKey}:pending-transfer`,
   null,
+);
+// Keep a second recovery copy in the current browsing context. This is a
+// reload-surviving fallback when localStorage is full, while the auth page is
+// still blocking navigation until the transfer can be completed.
+const ownerTransferSessionStoreBase = createJsonStore(
+  `${interactionConfig.ownerStorageKey}:pending-transfer`,
+  null,
+  getBrowserSessionStorage,
 );
 const outboxStoreBase = createJsonStore(interactionConfig.outboxStorageKey, () => ({ signals: {}, searches: {} }));
 const legacyFavoriteStore = createJsonStore("cinemind-favorites", null);
@@ -46,6 +59,13 @@ const memorySignalEntries = new Set();
 const reportedPendingLosses = new Set();
 let pendingInteractionLossCount = 0;
 let deviceStorageContext = null;
+const UNREADABLE_OPENER_STREAM = "__unreadable_opener_stream__";
+const DEVICE_STREAM_LEASE_MS = 15000;
+const DEVICE_STREAM_HEARTBEAT_MS = 5000;
+const deviceStreamClaimId = createMutationId();
+let activeDeviceStreamClaimKey = null;
+let deviceStreamHeartbeat = null;
+let deviceStreamLifecycleBound = false;
 
 // Remove obsolete preference data as soon as the new bundle loads.
 legacyFavoriteStore.remove();
@@ -91,22 +111,168 @@ function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(String(value || "").trim());
 }
 
+function readOpenerDeviceId() {
+  try {
+    if (typeof window === "undefined" || !window.opener || window.opener === window) return null;
+    const openerStorage = window.opener.sessionStorage;
+    if (!openerStorage || typeof openerStorage.getItem !== "function") return null;
+    const raw = openerStorage.getItem(interactionConfig.deviceStorageKey || "cinemind-interaction-device-id");
+    const value = raw === null ? null : JSON.parse(raw);
+    return isUuid(value) ? String(value).toLowerCase() : null;
+  } catch {
+    // Cross-origin or closed opener access is intentionally fail-closed. The
+    // durable marker below still prevents a reload from rotating repeatedly.
+    return null;
+  }
+}
+
+function deviceStreamClaimKey(deviceId) {
+  return `${interactionConfig.deviceStorageKey || "cinemind-interaction-device-id"}:active:${encodeURIComponent(String(deviceId))}`;
+}
+
+function readStorageJson(storage, key) {
+  try {
+    const raw = storage.getItem(key);
+    return raw === null ? null : JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function isReloadNavigation() {
+  try {
+    const entries = typeof performance !== "undefined" && typeof performance.getEntriesByType === "function"
+      ? performance.getEntriesByType("navigation")
+      : [];
+    return entries[0]?.type === "reload";
+  } catch {
+    return false;
+  }
+}
+
+function releaseDeviceStreamClaim(key = activeDeviceStreamClaimKey) {
+  if (!key) return;
+  const storage = usableBrowserStorage();
+  if (storage) {
+    try {
+      const current = readStorageJson(storage, key);
+      if (current?.claimId === deviceStreamClaimId) storage.removeItem(key);
+    } catch {
+      // A failed release expires naturally after the lease timeout.
+    }
+  }
+  if (key === activeDeviceStreamClaimKey) activeDeviceStreamClaimKey = null;
+}
+
+function bindDeviceStreamLifecycle() {
+  if (deviceStreamLifecycleBound
+    || typeof window === "undefined"
+    || typeof window.addEventListener !== "function") return;
+  deviceStreamLifecycleBound = true;
+  window.addEventListener("pagehide", (event) => {
+    // A bfcache page is still a live browsing context and must retain its
+    // lease until it is restored or genuinely discarded.
+    if (!event?.persisted) releaseDeviceStreamClaim();
+  });
+  window.addEventListener("pageshow", (event) => {
+    if (event?.persisted && activeDeviceStreamClaimKey) claimDeviceStream(getInteractionDeviceId());
+  });
+}
+
+function startDeviceStreamHeartbeat() {
+  if (deviceStreamHeartbeat
+    || typeof document === "undefined"
+    || typeof window === "undefined"
+    || typeof window.setInterval !== "function") return;
+  deviceStreamHeartbeat = window.setInterval(() => {
+    const key = activeDeviceStreamClaimKey;
+    const storage = usableBrowserStorage();
+    if (!key || !storage) return;
+    try {
+      const current = readStorageJson(storage, key);
+      if (current?.claimId !== deviceStreamClaimId) return;
+      storage.setItem(key, JSON.stringify({ claimId: deviceStreamClaimId, touchedAt: Date.now() }));
+    } catch {
+      // The next allocation can retry the lease; sessionStorage remains the
+      // source of the stream id and sequence.
+    }
+  }, DEVICE_STREAM_HEARTBEAT_MS);
+}
+
+function claimDeviceStream(deviceId) {
+  if (!isUuid(deviceId)) return true;
+  const storage = usableBrowserStorage();
+  if (!storage) return true;
+  const key = deviceStreamClaimKey(deviceId);
+  const existing = readStorageJson(storage, key);
+  const existingClaimId = String(existing?.claimId || "");
+  const touchedAt = Number(existing?.touchedAt);
+  const leaseLive = existingClaimId
+    && Number.isFinite(touchedAt)
+    && Date.now() - touchedAt < DEVICE_STREAM_LEASE_MS;
+  if (existingClaimId && existingClaimId !== deviceStreamClaimId && leaseLive && !isReloadNavigation()) {
+    return false;
+  }
+
+  if (activeDeviceStreamClaimKey && activeDeviceStreamClaimKey !== key) {
+    releaseDeviceStreamClaim(activeDeviceStreamClaimKey);
+  }
+  try {
+    storage.setItem(key, JSON.stringify({ claimId: deviceStreamClaimId, touchedAt: Date.now() }));
+    const claimed = readStorageJson(storage, key);
+    if (claimed?.claimId !== deviceStreamClaimId) return false;
+  } catch {
+    return true;
+  }
+  activeDeviceStreamClaimKey = key;
+  bindDeviceStreamLifecycle();
+  startDeviceStreamHeartbeat();
+  return true;
+}
+
 function ensureUniqueDeviceStream() {
   const storage = getBrowserSessionStorage();
   if (!storage || storage === deviceStorageContext) return;
   deviceStorageContext = storage;
+  let currentDevice = deviceStoreBase.read();
+  let forked = false;
+  if (isUuid(currentDevice) && !claimDeviceStream(currentDevice)) {
+    deviceStoreBase.write(createMutationId());
+    sequenceStoreBase.write(0);
+    currentDevice = deviceStoreBase.read();
+    forked = true;
+  }
   let opener = null;
   try {
     opener = typeof window !== "undefined" ? window.opener : null;
   } catch {
     opener = null;
   }
+  if (forked) {
+    if (isUuid(currentDevice)) claimDeviceStream(currentDevice);
+    return;
+  }
   if (!opener) return;
+  const openerDevice = readOpenerDeviceId();
+  const previousForkParent = deviceForkParentStore.read();
+  const alreadyForkedFromOpener = isUuid(currentDevice)
+    && (openerDevice
+      ? String(previousForkParent || "").toLowerCase() === openerDevice
+      : previousForkParent === UNREADABLE_OPENER_STREAM);
+  if (forked || alreadyForkedFromOpener) {
+    if (isUuid(currentDevice)) claimDeviceStream(currentDevice);
+    return;
+  }
+
   // A new browsing context opened with an opener starts with a cloned
   // sessionStorage. Fork the stream before any new mutation is allocated so
-  // the clone cannot reuse the opener's device/sequence pair.
+  // the clone cannot reuse the opener's device/sequence pair. Persist the
+  // opener stream that caused the fork: it survives reload, while a duplicate
+  // of this tab sees a different opener stream and forks exactly once again.
   deviceStoreBase.write(createMutationId());
   sequenceStoreBase.write(0);
+  deviceForkParentStore.write(openerDevice || UNREADABLE_OPENER_STREAM);
+  claimDeviceStream(deviceStoreBase.read());
 }
 
 // Run the fork check during document boot as well as before allocation. This
@@ -143,25 +309,44 @@ function normalizeOwnerTransfer(value) {
 }
 
 function readPendingOwnerTransfer() {
-  const value = ownerTransferStoreBase.read();
-  const normalized = normalizeOwnerTransfer(value);
-  if (!normalized && value !== null && value !== undefined) ownerTransferStoreBase.remove();
-  return normalized;
+  const persistentValue = ownerTransferStoreBase.read();
+  const sessionValue = ownerTransferSessionStoreBase.read();
+  const persistent = normalizeOwnerTransfer(persistentValue);
+  const session = normalizeOwnerTransfer(sessionValue);
+  if (!persistent && persistentValue !== null && persistentValue !== undefined) ownerTransferStoreBase.remove();
+  if (!session && sessionValue !== null && sessionValue !== undefined) ownerTransferSessionStoreBase.remove();
+  if (!persistent) return session;
+  if (!session) return persistent;
+  const persistentCreatedAt = Date.parse(persistent.createdAt) || 0;
+  const sessionCreatedAt = Date.parse(session.createdAt) || 0;
+  return sessionCreatedAt > persistentCreatedAt ? session : persistent;
 }
 
 function writePendingOwnerTransfer(sourceOwner, targetOwner, acceptedAnonymousSessionId) {
-  if (!usableBrowserStorage()) return false;
-  return ownerTransferStoreBase.write({
+  const persistentStorage = usableBrowserStorage();
+  const sessionStorage = usableBrowserSessionStorage();
+  const previous = readPendingOwnerTransfer();
+  const previousCreatedAt = Date.parse(previous?.createdAt || "") || 0;
+  const createdAt = new Date(Math.max(Date.now(), previousCreatedAt + 1)).toISOString();
+  const value = {
     version: 1,
     sourceOwner,
     targetOwner,
     acceptedAnonymousSessionId: String(acceptedAnonymousSessionId).toLowerCase(),
-    createdAt: new Date().toISOString()
-  });
+    createdAt
+  };
+  // No browser storage means this is only a memory warning, never a durable
+  // journal. A sessionStorage copy is sufficient to survive a same-tab reload
+  // while remaining unavailable to unrelated tabs.
+  const persistent = ownerTransferStoreBase.write(value);
+  const session = sessionStorage ? ownerTransferSessionStoreBase.write(value) : false;
+  return Boolean((persistentStorage && persistent) || (sessionStorage && session));
 }
 
 function clearPendingOwnerTransfer() {
-  return ownerTransferStoreBase.remove();
+  const persistent = ownerTransferStoreBase.remove();
+  const session = ownerTransferSessionStoreBase.remove();
+  return Boolean(persistent && session);
 }
 
 function clearLegacySessionValues(owner) {
@@ -172,9 +357,17 @@ function clearLegacySessionValues(owner) {
 export function getInteractionDeviceId() {
   ensureUniqueDeviceStream();
   const current = deviceStoreBase.read();
-  if (isUuid(current)) return String(current).toLowerCase();
+  if (isUuid(current)) {
+    if (claimDeviceStream(current)) return String(current).toLowerCase();
+    const forkedDevice = createMutationId();
+    deviceStoreBase.write(forkedDevice);
+    sequenceStoreBase.write(0);
+    claimDeviceStream(forkedDevice);
+    return forkedDevice;
+  }
   const deviceId = createMutationId();
   deviceStoreBase.write(deviceId);
+  claimDeviceStream(deviceId);
   return deviceId;
 }
 
@@ -309,6 +502,17 @@ function usableBrowserStorage() {
   }
 }
 
+function usableBrowserSessionStorage() {
+  const storage = getBrowserSessionStorage();
+  if (!storage) return null;
+  try {
+    void storage.length;
+    return storage;
+  } catch {
+    return null;
+  }
+}
+
 function encodedOwner(owner) {
   return encodeURIComponent(String(owner || "anonymous"));
 }
@@ -356,6 +560,10 @@ function signalValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 
+function isDeletedSignal(value) {
+  return Boolean(signalValue(value)?.deleted === true);
+}
+
 function readSignalEntry(owner, showId) {
   return signalValue(createJsonStore(signalEntryKey(owner, showId), null).read());
 }
@@ -363,12 +571,25 @@ function readSignalEntry(owner, showId) {
 function readSignalSnapshotForOwner(owner) {
   const normalizedOwner = String(owner || "anonymous");
   const legacy = signalValue(ownerScopedValue(signalStoreBase, normalizedOwner, {}));
-  const snapshot = legacy ? { ...legacy } : {};
+  const snapshot = {};
+  for (const [showId, value] of Object.entries(legacy || {})) {
+    const normalizedShowId = String(showId || "").trim();
+    const normalizedValue = signalValue(value);
+    if (normalizedShowId && normalizedValue && !isDeletedSignal(normalizedValue)) {
+      snapshot[normalizedShowId] = normalizedValue;
+    }
+  }
   for (const key of signalEntryKeys(normalizedOwner)) {
     const showId = decodeSignalEntryShowId(normalizedOwner, key);
     if (!showId) continue;
     const value = signalValue(createJsonStore(key, null).read());
     if (!value) continue;
+    if (isDeletedSignal(value)) {
+      // A per-title tombstone must also hide an older legacy aggregate value.
+      // The tombstone remains durable so a stale tab cannot resurrect it.
+      delete snapshot[showId];
+      continue;
+    }
     const current = signalValue(snapshot[showId]);
     if (!current || compareSignalRecency(value, current) >= 0) snapshot[showId] = value;
   }
@@ -381,7 +602,7 @@ function mergeSignalSnapshots(base, incoming) {
   for (const [showId, value] of Object.entries(source)) {
     const normalizedShowId = String(showId || "").trim();
     const normalizedValue = signalValue(value);
-    if (!normalizedShowId || !normalizedValue) continue;
+    if (!normalizedShowId || !normalizedValue || isDeletedSignal(normalizedValue)) continue;
     const current = signalValue(merged[normalizedShowId]);
     if (!current || compareSignalRecency(normalizedValue, current) >= 0) {
       merged[normalizedShowId] = normalizedValue;
@@ -390,7 +611,40 @@ function mergeSignalSnapshots(base, incoming) {
   return merged;
 }
 
-function writeSignalSnapshotForOwner(owner, value) {
+function compareSignalStorageRecency(left, right) {
+  const leftValue = signalValue(left) || {};
+  const rightValue = signalValue(right) || {};
+  const leftTimestamp = signalTimestamp(leftValue, "serverSavedAt") ?? signalTimestamp(leftValue, "savedAt");
+  const rightTimestamp = signalTimestamp(rightValue, "serverSavedAt") ?? signalTimestamp(rightValue, "savedAt");
+  if (leftTimestamp === null && rightTimestamp !== null) return -1;
+  if (leftTimestamp !== null && rightTimestamp === null) return 1;
+  return (leftTimestamp ?? 0) - (rightTimestamp ?? 0);
+}
+
+function persistSignalEntry(owner, showId, value, storage) {
+  const key = signalEntryKey(owner, showId);
+  const wrote = createJsonStore(key, null).write(value);
+  if (wrote && storage) memorySignalEntries.delete(key);
+  else memorySignalEntries.add(key);
+  return Boolean(wrote && storage);
+}
+
+function deleteSignalSnapshotForOwner(owner, showId, { authoritative = false, deletedAt = null } = {}) {
+  const normalizedOwner = String(owner || "anonymous");
+  const normalizedShowId = String(showId || "").trim();
+  if (!normalizedShowId) return false;
+  const savedAt = deletedAt || new Date().toISOString();
+  const tombstone = {
+    version: 1,
+    deleted: true,
+    savedAt,
+    serverSavedAt: authoritative ? savedAt : null,
+    authoritative: Boolean(authoritative)
+  };
+  return persistSignalEntry(normalizedOwner, normalizedShowId, tombstone, usableBrowserStorage());
+}
+
+function writeSignalSnapshotForOwner(owner, value, { force = false } = {}) {
   const normalizedOwner = String(owner || "anonymous");
   const source = signalValue(value) ? value : {};
   const storage = usableBrowserStorage();
@@ -401,12 +655,51 @@ function writeSignalSnapshotForOwner(owner, value) {
     if (!normalizedShowId || !normalizedSignal) continue;
     const key = signalEntryKey(normalizedOwner, normalizedShowId);
     const current = readSignalEntry(normalizedOwner, normalizedShowId);
-    if (current && compareSignalRecency(normalizedSignal, current) < 0) continue;
-    const wrote = createJsonStore(key, null).write(normalizedSignal);
-    if (wrote && storage) memorySignalEntries.delete(key);
-    else memorySignalEntries.add(key);
-    persisted = Boolean(wrote && storage) && persisted;
+    if (!force && current && isDeletedSignal(current)) {
+      const isAuthoritative = normalizedSignal.authoritative === true;
+      if (!isAuthoritative && compareSignalStorageRecency(normalizedSignal, current) <= 0) continue;
+    } else if (!force && current && compareSignalRecency(normalizedSignal, current) < 0) {
+      continue;
+    }
+    persisted = persistSignalEntry(normalizedOwner, normalizedShowId, normalizedSignal, storage) && persisted;
   }
+  return persisted;
+}
+
+function replaceSignalSnapshotForOwner(owner, value) {
+  const normalizedOwner = String(owner || "anonymous");
+  const source = signalValue(value) ? value : {};
+  const incoming = {};
+  for (const [showId, signal] of Object.entries(source)) {
+    const normalizedShowId = String(showId || "").trim();
+    const normalizedSignal = signalValue(signal);
+    if (!normalizedShowId || !normalizedSignal || isDeletedSignal(normalizedSignal)) continue;
+    incoming[normalizedShowId] = { ...normalizedSignal, authoritative: true };
+  }
+
+  const legacy = signalValue(ownerScopedValue(signalStoreBase, normalizedOwner, {})) || {};
+  const knownShowIds = new Set(
+    Object.keys(legacy).map((showId) => String(showId || "").trim()).filter(Boolean),
+  );
+  for (const key of signalEntryKeys(normalizedOwner)) {
+    const showId = decodeSignalEntryShowId(normalizedOwner, key);
+    if (showId) knownShowIds.add(showId);
+  }
+  const pendingShowIds = new Set(
+    Object.values(readOutboxForOwner(normalizedOwner).signals || {})
+      .map((entry) => String(entry?.showId || "").trim())
+      .filter(Boolean),
+  );
+  let persisted = Boolean(usableBrowserStorage());
+  for (const showId of knownShowIds) {
+    if (Object.prototype.hasOwnProperty.call(incoming, showId) || pendingShowIds.has(showId)) continue;
+    persisted = deleteSignalSnapshotForOwner(normalizedOwner, showId, { authoritative: true }) && persisted;
+  }
+  persisted = writeSignalSnapshotForOwner(normalizedOwner, incoming) && persisted;
+  // The aggregate key is legacy-only now. Remove it after materializing its
+  // authoritative per-title replacement; per-title tombstones cover a failed
+  // cleanup and prevent old deleted titles from being read again.
+  if (persisted) removeScopedValueForOwner(signalStoreBase, normalizedOwner);
   return persisted;
 }
 
@@ -818,7 +1111,48 @@ function clearOwnerData(owner) {
 export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null } = {}) {
   const nextOwner = userId ? String(userId) : "anonymous";
   const previousOwner = getInteractionOwner();
-  const pendingTransfer = readPendingOwnerTransfer();
+  const anonymous = ownerSessionData("anonymous");
+  const anonymousSessionId = anonymous.sessionId;
+  let pendingTransfer = readPendingOwnerTransfer();
+  const normalizedAcceptedSessionId = isUuid(acceptedAnonymousSessionId)
+    ? String(acceptedAnonymousSessionId).toLowerCase()
+    : null;
+  const acceptedSessionMatchesSource = Boolean(
+    normalizedAcceptedSessionId
+    && isUuid(anonymousSessionId)
+    && normalizedAcceptedSessionId === String(anonymousSessionId).toLowerCase()
+  );
+
+  // A later login can confirm a newly rotated anonymous session. Replace an
+  // older journal for the same account before retrying transfer; otherwise a
+  // failed S1 journal would keep requiring S1 after the browser is already on
+  // S2 and recovery could never make progress.
+  const journalNeedsSupersede = Boolean(
+    pendingTransfer
+    && pendingTransfer.sourceOwner === "anonymous"
+    && pendingTransfer.targetOwner === nextOwner
+    && acceptedSessionMatchesSource
+    && pendingTransfer.acceptedAnonymousSessionId !== normalizedAcceptedSessionId
+  );
+  if (journalNeedsSupersede) {
+    const superseded = writePendingOwnerTransfer(
+      "anonymous",
+      nextOwner,
+      normalizedAcceptedSessionId,
+    );
+    if (!superseded) {
+      return {
+        previousOwner,
+        nextOwner,
+        changed: false,
+        persisted: false,
+        pendingOwnerTransfer: true,
+        revision: interactionRevision
+      };
+    }
+    pendingTransfer = readPendingOwnerTransfer();
+  }
+
   const transferForNextOwner = Boolean(
     pendingTransfer
     && pendingTransfer.sourceOwner === "anonymous"
@@ -847,13 +1181,9 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
     };
   }
 
-  const anonymous = ownerSessionData("anonymous");
-  const anonymousSessionId = anonymous.sessionId;
   const requestedCanMerge = previousOwner === "anonymous"
     && nextOwner !== "anonymous"
-    && isUuid(acceptedAnonymousSessionId)
-    && isUuid(anonymousSessionId)
-    && String(acceptedAnonymousSessionId).toLowerCase() === String(anonymousSessionId).toLowerCase();
+    && acceptedSessionMatchesSource;
   const conflictingTransfer = Boolean(
     pendingTransfer
     && pendingTransfer.sourceOwner === "anonymous"
@@ -951,6 +1281,59 @@ export function readOwnerScopedSignalState(ownerId = getInteractionOwner()) {
 
 export function writeOwnerScopedSignalState(value) {
   return writeSignalSnapshotForOwner(getInteractionOwner(), value && typeof value === "object" ? value : {});
+}
+
+export function replaceOwnerScopedSignalState(value) {
+  return replaceSignalSnapshotForOwner(getInteractionOwner(), value && typeof value === "object" ? value : {});
+}
+
+export function deleteOwnerScopedSignal(showId, options = {}) {
+  return deleteSignalSnapshotForOwner(getInteractionOwner(), showId, options);
+}
+
+export function restoreOwnerScopedSignal(showId, value) {
+  const normalizedShowId = String(showId || "").trim();
+  const normalizedSignal = signalValue(value);
+  if (!normalizedShowId || !normalizedSignal || isDeletedSignal(normalizedSignal)) return false;
+  return writeSignalSnapshotForOwner(
+    getInteractionOwner(),
+    { [normalizedShowId]: normalizedSignal },
+    { force: true },
+  );
+}
+
+export function signalWithServerReceipt(signal, result) {
+  const base = signalValue(signal) ? { ...signal } : {};
+  const ratingRow = signalValue(result?.rating) || {};
+  const ratingValue = Number(ratingRow.rating ?? ratingRow.rating_value ?? base.rating);
+  if (Number.isFinite(ratingValue)) base.rating = ratingValue;
+  const watchMinutes = Number(base.watchMinutes);
+  if (Number.isInteger(watchMinutes) && watchMinutes >= 0) base.watchMinutes = watchMinutes;
+  const serverSavedAt = ratingRow.rated_at || result?.rated_at || null;
+  if (serverSavedAt) {
+    base.savedAt = serverSavedAt;
+    base.serverSavedAt = serverSavedAt;
+  } else if (!base.savedAt) {
+    const fallbackSavedAt = ratingRow.client_occurred_at
+      || result?.client_occurred_at
+      || base.firstQueuedAt
+      || base.queuedAt
+      || null;
+    if (fallbackSavedAt) base.savedAt = fallbackSavedAt;
+  }
+  if (isUuid(ratingRow.client_device_id)) base.clientDeviceId = String(ratingRow.client_device_id).toLowerCase();
+  if (Number.isSafeInteger(Number(ratingRow.client_event_sequence)) && Number(ratingRow.client_event_sequence) > 0) {
+    base.clientEventSequence = Number(ratingRow.client_event_sequence);
+  }
+  return base;
+}
+
+export function cacheSignalReceipt(showId, signal, result, ownerId = getInteractionOwner()) {
+  const normalizedShowId = String(showId || "").trim();
+  if (!normalizedShowId) return null;
+  const receipt = signalWithServerReceipt(signal, result);
+  writeSignalSnapshotForOwner(String(ownerId || "anonymous"), { [normalizedShowId]: receipt });
+  return receipt;
 }
 
 export function removeOwnerScopedSignalState() {

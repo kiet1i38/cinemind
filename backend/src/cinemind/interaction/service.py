@@ -407,6 +407,19 @@ class InteractionService:
                     # It still belongs to the original account and must not be
                     # used as an oracle or completed by another account.
                     self._require_existing_mutation_owner(existing_rating, session_id, user_id)
+                    if existing_rating.get("watch_session_id") is None:
+                        return self._repair_rating_only_signal(
+                            existing_rating,
+                            normalized_show_id,
+                            rating_value,
+                            watch_minutes,
+                            session_id,
+                            user_id,
+                            client_event_time,
+                            client_mutation_id,
+                            client_device_id,
+                            client_event_sequence,
+                        )
             title, metrics = self._prepare_watch(
                 session_id, normalized_show_id, watch_minutes, user_id, session_token
             )
@@ -480,6 +493,89 @@ class InteractionService:
         return {
             "watch_session": watch_session | {"show_id": title["show_id"]},
             "rating": rating_row | {"show_id": title["show_id"], "rating": rating_value},
+        }
+
+    def _repair_rating_only_signal(
+        self,
+        existing_rating: dict,
+        normalized_show_id: str,
+        rating_value: Decimal,
+        watch_minutes: int,
+        current_session_id: UUID,
+        current_user_id: UUID | None,
+        client_event_time: datetime | None,
+        client_mutation_id: UUID,
+        client_device_id: UUID | None,
+        client_event_sequence: int | None,
+    ) -> dict:
+        """Complete a legacy rating-only mutation without creating a rating duplicate."""
+
+        original_session_id = existing_rating.get("session_id")
+        original_title_id = existing_rating.get("title_id")
+        if original_session_id is None or original_title_id is None:
+            raise InteractionConflictError("Historical rating mutation is missing its original scope")
+
+        existing_show_id = existing_rating.get("show_id")
+        if existing_show_id is not None and str(existing_show_id) != normalized_show_id:
+            raise InteractionConflictError("client_mutation_id was already used with a different payload")
+        self._require_idempotent_match(
+            existing_rating,
+            rating_value=rating_value,
+            client_device_id=client_device_id,
+            client_event_sequence=client_event_sequence,
+        )
+
+        # Prefer current catalog metrics, but retain the historical title id
+        # when the title has since been deactivated. The repair is about
+        # completing one already acknowledged mutation, not revalidating it as
+        # a new catalog event.
+        title = self.repository.get_title(normalized_show_id)
+        if title is None:
+            title = {
+                "title_id": original_title_id,
+                "show_id": existing_show_id or normalized_show_id,
+                "content_type": "unknown",
+                "movie_duration_min": None,
+                "season_count": None,
+            }
+        elif title["title_id"] != original_title_id:
+            raise InteractionConflictError("client_mutation_id was already used with a different payload")
+        metrics = self._watch_metrics(title, watch_minutes)
+        repaired_watch = self.repository.create_watch_session(
+            uuid4(),
+            original_session_id,
+            original_title_id,
+            metrics.watch_seconds,
+            metrics.runtime_seconds,
+            metrics.completion_rate,
+            metrics.duration_basis,
+            client_mutation_id,
+            client_occurred_at=client_event_time,
+            client_device_id=client_device_id,
+            client_event_sequence=client_event_sequence,
+            is_repair=True,
+        )
+        self._require_existing_mutation_owner(repaired_watch, current_session_id, current_user_id)
+        self._require_idempotent_match(
+            repaired_watch,
+            title_id=original_title_id,
+            watch_seconds=metrics.watch_seconds,
+            client_device_id=client_device_id,
+            client_event_sequence=client_event_sequence,
+        )
+        rating_row = self.repository.attach_rating_watch_session(
+            existing_rating["rating_id"],
+            repaired_watch["watch_session_id"],
+            original_session_id,
+            original_title_id,
+        )
+        if rating_row is None:
+            raise InteractionConflictError("Historical rating mutation could not be linked to its repaired watch")
+        self._touch_session(current_session_id)
+        response_show_id = existing_show_id or title["show_id"] or normalized_show_id
+        return {
+            "watch_session": repaired_watch | {"show_id": response_show_id},
+            "rating": rating_row | {"show_id": response_show_id, "rating": rating_value},
         }
 
     def get_state(
@@ -592,6 +688,10 @@ class InteractionService:
         self._validate_watch_minutes(watch_minutes)
         title = self._require_title(show_id)
         self._require_session(session_id, user_id, session_token)
+        return title, self._watch_metrics(title, watch_minutes)
+
+    @staticmethod
+    def _watch_metrics(title: dict, watch_minutes: int) -> WatchMetrics:
         runtime_seconds = None
         completion_rate = None
         if title["content_type"] == "Movie" and title["movie_duration_min"]:
@@ -605,7 +705,7 @@ class InteractionService:
             duration_basis = "tv_seasons"
         else:
             duration_basis = "unknown"
-        return title, WatchMetrics(
+        return WatchMetrics(
             watch_seconds=watch_minutes * 60,
             runtime_seconds=runtime_seconds,
             completion_rate=completion_rate,

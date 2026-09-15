@@ -5,7 +5,7 @@ import { appConfig, appLanguage, authConfig } from "./config/appConfig";
 import { PosterImage } from "./components/PosterImage";
 import { translate } from "./lib/i18n";
 import { loadCatalog } from "./services/catalogService";
-import { getCurrentUser, login, register } from "./services/authService";
+import { getCurrentUser, login, register, retryAuthenticatedInteraction } from "./services/authService";
 import "./styles.css";
 import "./auth.css";
 
@@ -40,6 +40,7 @@ export default function AuthPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [requestState, setRequestState] = useState("idle");
   const [message, setMessage] = useState("");
+  const [pendingPromotion, setPendingPromotion] = useState(null);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [authCheckState, setAuthCheckState] = useState("checking");
 
@@ -93,6 +94,7 @@ export default function AuthPage() {
   function switchMode(nextMode) {
     setMode(nextMode);
     setMessage("");
+    setPendingPromotion(null);
     setPassword("");
     setConfirmPassword("");
     const url = new URL(window.location.href);
@@ -110,11 +112,21 @@ export default function AuthPage() {
     }
     setRequestState("submitting");
     try {
-      if (mode === "register") {
-        await register({ email, username, displayName, password });
-      } else {
-        await login({ identifier: email, password });
+      const result = pendingPromotion
+        ? { ...pendingPromotion, interactionTransition: retryAuthenticatedInteraction(pendingPromotion) }
+        : (mode === "register"
+          ? await register({ email, username, displayName, password })
+          : await login({ identifier: email, password }));
+      const transition = result?.interactionTransition;
+      if (transition?.persisted === false
+        || transition?.pendingOwnerTransfer === true
+        || transition?.transferPersisted === false) {
+        setPendingPromotion(result);
+        setRequestState("error");
+        setMessage(translate(language, "authInteractionTransferPending"));
+        return;
       }
+      setPendingPromotion(null);
       setRequestState("success");
       setMessage(translate(language, mode === "register" ? "accountCreated" : "loginSuccess"));
       window.setTimeout(() => { window.location.href = returnTo; }, 260);

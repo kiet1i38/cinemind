@@ -277,13 +277,16 @@ class InteractionRepository:
         client_occurred_at: datetime | None = None,
         client_device_id: UUID | None = None,
         client_event_sequence: int | None = None,
+        is_repair: bool = False,
+        repair_source_watch_session_id: UUID | None = None,
     ) -> dict:
         if client_mutation_id is not None:
             existing = self.connection.execute(
                 """
                 SELECT watch_session_id, session_id, title_id, watch_seconds,
                        runtime_seconds, completion_rate, duration_basis, recorded_at,
-                       client_occurred_at, client_device_id, client_event_sequence
+                       client_occurred_at, client_device_id, client_event_sequence,
+                       is_repair, repair_source_watch_session_id
                 FROM interaction.watch_sessions
                 WHERE client_mutation_id = %s
                 ORDER BY recorded_at ASC, watch_session_id ASC
@@ -299,14 +302,15 @@ class InteractionRepository:
                 watch_session_id, session_id, title_id, watch_seconds,
                 runtime_seconds, completion_rate, duration_basis,
                 client_occurred_at, client_mutation_id, client_device_id,
-                client_event_sequence
+                client_event_sequence, is_repair, repair_source_watch_session_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (client_mutation_id)
                 WHERE client_mutation_id IS NOT NULL DO NOTHING
             RETURNING watch_session_id, session_id, title_id, watch_seconds,
                       runtime_seconds, completion_rate, duration_basis, recorded_at,
-                      client_occurred_at, client_device_id, client_event_sequence
+                      client_occurred_at, client_device_id, client_event_sequence,
+                      is_repair, repair_source_watch_session_id
             """,
             (
                 watch_session_id,
@@ -320,6 +324,8 @@ class InteractionRepository:
                 client_mutation_id,
                 client_device_id,
                 client_event_sequence,
+                is_repair,
+                repair_source_watch_session_id,
             ),
         ).fetchone()
         if row is None and client_mutation_id is not None:
@@ -327,7 +333,8 @@ class InteractionRepository:
                 """
                 SELECT watch_session_id, session_id, title_id, watch_seconds,
                        runtime_seconds, completion_rate, duration_basis, recorded_at,
-                       client_occurred_at, client_device_id, client_event_sequence
+                       client_occurred_at, client_device_id, client_event_sequence,
+                       is_repair, repair_source_watch_session_id
                 FROM interaction.watch_sessions
                 WHERE client_mutation_id = %s
                 ORDER BY recorded_at ASC, watch_session_id ASC
@@ -456,6 +463,31 @@ class InteractionRepository:
             LIMIT 1
             """,
             (client_mutation_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def attach_rating_watch_session(
+        self,
+        rating_id: int,
+        watch_session_id: UUID,
+        session_id: UUID,
+        title_id: int,
+    ) -> dict | None:
+        """Link a repaired watch to one historical rating without moving scope."""
+
+        row = self.connection.execute(
+            """
+            UPDATE interaction.ratings
+            SET watch_session_id = %s
+            WHERE rating_id = %s
+              AND session_id = %s
+              AND title_id = %s
+              AND watch_session_id IS NULL
+            RETURNING rating_id, session_id, watch_session_id, title_id,
+                      rating_value, rated_at, client_occurred_at,
+                      client_device_id, client_event_sequence
+            """,
+            (watch_session_id, rating_id, session_id, title_id),
         ).fetchone()
         return dict(row) if row else None
 

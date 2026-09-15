@@ -138,6 +138,7 @@
   "authInvalidCredentials": "The email/username or password is not correct.",
   "authDuplicateAccount": "That email or username is already in use.",
   "authGenericError": "We could not complete that request. Try again.",
+  "authInteractionTransferPending": "Your account is signed in, but this browser's offline activity could not be moved safely. Free browser storage, then press the button again before leaving this page.",
   "passwordMismatch": "Passwords do not match.",
   "accountCreated": "Account created",
   "loginSuccess": "Signed in",

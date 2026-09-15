@@ -8,7 +8,7 @@ import { translate } from "./lib/i18n";
 import { AUTH_EVENT_STORAGE_KEY, getCurrentUser, getAuthPageUrl, logout, logoutAll } from "./services/authService";
 import { loadCatalog } from "./services/catalogService";
 import { getInteractionState, hasFulfilledSignal, syncPendingInteractions } from "./services/interactionService";
-import { clearInteractionState, hasPendingInteractions, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
+import { clearInteractionState, hasPendingInteractions, mergeInteractionState, replaceOwnerScopedSignalState, setInteractionOwner } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./styles.css";
 import "./profile.css";
@@ -60,7 +60,11 @@ export default function ProfilePage() {
       platform: typeof navigator !== "undefined" ? String(navigator.platform || "web").slice(0, 32) : "web"
     };
     const localInteractionState = () => ({ ratings: signalStore.read() });
-    const mergeProfileState = (remoteState) => mergeInteractionState(remoteState, localInteractionState());
+    const mergeProfileState = (remoteState) => {
+      const merged = mergeInteractionState(remoteState, localInteractionState());
+      if (remoteState && typeof remoteState === "object") replaceOwnerScopedSignalState(merged.ratings);
+      return merged;
+    };
     const isCurrentRequest = (requestId) => !disposed && profileRequestRef.current.id === requestId;
 
     async function loadProfile({ refresh = false } = {}) {

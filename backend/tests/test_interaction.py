@@ -151,7 +151,7 @@ class FakeInteractionRepository:
     def get_search_event_by_mutation(self, client_mutation_id):
         return self.search_mutations.get(client_mutation_id)
 
-    def create_watch_session(self, watch_session_id, session_id, title_id, watch_seconds, runtime_seconds, completion_rate, duration_basis, client_mutation_id=None, client_occurred_at=None, client_device_id=None, client_event_sequence=None):
+    def create_watch_session(self, watch_session_id, session_id, title_id, watch_seconds, runtime_seconds, completion_rate, duration_basis, client_mutation_id=None, client_occurred_at=None, client_device_id=None, client_event_sequence=None, is_repair=False, repair_source_watch_session_id=None):
         mutation_key = client_mutation_id
         if client_mutation_id is not None and mutation_key in self.watch_mutations:
             return self.watch_mutations[mutation_key]
@@ -172,6 +172,8 @@ class FakeInteractionRepository:
             "client_occurred_at": client_occurred_at,
             "client_device_id": client_device_id,
             "client_event_sequence": client_event_sequence,
+            "is_repair": is_repair,
+            "repair_source_watch_session_id": repair_source_watch_session_id,
         }
         self.watch_sessions[watch_session_id] = row
         if client_mutation_id is not None:
@@ -186,6 +188,24 @@ class FakeInteractionRepository:
 
     def get_rating_by_mutation(self, client_mutation_id):
         return self.rating_mutations.get(client_mutation_id)
+
+    def attach_rating_watch_session(self, rating_id, watch_session_id, session_id, title_id):
+        row = next(
+            (
+                candidate
+                for candidate in self.ratings
+                if candidate["rating_id"] == rating_id
+                and candidate["session_id"] == session_id
+                and candidate["title_id"] == title_id
+                and candidate.get("watch_session_id") is None
+            ),
+            None,
+        )
+        if row is None:
+            return None
+        row["watch_session_id"] = watch_session_id
+        row["watch_seconds"] = self.watch_sessions[watch_session_id]["watch_seconds"]
+        return row
 
     def create_rating(self, session_id, title_id, rating, watch_session_id, client_mutation_id=None, client_occurred_at=None, client_device_id=None, client_event_sequence=None):
         if self.fail_rating:
@@ -526,6 +546,45 @@ class InteractionServiceTests(unittest.TestCase):
         self.assertEqual(result["rating"]["rating"], Decimal("8.5"))
         self.assertEqual(result["rating"]["watch_session_id"], result["watch_session"]["watch_session_id"])
         self.assertEqual(self.repository.transactions_committed, 1)
+
+    def test_historical_rating_only_signal_is_repaired_and_replayable(self):
+        mutation_id = uuid4()
+        historical_rating = self.service.record_rating(
+            self.session_id,
+            "movie-1",
+            Decimal("8.5"),
+            client_mutation_id=mutation_id,
+        )
+        self.assertIsNone(historical_rating["watch_session_id"])
+
+        repaired = self.service.record_signal(
+            self.session_id,
+            "movie-1",
+            Decimal("8.5"),
+            30,
+            client_mutation_id=mutation_id,
+        )
+        replay = self.service.record_signal(
+            self.session_id,
+            "movie-1",
+            Decimal("8.5"),
+            30,
+            client_mutation_id=mutation_id,
+        )
+
+        self.assertEqual(repaired["rating"]["rating_id"], historical_rating["rating_id"])
+        self.assertIsNotNone(repaired["rating"]["watch_session_id"])
+        self.assertTrue(repaired["watch_session"]["is_repair"])
+        self.assertEqual(
+            repaired["rating"]["watch_session_id"],
+            repaired["watch_session"]["watch_session_id"],
+        )
+        self.assertEqual(
+            replay["watch_session"]["watch_session_id"],
+            repaired["watch_session"]["watch_session_id"],
+        )
+        self.assertEqual(len(self.repository.ratings), 1)
+        self.assertEqual(len(self.repository.watch_sessions), 1)
 
     def test_signal_replay_rejects_a_different_payload(self):
         mutation_id = uuid4()

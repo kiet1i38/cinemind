@@ -78,12 +78,18 @@ def _prepare_register_request(request: Request, payload: RegisterRequest) -> str
 
 
 def _prepare_login_request(request: Request, payload: LoginRequest) -> str:
-    """Validate transport and rate limits before opening a DB connection."""
+    """Resolve the login principal and enforce limits before password work."""
 
     settings = get_settings()
     _require_secure_transport(request, settings)
-    rate_key = _auth_rate_limit_key(request, payload.identifier, "login")
-    account_rate_key = _auth_identifier_rate_limit_key(payload.identifier, "login")
+    # Resolve aliases before reserving the account-attempt bucket. Email and
+    # username are both accepted login identifiers, so hashing the raw input
+    # would give one account two independent quotas. Unknown identifiers use one
+    # neutral principal and never reveal whether a user exists.
+    user_id = _lookup_login_user_id(payload.identifier, settings)
+    principal = _login_rate_limit_principal(payload.identifier, user_id)
+    rate_key = _auth_rate_limit_key(request, payload.identifier, "login", principal=principal)
+    account_rate_key = _auth_identifier_rate_limit_key(payload.identifier, "login", principal=principal)
     _enforce_login_attempt_rate_limit(request, account_rate_key)
     _enforce_auth_rate_limit(request, rate_key)
     return rate_key
@@ -145,10 +151,12 @@ def login(
             anonymous_session_token=payload.anonymous_session_token,
         )
     except InvalidCredentialsError as error:
-        _record_auth_failure(request, rate_key)
+        if not _record_auth_failure(request, rate_key):
+            raise _auth_failure_limit_exception() from error
         raise HTTPException(status_code=401, detail="Invalid email/username or password") from error
     except AuthValidationError as error:
-        _record_auth_failure(request, rate_key)
+        if not _record_auth_failure(request, rate_key):
+            raise _auth_failure_limit_exception() from error
         raise HTTPException(status_code=400, detail=str(error)) from error
     _record_auth_success(request, rate_key)
     return _complete_auth_response(response, request, result, settings)
@@ -253,23 +261,61 @@ def _require_secure_transport(request: Request, settings: Settings) -> None:
         raise HTTPException(status_code=400, detail="Secure transport is required")
 
 
-def _auth_rate_limit_key(request: Request, identifier: str, operation: str) -> str:
+def _auth_rate_limit_key(
+    request: Request,
+    identifier: str,
+    operation: str,
+    *,
+    principal: str | None = None,
+) -> str:
     """Build a bounded, non-sensitive bucket key from client and identifier."""
 
     address = client_address_from_request(request, get_settings())
     identifier_hash = hashlib.sha256(
-        str(identifier).strip().casefold().encode("utf-8")
+        str(principal if principal is not None else identifier).strip().casefold().encode("utf-8")
     ).hexdigest()
     return f"{operation}:{address}:{identifier_hash}"
 
 
-def _auth_identifier_rate_limit_key(identifier: str, operation: str) -> str:
+def _auth_identifier_rate_limit_key(
+    identifier: str,
+    operation: str,
+    *,
+    principal: str | None = None,
+) -> str:
     """Build an account bucket that cannot be bypassed by rotating IPs."""
 
     identifier_hash = hashlib.sha256(
-        str(identifier).strip().casefold().encode("utf-8")
+        str(principal if principal is not None else identifier).strip().casefold().encode("utf-8")
     ).hexdigest()
     return f"{operation}:account:{identifier_hash}"
+
+
+def _lookup_login_user_id(identifier: str, settings: Settings) -> str | None:
+    """Resolve a login alias to a stable account key before password work."""
+
+    normalized = str(identifier).strip().casefold()
+    if not normalized:
+        return None
+    try:
+        with connection_scope(settings) as connection:
+            user = AuthRepository(connection).get_user_by_identifier(normalized)
+    except psycopg.Error:
+        # The authenticated service will report the actual database failure;
+        # rate limiting must not turn an infrastructure outage into account
+        # enumeration or a new externally visible error.
+        return None
+    return str(user["user_id"]) if user and user.get("user_id") else None
+
+
+def _login_rate_limit_principal(identifier: str, user_id: str | None = None) -> str:
+    if user_id:
+        return f"user:{user_id}"
+    # Keep all unresolved aliases in one neutral bucket. It prevents an
+    # attacker from using arbitrary identifiers as a substitute for the
+    # stable account bucket, while the IP and total-attempt limiters still
+    # bound availability impact for invalid logins.
+    return "unknown"
 
 
 def _auth_ip_key(request: Request, operation: str) -> str:
@@ -291,7 +337,12 @@ def client_address_from_request(request: Request, settings: Settings) -> str:
 
 
 def _enforce_auth_rate_limit(request: Request, identifier_key: str) -> None:
-    """Raise a neutral retry response when an auth bucket is exhausted."""
+    """Run a cheap preflight before password work.
+
+    Failed credentials are reserved atomically in ``_record_auth_failure``
+    after password verification. Keeping this preflight non-consuming avoids
+    charging successful logins against a failure-only quota.
+    """
 
     ip_decision = auth_ip_rate_limiter.check(_auth_ip_key(request, identifier_key.split(":", 1)[0]))
     identifier_decision = auth_rate_limiter.check(identifier_key)
@@ -338,9 +389,24 @@ def _enforce_registration_rate_limit(request: Request) -> None:
     )
 
 
-def _record_auth_failure(request: Request, identifier_key: str) -> None:
-    auth_rate_limiter.record_failure(identifier_key)
-    auth_ip_rate_limiter.record_failure(_auth_ip_key(request, identifier_key.split(":", 1)[0]))
+def _record_auth_failure(request: Request, identifier_key: str) -> bool:
+    """Atomically reserve the failure quota in both dimensions."""
+
+    identifier_decision, ip_decision = consume_many(
+        (
+            (auth_rate_limiter, identifier_key),
+            (auth_ip_rate_limiter, _auth_ip_key(request, identifier_key.split(":", 1)[0])),
+        )
+    )
+    return identifier_decision.allowed and ip_decision.allowed
+
+
+def _auth_failure_limit_exception() -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail="Too many authentication attempts. Please try again later.",
+        headers={"Retry-After": str(get_settings().auth_rate_limit_window_seconds)},
+    )
 
 
 def _record_auth_success(request: Request, identifier_key: str) -> None:

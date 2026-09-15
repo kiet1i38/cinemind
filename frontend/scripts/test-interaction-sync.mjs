@@ -31,6 +31,7 @@ require.extensions[".js"] = (module, filename) => {
 const { appConfig } = require(resolve(sourceDir, "config/appConfig.js"));
 const {
   clearInteractionState,
+  deleteOwnerScopedSignal,
   getInteractionDeviceId,
   getInteractionOwner,
   hasPendingInteractions,
@@ -42,10 +43,13 @@ const {
   queuePendingSearch,
   readOwnerScopedSignalState,
   readPendingInteractions,
-  setInteractionOwner
+  replaceOwnerScopedSignalState,
+  setInteractionOwner,
+  signalWithServerReceipt
 } = require(resolve(sourceDir, "services/interactionStore.js"));
 const { signalStore } = require(resolve(sourceDir, "services/signalStore.js"));
 const { hasFulfilledSignal, syncPendingInteractions } = require(resolve(sourceDir, "services/interactionService.js"));
+const { login } = require(resolve(sourceDir, "services/authService.js"));
 
 function response(status, payload = {}, headers = {}) {
   const normalizedHeaders = Object.fromEntries(
@@ -237,11 +241,12 @@ test("device and sequence state are isolated per browser tab", { concurrency: fa
   const localValues = new Map();
   const firstTabValues = new Map();
   const secondTabValues = new Map();
+  const firstTabStorage = mapStorage(firstTabValues);
   const deviceKey = appConfig.interaction.deviceStorageKey;
   const sequenceKey = appConfig.interaction.sequenceStorageKey;
   globalThis.window = {
     localStorage: mapStorage(localValues),
-    sessionStorage: mapStorage(firstTabValues),
+    sessionStorage: firstTabStorage,
     location: { pathname: "/" }
   };
   try {
@@ -260,11 +265,48 @@ test("device and sequence state are isolated per browser tab", { concurrency: fa
     secondTabValues.clear();
     for (const [key, value] of firstTabValues) secondTabValues.set(key, value);
     globalThis.window.sessionStorage = mapStorage(secondTabValues);
-    globalThis.window.opener = {};
+    globalThis.window.opener = { sessionStorage: firstTabStorage };
     const secondDevice = getInteractionDeviceId();
     const secondTabSequence = nextInteractionEventSequence();
     assert.notEqual(secondDevice, firstDevice);
     assert.equal(secondTabSequence, 1);
+
+    // A reload creates a new JS module context but retains the same
+    // sessionStorage and opener. The fork parent marker must keep this
+    // already-forked stream stable.
+    globalThis.window.sessionStorage = mapStorage(secondTabValues);
+    const reloadedDevice = getInteractionDeviceId();
+    const reloadedSequence = nextInteractionEventSequence();
+    assert.equal(reloadedDevice, secondDevice);
+    assert.equal(reloadedSequence, secondTabSequence + 1);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("a duplicate browsing context without an opener forks a live stream lease", { concurrency: false }, () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const values = new Map();
+  const sessionValues = new Map();
+  const deviceKey = appConfig.interaction.deviceStorageKey;
+  const deviceId = "00000000-0000-4000-8000-000000000271";
+  values.set(
+    `${deviceKey}:active:${encodeURIComponent(deviceId)}`,
+    JSON.stringify({ claimId: "another-live-document", touchedAt: Date.now() }),
+  );
+  sessionValues.set(deviceKey, JSON.stringify(deviceId));
+  globalThis.window = {
+    localStorage: mapStorage(values),
+    sessionStorage: mapStorage(sessionValues),
+    location: { pathname: "/" }
+  };
+  try {
+    const forkedDevice = getInteractionDeviceId();
+    assert.notEqual(forkedDevice, deviceId);
+    assert.equal(nextInteractionEventSequence(), 1);
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
@@ -316,6 +358,53 @@ test("acknowledged signal cache keeps entries from a stale tab snapshot", { conc
     const merged = signalStore.read();
     assert.equal(merged["show-from-tab-a"].rating, 8);
     assert.equal(merged["show-from-tab-b"].rating, 4);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("signal tombstones prevent rejected titles and stale legacy values from returning", { concurrency: false }, () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const values = new Map();
+  globalThis.window = {
+    localStorage: mapStorage(values),
+    location: { pathname: "/" }
+  };
+  try {
+    setInteractionOwner("sync-test-signal-tombstone");
+    clearInteractionState({ resetOwner: false });
+    const legacyKey = appConfig.signals.storageKey;
+    values.set(legacyKey, JSON.stringify({
+      owners: {
+        "sync-test-signal-tombstone": {
+          "rejected-title": { rating: 2, watchMinutes: 1, savedAt: "2026-09-15T10:00:00.000Z" }
+        }
+      },
+      version: 2
+    }));
+    assert.equal(signalStore.read()["rejected-title"].rating, 2);
+
+    deleteOwnerScopedSignal("rejected-title");
+    // A stale whole-object effect must not resurrect the rejected entry.
+    signalStore.write({
+      "rejected-title": { rating: 2, watchMinutes: 1, savedAt: "2026-09-15T10:00:00.000Z" }
+    });
+    assert.equal(signalStore.read()["rejected-title"], undefined);
+
+    replaceOwnerScopedSignalState({
+      "authoritative-title": {
+        rating: 9,
+        watchMinutes: 20,
+        savedAt: "2026-09-15T10:02:00.000Z",
+        serverSavedAt: "2026-09-15T10:02:00.000Z"
+      }
+    });
+    const replaced = signalStore.read();
+    assert.equal(replaced["rejected-title"], undefined);
+    assert.equal(replaced["authoritative-title"].rating, 9);
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
@@ -381,6 +470,17 @@ test("owner transfer journal retries after reload and logout preserve the source
     setInteractionOwner("journal-account", { acceptedAnonymousSessionId: anonymousSessionId });
     assert.equal(readPendingOwnerTransfer().targetOwner, "journal-account");
 
+    // A later login can receive a new anonymous session after logout. It must
+    // supersede the stale S1 journal before attempting the transfer.
+    const rotatedAnonymousSessionId = "00000000-0000-4000-8000-000000000504";
+    interactionSessionStore.write(rotatedAnonymousSessionId, "anonymous-session-token-0123456789", "anonymous");
+    const superseded = setInteractionOwner(
+      "journal-account",
+      { acceptedAnonymousSessionId: rotatedAnonymousSessionId }
+    );
+    assert.equal(superseded.transferPersisted, false);
+    assert.equal(readPendingOwnerTransfer().acceptedAnonymousSessionId, rotatedAnonymousSessionId);
+
     // Logout must not clear the source namespace while the journal is live.
     clearInteractionState({ preservePendingOwnerTransfer: true });
     assert.equal(getInteractionOwner(), "anonymous");
@@ -412,7 +512,10 @@ test("sync marks a successful signal batch for post-commit hydration", { concurr
   );
   const calls = installFetch([
     response(201, sessionPayload),
-    response(201, { accepted: true })
+    response(201, {
+      accepted: true,
+      rating: { rating: 8, rated_at: "2026-09-15T10:03:00.000Z" }
+    })
   ]);
 
   const results = await syncPendingInteractions([{ id: "hydrated-title" }]);
@@ -420,6 +523,7 @@ test("sync marks a successful signal batch for post-commit hydration", { concurr
   assert.equal(results[0].kind, "signal");
   assert.equal(hasFulfilledSignal(results), true);
   assert.equal(calls.filter(({ url }) => url.endsWith("/signals")).length, 1);
+  assert.equal(readOwnerScopedSignalState()["hydrated-title"].serverSavedAt, "2026-09-15T10:03:00.000Z");
 });
 
 test("owner changes stop a captured replay before the next event", { concurrency: false }, async () => {
@@ -474,6 +578,128 @@ test("owner switch stays memory-consistent when localStorage rejects the write",
     assert.equal(transition.persisted, false);
     assert.equal(getInteractionOwner(), "storage-failure-user");
     assert.equal(JSON.parse(values.get(ownerKey)), "anonymous");
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("promotion reports a non-durable journal and keeps anonymous data in place", { concurrency: false }, () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const values = new Map();
+  const storage = mapStorage(values);
+  const journalKey = `${appConfig.interaction.ownerStorageKey}:pending-transfer`;
+  const originalSetItem = storage.setItem;
+  storage.setItem = (key, value) => {
+    if (key === journalKey) throw new Error("quota exceeded");
+    originalSetItem(key, value);
+  };
+  globalThis.window = {
+    localStorage: storage,
+    location: { pathname: "/" }
+  };
+  const anonymousSessionId = "00000000-0000-4000-8000-000000000601";
+  const mutationId = "00000000-0000-4000-8000-000000000602";
+  try {
+    interactionSessionStore.write(anonymousSessionId, "anonymous-session-token-0123456789", "anonymous");
+    queuePendingSearch({ query: "journal-not-durable", resultCount: 1, filters: {} }, mutationId, null, "anonymous");
+    const transition = setInteractionOwner(
+      "journal-not-durable-account",
+      { acceptedAnonymousSessionId: anonymousSessionId }
+    );
+
+    assert.equal(transition.changed, false);
+    assert.equal(transition.persisted, false);
+    assert.equal(transition.pendingOwnerTransfer, true);
+    assert.equal(getInteractionOwner(), "anonymous");
+    assert.equal(readPendingOwnerTransfer().targetOwner, "journal-not-durable-account");
+    assert.equal(values.has(journalKey), false);
+    assert.equal(readPendingInteractions("anonymous").searches[mutationId].query, "journal-not-durable");
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("login exposes a blocked non-durable promotion instead of completing navigation", { concurrency: false }, async () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const values = new Map();
+  const storage = mapStorage(values);
+  const journalKey = `${appConfig.interaction.ownerStorageKey}:pending-transfer`;
+  const originalSetItem = storage.setItem;
+  storage.setItem = (key, value) => {
+    if (key === journalKey) throw new Error("quota exceeded");
+    originalSetItem(key, value);
+  };
+  globalThis.window = {
+    localStorage: storage,
+    location: { pathname: "/auth.html" }
+  };
+  const anonymousSessionId = "00000000-0000-4000-8000-000000000611";
+  const mutationId = "00000000-0000-4000-8000-000000000612";
+  try {
+    interactionSessionStore.write(anonymousSessionId, "anonymous-session-token-0123456789", "anonymous");
+    queuePendingSearch({ query: "login-must-retry", resultCount: 1, filters: {} }, mutationId, null, "anonymous");
+    globalThis.fetch = async () => response(200, {
+      user: { user_id: "login-transfer-account" },
+      interaction_session_id: anonymousSessionId
+    });
+
+    const result = await login({ identifier: "alice@example.com", password: "correct-password" });
+
+    assert.equal(result.interactionTransition.changed, false);
+    assert.equal(result.interactionTransition.persisted, false);
+    assert.equal(result.interactionTransition.pendingOwnerTransfer, true);
+    assert.equal(getInteractionOwner(), "anonymous");
+    assert.equal(values.has(journalKey), false);
+    assert.equal(readPendingInteractions("anonymous").searches[mutationId].query, "login-must-retry");
+  } finally {
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("sessionStorage fallback keeps a promotion journal durable when localStorage is full", { concurrency: false }, () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const localValues = new Map();
+  const sessionValues = new Map();
+  const storage = mapStorage(localValues);
+  const journalKey = `${appConfig.interaction.ownerStorageKey}:pending-transfer`;
+  const originalSetItem = storage.setItem;
+  storage.setItem = (key, value) => {
+    if (key === journalKey) throw new Error("quota exceeded");
+    originalSetItem(key, value);
+  };
+  globalThis.window = {
+    localStorage: storage,
+    sessionStorage: mapStorage(sessionValues),
+    location: { pathname: "/auth.html" }
+  };
+  const anonymousSessionId = "00000000-0000-4000-8000-000000000621";
+  const mutationId = "00000000-0000-4000-8000-000000000622";
+  try {
+    interactionSessionStore.write(anonymousSessionId, "anonymous-session-token-0123456789", "anonymous");
+    queuePendingSearch({ query: "session-fallback", resultCount: 1, filters: {} }, mutationId, null, "anonymous");
+    const transition = setInteractionOwner(
+      "session-fallback-account",
+      { acceptedAnonymousSessionId: anonymousSessionId }
+    );
+
+    assert.equal(transition.persisted, true);
+    assert.equal(transition.transferPersisted, true);
+    assert.equal(getInteractionOwner(), "session-fallback-account");
+    assert.equal(readPendingOwnerTransfer(), null);
+    assert.equal(readPendingInteractions("anonymous").searches[mutationId], undefined);
+    assert.equal(readPendingInteractions("session-fallback-account").searches[mutationId].query, "session-fallback");
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;

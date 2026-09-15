@@ -59,9 +59,7 @@ export async function login({ identifier, password }) {
     method: "POST",
     body: JSON.stringify({ identifier, password, ...interactionSessionPayload() })
   });
-  promoteAuthenticatedInteraction(result?.user?.user_id, result?.interaction_session_id);
-  broadcastAuthEvent("login");
-  return result;
+  return completeAuthenticatedInteraction(result);
 }
 
 export async function register({ email, username, displayName, password }) {
@@ -75,9 +73,27 @@ export async function register({ email, username, displayName, password }) {
       ...interactionSessionPayload()
     })
   });
-  promoteAuthenticatedInteraction(result?.user?.user_id, result?.interaction_session_id);
-  broadcastAuthEvent("login");
-  return result;
+  return completeAuthenticatedInteraction(result);
+}
+
+function completeAuthenticatedInteraction(result) {
+  const interactionTransition = promoteAuthenticatedInteraction(
+    result?.user?.user_id,
+    result?.interaction_session_id,
+  );
+  // Other tabs must not react to the account cookie until this tab has a
+  // durable recovery intent. Otherwise they can clear the anonymous source
+  // while this tab still holds the only in-memory transfer state.
+  if (interactionTransition?.persisted !== false
+    && interactionTransition?.pendingOwnerTransfer !== true
+    && interactionTransition?.transferPersisted !== false) {
+    broadcastAuthEvent("login");
+  }
+  return { ...result, interactionTransition };
+}
+
+export function retryAuthenticatedInteraction(result) {
+  return completeAuthenticatedInteraction(result).interactionTransition;
 }
 
 export async function logout({ preservePendingInteractions = false } = {}) {

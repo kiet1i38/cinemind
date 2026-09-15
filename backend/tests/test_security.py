@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 import os
 import unittest
 from unittest.mock import patch
@@ -303,6 +304,52 @@ class SecurityPrimitiveTests(unittest.TestCase):
         self.assertEqual(blocked_by_account.exception.status_code, 429)
         self.assertTrue(
             auth_routes.auth_login_ip_attempt_limiter.check(ip_key).allowed
+        )
+
+    def test_login_failure_reservation_is_atomic_under_concurrency(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.43"),
+            headers={},
+        )
+        auth_routes.auth_rate_limiter.clear()
+        auth_routes.auth_ip_rate_limiter.clear()
+        key = auth_routes._auth_rate_limit_key(
+            request,
+            "victim@example.com",
+            "login",
+            principal="user:00000000-0000-4000-8000-000000000043",
+        )
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            decisions = list(
+                executor.map(
+                    lambda _index: auth_routes._record_auth_failure(request, key),
+                    range(20),
+                )
+            )
+
+        self.assertEqual(sum(decisions), auth_routes.auth_rate_limiter.max_attempts)
+        self.assertFalse(auth_routes.auth_rate_limiter.check(key).allowed)
+
+    def test_login_aliases_share_one_stable_account_bucket(self):
+        user_id = "00000000-0000-4000-8000-000000000044"
+        email_key = auth_routes._auth_identifier_rate_limit_key(
+            "alice@example.com",
+            "login",
+            principal=f"user:{user_id}",
+        )
+        username_key = auth_routes._auth_identifier_rate_limit_key(
+            "alice",
+            "login",
+            principal=f"user:{user_id}",
+        )
+
+        self.assertEqual(email_key, username_key)
+
+    def test_unknown_login_aliases_use_one_neutral_principal(self):
+        self.assertEqual(
+            auth_routes._login_rate_limit_principal("missing@example.com"),
+            auth_routes._login_rate_limit_principal("another-missing-user"),
         )
 
     def test_blank_boolean_environment_uses_the_environment_default(self):
