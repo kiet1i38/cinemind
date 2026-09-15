@@ -104,6 +104,8 @@
   "interaction": {
     "apiBaseUrl": "/api/interaction",
     "sessionStorageKey": "cinemind-interaction-session-id",
+    "deviceStorageKey": "cinemind-interaction-device-id",
+    "sequenceStorageKey": "cinemind-interaction-event-sequence",
     "ownerStorageKey": "cinemind-interaction-owner",
     "outboxStorageKey": "cinemind-interaction-outbox",
     "maxWatchMinutes": 10080,
@@ -114,7 +116,8 @@
     "pendingSyncBackoffMs": 5000,
     "pendingSyncMaxBackoffMs": 300000,
     "pendingMutationMaxItems": 100,
-    "pendingMutationTtlMs": 86400000
+    "pendingMutationTtlMs": 604800000,
+    "pendingMutationLossWarning": true
   },
   "runtime": {
     "frontendPathPrefix": "/cinemind/",

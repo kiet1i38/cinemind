@@ -46,6 +46,8 @@ class SearchEventCreateRequest(BaseModel):
     filters: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
+    client_device_id: UUID | None = None
+    client_event_sequence: int | None = Field(default=None, ge=1)
 
     @field_validator("filters")
     @classmethod
@@ -66,6 +68,8 @@ class SearchEventResponse(BaseModel):
     filters: dict[str, str]
     occurred_at: datetime
     client_occurred_at: datetime | None = None
+    client_device_id: UUID | None = None
+    client_event_sequence: int | None = None
 
 
 class WatchSessionCreateRequest(BaseModel):
@@ -76,6 +80,8 @@ class WatchSessionCreateRequest(BaseModel):
     watch_minutes: int = Field(..., ge=0)
     client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
+    client_device_id: UUID | None = None
+    client_event_sequence: int | None = Field(default=None, ge=1)
 
 
 class WatchSessionResponse(BaseModel):
@@ -90,6 +96,8 @@ class WatchSessionResponse(BaseModel):
     duration_basis: str
     recorded_at: datetime
     client_occurred_at: datetime | None = None
+    client_device_id: UUID | None = None
+    client_event_sequence: int | None = None
 
 
 class RatingCreateRequest(BaseModel):
@@ -101,6 +109,8 @@ class RatingCreateRequest(BaseModel):
     watch_session_id: UUID | None = None
     client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
+    client_device_id: UUID | None = None
+    client_event_sequence: int | None = Field(default=None, ge=1)
 
     @field_validator("rating")
     @classmethod
@@ -118,6 +128,8 @@ class RatingResponse(BaseModel):
     watch_session_id: UUID | None
     rated_at: datetime
     client_occurred_at: datetime | None = None
+    client_device_id: UUID | None = None
+    client_event_sequence: int | None = None
 
 
 class SignalCreateRequest(BaseModel):
@@ -129,6 +141,8 @@ class SignalCreateRequest(BaseModel):
     watch_minutes: int = Field(..., ge=0)
     client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
+    client_device_id: UUID | None = None
+    client_event_sequence: int | None = Field(default=None, ge=1)
 
     @field_validator("rating")
     @classmethod
@@ -150,6 +164,10 @@ class RatingStateResponse(BaseModel):
     rating: Decimal
     watch_minutes: int | None
     rated_at: datetime
+    event_at: datetime
+    client_occurred_at: datetime | None = None
+    client_device_id: UUID | None = None
+    client_event_sequence: int | None = None
 
 
 class InteractionStateResponse(BaseModel):

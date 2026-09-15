@@ -17,7 +17,7 @@ class _Result:
 
 
 class _StateConnection:
-    """Small SQL spy that models DISTINCT ON for the state projection."""
+    """Small SQL spy that models the device and server-time projection."""
 
     def __init__(self, rows):
         self.rows = list(rows)
@@ -27,21 +27,23 @@ class _StateConnection:
         self.statements.append((statement, params))
         session_id = params[0]
         candidates = [row for row in self.rows if row["session_id"] == session_id]
-        use_effective_time = "COALESCE(r.client_occurred_at, r.rated_at)" in statement
-        latest_by_title = {}
+        latest_by_device = {}
         for row in candidates:
-            event_time = row["client_occurred_at"] or row["rated_at"]
+            device_key = (row["title_id"], row.get("client_device_id") or row["session_id"])
             sort_key = (
-                event_time,
-                row["rated_at"],
-                row["rating_id"],
-            ) if use_effective_time else (
+                row.get("client_event_sequence") or 0,
                 row["rated_at"],
                 row["rating_id"],
             )
-            current = latest_by_title.get(row["title_id"])
+            current = latest_by_device.get(device_key)
             if current is None or sort_key > current[0]:
-                latest_by_title[row["title_id"]] = (sort_key, row)
+                latest_by_device[device_key] = (sort_key, row)
+        latest_by_title = {}
+        for _sort_key, row in latest_by_device.values():
+            server_sort_key = (row["rated_at"], row["rating_id"])
+            current = latest_by_title.get(row["title_id"])
+            if current is None or server_sort_key > current[0]:
+                latest_by_title[row["title_id"]] = (server_sort_key, row)
         rows = [
             row
             for _sort_key, row in sorted(
@@ -52,8 +54,9 @@ class _StateConnection:
 
 
 class InteractionRepositoryTests(unittest.TestCase):
-    def test_state_uses_client_time_before_server_receipt_for_retried_rating(self):
+    def test_state_uses_device_sequence_before_client_clock_for_retried_rating(self):
         session_id = uuid4()
+        device_id = uuid4()
         client_newer = datetime(2026, 9, 14, 10, tzinfo=timezone.utc)
         received_newer = datetime(2026, 9, 14, 10, 1, tzinfo=timezone.utc)
         client_older = datetime(2026, 9, 14, 9, tzinfo=timezone.utc)
@@ -69,6 +72,8 @@ class InteractionRepositoryTests(unittest.TestCase):
                     "watch_seconds": None,
                     "rated_at": received_retry,
                     "client_occurred_at": client_older,
+                    "client_device_id": device_id,
+                    "client_event_sequence": 1,
                 },
                 {
                     "session_id": session_id,
@@ -79,6 +84,8 @@ class InteractionRepositoryTests(unittest.TestCase):
                     "watch_seconds": None,
                     "rated_at": received_newer,
                     "client_occurred_at": client_newer,
+                    "client_device_id": device_id,
+                    "client_event_sequence": 2,
                 },
             ]
         )
@@ -87,7 +94,7 @@ class InteractionRepositoryTests(unittest.TestCase):
 
         self.assertEqual(state["ratings"][0]["rating"], Decimal("8.0"))
         query = connection.statements[0][0]
-        self.assertIn("COALESCE(r.client_occurred_at, r.rated_at) DESC", query)
+        self.assertIn("r.client_event_sequence DESC NULLS LAST", query)
         self.assertIn("r.rated_at DESC", query)
         self.assertIn("r.rating_id DESC", query)
 

@@ -93,3 +93,18 @@ test("catalog validation rejects changed content with the same row count", { con
       && error.code === "CATALOG_VERSION_MISMATCH"
   );
 });
+
+test("catalog remains usable when Web Crypto is unavailable", { concurrency: false }, async () => {
+  const originalCryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const sourceText = JSON.stringify([record]);
+  const checksum = sha256(sourceText);
+  installCatalogFetch(sourceText, checksum);
+  try {
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
+    const loaded = await loadCatalog();
+    assert.equal(loaded.length, 1);
+  } finally {
+    if (originalCryptoDescriptor) Object.defineProperty(globalThis, "crypto", originalCryptoDescriptor);
+    else delete globalThis.crypto;
+  }
+});

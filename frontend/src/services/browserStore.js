@@ -1,5 +1,6 @@
 const memoryValues = new Map();
 const memoryOnlyKeys = new Set();
+const removedKeys = new Set();
 
 function getStorage() {
   try {
@@ -19,6 +20,23 @@ export function createJsonStore(key, fallback) {
   return {
     read() {
       const storage = getStorage();
+      if (removedKeys.has(key)) {
+        if (!storage) return getFallback();
+        try {
+          if (storage.getItem(key) === null) {
+            removedKeys.delete(key);
+            return getFallback();
+          }
+          storage.removeItem(key);
+          if (storage.getItem(key) === null) {
+            removedKeys.delete(key);
+            return getFallback();
+          }
+        } catch {
+          // Keep the tombstone authoritative for this page lifetime.
+        }
+        return getFallback();
+      }
       if (memoryOnlyKeys.has(key) && memoryValues.has(key)) {
         // A previous quota/restricted-storage failure must not make the
         // current tab immediately fall back to a stale persistent value.
@@ -51,6 +69,7 @@ export function createJsonStore(key, fallback) {
     },
     write(value) {
       memoryValues.set(key, value);
+      removedKeys.delete(key);
       const storage = getStorage();
       if (!storage) return true;
       try {
@@ -66,10 +85,12 @@ export function createJsonStore(key, fallback) {
     remove() {
       memoryValues.delete(key);
       memoryOnlyKeys.delete(key);
+      removedKeys.add(key);
       const storage = getStorage();
       if (!storage) return true;
       try {
         storage.removeItem(key);
+        removedKeys.delete(key);
         return true;
       } catch {
         // Browser storage can be unavailable in a restricted context.

@@ -1,11 +1,11 @@
 import { ArrowLeft, ArrowRight, CheckCircle, ShieldCheck, Star, UserCircle } from "@phosphor-icons/react";
 import { createRoot } from "react-dom/client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { appConfig, appLanguage } from "./config/appConfig";
 import { PosterImage } from "./components/PosterImage";
 import { getRuntimeLabel, getTypeLabel } from "./lib/catalog";
 import { translate } from "./lib/i18n";
-import { getCurrentUser, getAuthPageUrl, logout, logoutAll } from "./services/authService";
+import { AUTH_EVENT_STORAGE_KEY, getCurrentUser, getAuthPageUrl, logout, logoutAll } from "./services/authService";
 import { loadCatalog } from "./services/catalogService";
 import { getInteractionState, syncPendingInteractions } from "./services/interactionService";
 import { clearInteractionState, hasPendingInteractions, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
@@ -49,6 +49,7 @@ export default function ProfilePage() {
   const [state, setState] = useState({ ratings: {} });
   const [loadState, setLoadState] = useState("loading");
   const [message, setMessage] = useState("");
+  const userRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,13 +60,31 @@ export default function ProfilePage() {
     const localInteractionState = () => ({ ratings: signalStore.read() });
     const mergeProfileState = (remoteState) => mergeInteractionState(remoteState, localInteractionState());
 
-    async function loadProfile() {
-      const [currentUser, records] = await Promise.all([getCurrentUser(), loadCatalog()]);
+    async function loadProfile({ refresh = false } = {}) {
+      if (!refresh) setLoadState("loading");
+      const currentUser = await getCurrentUser();
       if (!currentUser) {
         window.location.href = getAuthPageUrl("login", `${window.location.pathname}${window.location.search}`);
         return;
       }
       setInteractionOwner(currentUser.user_id);
+      userRef.current = currentUser;
+      setUser(currentUser);
+      setLoadState("ready");
+
+      let records = [];
+      try {
+        records = await loadCatalog();
+        if (!cancelled) {
+          setCatalog(records);
+          setMessage("");
+        }
+      } catch {
+        if (!cancelled) {
+          setCatalog([]);
+          setMessage(translate(language, "profileCatalogUnavailable"));
+        }
+      }
 
       let interactionState = null;
       try {
@@ -74,24 +93,51 @@ export default function ProfilePage() {
         // Keep pending browser activity visible while the interaction API recovers.
       }
       if (cancelled) return;
-      setUser(currentUser);
-      setCatalog(records);
       setState(mergeProfileState(interactionState));
-      setLoadState("ready");
 
-      syncPendingInteractions(records, metadata)
-        .then(() => getInteractionState(metadata))
+      (records.length ? syncPendingInteractions(records, metadata) : Promise.resolve([]))
+        .then((results) => {
+          const definitiveFailure = results.some((result) => result.status === "rejected"
+            && result.reason?.status >= 400
+            && result.reason?.status < 500
+            && result.reason?.code !== "CATALOG_RECORD_UNAVAILABLE");
+          return definitiveFailure ? getInteractionState(metadata) : null;
+        })
         .then((reconciledState) => {
-          if (!cancelled) setState(mergeProfileState(reconciledState));
+          if (!cancelled && reconciledState) setState(mergeProfileState(reconciledState));
         })
         .catch(() => undefined);
     }
 
+    const handleAuthStorage = (event) => {
+      if (event.key !== AUTH_EVENT_STORAGE_KEY || !event.newValue) return;
+      let authEvent;
+      try { authEvent = JSON.parse(event.newValue); } catch { return; }
+      if (authEvent?.type === "logout" || authEvent?.type === "login") loadProfile({ refresh: true }).catch(() => undefined);
+    };
+    const refreshAuth = () => {
+      if (document.visibilityState !== "visible") return;
+      getCurrentUser().then((currentUser) => {
+        if (!userRef.current) return;
+        if (!currentUser || String(currentUser.user_id) !== String(userRef.current.user_id)) {
+          window.location.href = getAuthPageUrl("login", `${window.location.pathname}${window.location.search}`);
+        }
+      }).catch(() => undefined);
+    };
+
     loadProfile().catch(() => {
       if (!cancelled) setLoadState("error");
     });
+    window.addEventListener("storage", handleAuthStorage);
+    window.addEventListener("cinemind-auth-required", refreshAuth);
+    document.addEventListener("visibilitychange", refreshAuth);
+    const authPoll = window.setInterval(refreshAuth, 60000);
     return () => {
       cancelled = true;
+      window.clearInterval(authPoll);
+      window.removeEventListener("storage", handleAuthStorage);
+      window.removeEventListener("cinemind-auth-required", refreshAuth);
+      document.removeEventListener("visibilitychange", refreshAuth);
     };
   }, [language]);
 

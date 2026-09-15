@@ -119,7 +119,7 @@ async function verifyCatalogVersion(records, signal, sourceText) {
       throw new CatalogVersionMismatchError("Catalog source bytes are unavailable for checksum verification");
     }
     const actualChecksum = await sha256Text(sourceText, signal);
-    if (actualChecksum !== staticChecksum) {
+    if (actualChecksum && actualChecksum !== staticChecksum) {
       throw new CatalogVersionMismatchError("Catalog checksum mismatch between the file and manifest");
     }
   }
@@ -133,7 +133,10 @@ async function sha256Text(sourceText, signal) {
   if (signal?.aborted) throw signal.reason || new DOMException("The operation was aborted", "AbortError");
   const subtle = globalThis.crypto?.subtle;
   if (!subtle || typeof TextEncoder === "undefined") {
-    throw new CatalogVersionMismatchError("Catalog checksum verification is unavailable in this browser");
+    // Older HTTP webviews may not expose Web Crypto. The manifest/API count
+    // and API checksum comparison still run; do not make the whole catalog
+    // unusable solely because local byte hashing is unavailable.
+    return null;
   }
   try {
     const digest = await subtle.digest("SHA-256", new TextEncoder().encode(sourceText));

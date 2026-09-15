@@ -108,6 +108,7 @@ async function request(path, options = {}, context = null) {
     const retryAfterMs = parseRetryAfter(retryAfter);
     if (retryAfter !== null) error.retryAfter = retryAfter;
     if (retryAfterMs !== null) error.retryAfterMs = retryAfterMs;
+    if (response.status === 401 || response.status === 403) markAuthRequired(error);
     throw error;
   }
   return payload;
@@ -213,7 +214,9 @@ export function recordSearchEvent({ query, resultCount, filters, ...metadata }, 
           result_count: resultCount,
           filters,
           client_occurred_at: clientOccurredAt,
-          client_mutation_id: mutationId
+          client_mutation_id: mutationId,
+          client_device_id: pendingEntry?.clientDeviceId || undefined,
+          client_event_sequence: pendingEntry?.clientEventSequence || undefined
         })
       }, interactionContext), interactionContext);
       assertInteractionContext(interactionContext);
@@ -247,7 +250,9 @@ export function submitSignal({ record, rating, watchMinutes, ...metadata }, cont
           rating,
           watch_minutes: watchMinutes,
           client_occurred_at: clientOccurredAt,
-          client_mutation_id: mutationId
+          client_mutation_id: mutationId,
+          client_device_id: pendingEntry?.clientDeviceId || undefined,
+          client_event_sequence: pendingEntry?.clientEventSequence || undefined
         })
       }, interactionContext), interactionContext);
       assertInteractionContext(interactionContext);
@@ -309,7 +314,16 @@ async function withFreshInteractionSession(metadata, operation, context = null) 
 
 function markAuthRequired(error) {
   if (error && typeof error === "object") error.authRequired = true;
+  try {
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("cinemind-auth-required"));
+  } catch {
+    // Event notification is best-effort; the caller still receives the error.
+  }
   return error;
+}
+
+export function getInteractionContext() {
+  return captureInteractionContext();
 }
 
 export async function syncPendingInteractions(records, metadata = {}) {
@@ -346,10 +360,16 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
   for (const signal of Object.values(pending.signals)) {
     const showId = String(signal?.showId || "").trim();
     const record = recordsById.get(showId);
-    if (!record || !signal || typeof signal !== "object" || !signal.mutationId) {
-      if (signal?.mutationId && isCurrentInteractionContext(interactionContext)) {
-        acknowledgePendingSignal(showId, signal.mutationId, interactionContext.owner);
-      }
+    if (!signal || typeof signal !== "object" || !signal.mutationId) {
+      continue;
+    }
+    if (!record) {
+      pendingEvents.push({
+        kind: "signal",
+        entry: signal,
+        record: null,
+        unavailable: true
+      });
       continue;
     }
     pendingEvents.push({ kind: "signal", entry: signal, record });
@@ -372,8 +392,9 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
   const results = [];
   let attempted = 0;
   let rateLimited = false;
+  let authBlocked = false;
   const batch = orderedPending.slice(0, batchSize);
-  for (const { kind, entry, record } of batch) {
+  for (const { kind, entry, record, unavailable } of batch) {
     if (attempted > 0 && pacingMs > 0) await waitForPendingSyncPacing(pacingMs);
     try {
       assertInteractionContext(interactionContext);
@@ -384,6 +405,12 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
       break;
     }
     attempted += 1;
+    if (unavailable) {
+      const reason = new Error(`Catalog title ${entry.showId} is not available yet`);
+      reason.code = "CATALOG_RECORD_UNAVAILABLE";
+      results.push({ status: "rejected", reason, entry });
+      continue;
+    }
     try {
       const task = kind === "search"
         ? recordSearchEvent({
@@ -401,17 +428,22 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
           mutationId: entry.mutationId,
           firstQueuedAt: entry.firstQueuedAt
         }, interactionContext);
-      results.push({ status: "fulfilled", value: await task });
+      results.push({ status: "fulfilled", value: await task, entry });
     } catch (reason) {
-      results.push({ status: "rejected", reason });
+      results.push({ status: "rejected", reason, entry });
       if (reason?.status === 429) {
         rateLimited = true;
         setPendingSyncBackoff(interactionContext.owner, reason);
         break;
       }
+      if (reason?.status === 401 || reason?.status === 403 || reason?.authRequired) {
+        authBlocked = true;
+        setPendingSyncBackoff(interactionContext.owner, { retryAfterMs: 60000 });
+        break;
+      }
     }
   }
-  if (!rateLimited) pendingSyncBackoffs.delete(interactionContext.owner);
+  if (!rateLimited && !authBlocked) pendingSyncBackoffs.delete(interactionContext.owner);
   return results;
 }
 

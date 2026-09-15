@@ -33,6 +33,7 @@ const {
   clearInteractionState,
   getInteractionOwner,
   hasPendingInteractions,
+  interactionSessionStore,
   queuePendingSearch,
   readPendingInteractions,
   setInteractionOwner
@@ -87,7 +88,10 @@ const originalSyncConfig = {
   backoffMs: appConfig.interaction.pendingSyncBackoffMs,
   maxBackoffMs: appConfig.interaction.pendingSyncMaxBackoffMs
 };
-const sessionPayload = { session_id: "00000000-0000-4000-8000-000000000099" };
+const sessionPayload = {
+  session_id: "00000000-0000-4000-8000-000000000099",
+  session_token: "test-session-token-0123456789"
+};
 
 test("replay is bounded and makes progress across batches", { concurrency: false }, async () => {
   appConfig.interaction.pendingSyncBatchSize = 2;
@@ -203,6 +207,69 @@ test("owner switch stays memory-consistent when localStorage rejects the write",
     assert.equal(transition.persisted, false);
     assert.equal(getInteractionOwner(), "storage-failure-user");
     assert.equal(JSON.parse(values.get(ownerKey)), "anonymous");
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("memory-only outbox entries remain visible and replayable after quota failure", { concurrency: false }, async () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const outboxPrefix = `${appConfig.interaction.outboxStorageKey}:entry:`;
+  const values = new Map();
+  globalThis.window = {
+    localStorage: {
+      get length() { return values.size; },
+      key(index) { return [...values.keys()][index] ?? null; },
+      getItem(key) { return values.get(key) ?? null; },
+      setItem(key, value) {
+        if (key.startsWith(outboxPrefix)) throw new Error("quota exceeded");
+        values.set(key, String(value));
+      },
+      removeItem(key) { values.delete(key); }
+    },
+    location: { pathname: "/" }
+  };
+  try {
+    setInteractionOwner("memory-outbox-owner");
+    queuePendingSearch({ query: "memory queue", resultCount: 1, filters: {} });
+    assert.equal(Object.keys(readPendingInteractions().searches).length, 1);
+    const calls = installFetch([
+      response(201, sessionPayload),
+      response(201, { accepted: true })
+    ]);
+    const results = await syncPendingInteractions([]);
+    assert.equal(results[0].status, "fulfilled");
+    assert.equal(searchCallCount(calls), 1);
+    assert.equal(hasPendingInteractions(), false);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearInteractionState({ resetOwner: true });
+  }
+});
+
+test("a session id without its token is treated as unusable", { concurrency: false }, () => {
+  clearInteractionState({ resetOwner: true });
+  const originalWindow = globalThis.window;
+  const sessionKey = appConfig.interaction.sessionStorageKey;
+  const values = new Map([[sessionKey, JSON.stringify("00000000-0000-4000-8000-000000000099")]]);
+  globalThis.window = {
+    localStorage: {
+      get length() { return values.size; },
+      key(index) { return [...values.keys()][index] ?? null; },
+      getItem(key) { return values.get(key) ?? null; },
+      setItem(key, value) { values.set(key, String(value)); },
+      removeItem(key) { values.delete(key); }
+    },
+    location: { pathname: "/" }
+  };
+  try {
+    setInteractionOwner("session-pair-owner");
+    assert.equal(interactionSessionStore.read(), null);
+    assert.equal(values.has(sessionKey), false);
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;

@@ -44,7 +44,7 @@ class MigrationChecksumTests(unittest.TestCase):
         migrations_path = Path(__file__).parents[1] / "migrations"
         manifest = MigrationRunner(_FakeConnection(), migrations_path).expected_migrations()
 
-        self.assertEqual(manifest[-1].version, "010_preserve_client_event_time")
+        self.assertEqual(manifest[-1].version, "011_global_interaction_idempotency")
         self.assertTrue(all(len(item.checksum_sha256) == 64 for item in manifest))
 
     def test_missing_migration_is_applied_and_recorded_with_checksum(self):

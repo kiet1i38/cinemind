@@ -17,6 +17,7 @@ import { closeTitleRoute, filterCatalog, getGenres, getRouteTitleId, openTitleRo
 import { syncDocumentLanguage, translate } from "./lib/i18n";
 import { loadCatalog } from "./services/catalogService";
 import {
+  getInteractionContext,
   getInteractionState,
   isRetryableInteractionError,
   recordSearchEvent,
@@ -26,7 +27,7 @@ import {
 import { getDiscoverableTitles, getRecentTitles, getRelatedTitles, getTitlesByType } from "./services/recommendationService";
 import { catalogPageSizeStore } from "./services/catalogPreferencesStore";
 import { AUTH_EVENT_STORAGE_KEY, getAuthPageUrl, getCurrentUser } from "./services/authService";
-import { clearInteractionState, getInteractionOwner, hasPendingInteractions, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
+import { clearInteractionState, consumePendingInteractionLossNotice, getInteractionOwner, hasPendingInteractions, mergeInteractionState, setInteractionOwner } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./authGate.css";
 
@@ -47,6 +48,7 @@ export default function App() {
   const [authStatus, setAuthStatus] = useState("checking");
   const [authPrompt, setAuthPrompt] = useState(null);
   const [toast, setToast] = useState("");
+  const [interactionHydrationVersion, setInteractionHydrationVersion] = useState(0);
   const [activeNavigationTarget, setActiveNavigationTarget] = useState(navigationTargets.home);
   const searchEventSignature = useRef("");
   const languageRef = useRef(language);
@@ -114,7 +116,12 @@ export default function App() {
       authRetryRef.current = null;
     };
     const applyConfirmedIdentity = (user) => {
-      setInteractionOwner(user?.user_id);
+      const transition = setInteractionOwner(user?.user_id);
+      if (transition.changed) {
+        interactionRevisionRef.current += 1;
+        signalRequestRevisionsRef.current.clear();
+        setInteractionHydrationVersion((version) => version + 1);
+      }
       setAuthUser(user);
       setRatings(signalStore.read());
       setAuthStatus(user ? "authenticated" : "anonymous");
@@ -172,6 +179,13 @@ export default function App() {
       clearRetry();
       checkAuth();
     };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") checkAuth();
+    };
+    const handleInteractionAuthRequired = () => {
+      invalidateAuthRequest();
+      checkAuth();
+    };
     const handleAuthStorage = (event) => {
       if (event.key !== AUTH_EVENT_STORAGE_KEY || !event.newValue) return;
       let authEvent;
@@ -196,6 +210,7 @@ export default function App() {
         setRatings({});
         setAuthPrompt(null);
         setAuthStatus("anonymous");
+        setInteractionHydrationVersion((version) => version + 1);
         return;
       }
       if (authEvent?.type === "login") {
@@ -207,6 +222,9 @@ export default function App() {
     checkAuth();
     window.addEventListener("online", retryWhenOnline);
     window.addEventListener("storage", handleAuthStorage);
+    window.addEventListener("cinemind-auth-required", handleInteractionAuthRequired);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    const authPoll = window.setInterval(() => checkAuth(), 60000);
     return () => {
       cancelled = true;
       authRevisionRef.current += 1;
@@ -214,8 +232,11 @@ export default function App() {
       authRequestRef.current = null;
       authCheckQueuedRef.current = false;
       clearRetry();
+      window.clearInterval(authPoll);
       window.removeEventListener("online", retryWhenOnline);
       window.removeEventListener("storage", handleAuthStorage);
+      window.removeEventListener("cinemind-auth-required", handleInteractionAuthRequired);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, []);
   useEffect(() => {
@@ -230,10 +251,10 @@ export default function App() {
   useEffect(() => {
     if (!authReady || !catalog.length) return undefined;
     let cancelled = false;
+    let retryTimer = null;
     const hydrationOwner = authUser?.user_id ? String(authUser.user_id) : "anonymous";
     const hydrationRevision = interactionRevisionRef.current;
-    getInteractionState(interactionMetadata())
-      .then((state) => {
+    const applyRemoteState = (state) => {
         if (
           cancelled
           || hydrationRevision !== interactionRevisionRef.current
@@ -243,18 +264,56 @@ export default function App() {
           ratings: signalStore.read()
         });
         setRatings(merged.ratings);
-        syncPendingInteractions(catalog, interactionMetadata()).catch(() => undefined);
+    };
+    const notifyPendingLoss = () => {
+      if (!appConfig.interaction.pendingMutationLossWarning) return;
+      const dropped = consumePendingInteractionLossNotice();
+      if (dropped > 0) setToast(translate(language, "pendingInteractionsDropped", { count: dropped }));
+    };
+    const hydrate = () => getInteractionState(interactionMetadata())
+      .then((state) => {
+        applyRemoteState(state);
+        notifyPendingLoss();
+        return syncPendingInteractions(catalog, interactionMetadata());
       })
-      .catch(() => undefined);
+      .then((results) => {
+        notifyPendingLoss();
+        const hasDefinitiveFailure = Array.isArray(results)
+          && results.some((result) => result.status === "rejected"
+            && !isRetryableInteractionError(result.reason)
+            && result.reason?.code !== "CATALOG_RECORD_UNAVAILABLE");
+        if (!hasDefinitiveFailure || cancelled) return;
+        return getInteractionState(interactionMetadata()).then(applyRemoteState);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        retryTimer = window.setTimeout(() => {
+          retryTimer = null;
+          hydrate();
+        }, 3000);
+      });
+    hydrate();
     return () => {
       cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
-  }, [authReady, authUser?.user_id, catalog, interactionMetadata]);
+  }, [authReady, authUser?.user_id, catalog, interactionHydrationVersion, interactionMetadata]);
 
   useEffect(() => {
     if (!authReady || !catalog.length) return undefined;
     const retryPending = () => {
-      syncPendingInteractions(catalog, interactionMetadata()).catch(() => undefined);
+      syncPendingInteractions(catalog, interactionMetadata())
+        .then((results) => {
+          const hasDefinitiveFailure = Array.isArray(results)
+            && results.some((result) => result.status === "rejected"
+              && !isRetryableInteractionError(result.reason)
+              && result.reason?.code !== "CATALOG_RECORD_UNAVAILABLE");
+          if (!hasDefinitiveFailure) return null;
+          return getInteractionState(interactionMetadata()).then((state) => {
+            if (authReady) setRatings(mergeInteractionState(state, { ratings: signalStore.read() }).ratings);
+          });
+        })
+        .catch(() => undefined);
     };
     window.addEventListener("online", retryPending);
     const retryIntervalMs = Number.isFinite(appConfig.interaction.pendingRetryIntervalMs)
@@ -316,7 +375,8 @@ export default function App() {
       return undefined;
     }
 
-    const signature = [normalizedQuery, type, genre, year, filteredCatalog.length].join("|");
+    const interactionContext = getInteractionContext();
+    const signature = [interactionContext.owner, interactionContext.revision, normalizedQuery, type, genre, year, filteredCatalog.length].join("|");
     const timeout = window.setTimeout(() => {
       if (searchEventSignature.current === signature) return;
       searchEventSignature.current = signature;
@@ -325,11 +385,15 @@ export default function App() {
         resultCount: filteredCatalog.length,
         filters: { type, genre, year },
         ...interactionMetadata()
-      })
-        .catch(() => undefined);
+      }, interactionContext)
+        .catch(() => undefined)
+        .finally(() => {
+          const dropped = consumePendingInteractionLossNotice();
+          if (dropped > 0) setToast(translate(language, "pendingInteractionsDropped", { count: dropped }));
+        });
     }, appConfig.interaction.searchDebounceMs);
     return () => window.clearTimeout(timeout);
-  }, [filteredCatalog.length, genre, interactionMetadata, query, type, year]);
+  }, [authUser?.user_id, filteredCatalog.length, genre, interactionHydrationVersion, interactionMetadata, query, type, year]);
 
   const clearFilters = useCallback(() => {
     setQuery("");
@@ -405,21 +469,25 @@ export default function App() {
     const item = modalItem;
     if (!item || !authUser) return;
     interactionRevisionRef.current += 1;
+    setInteractionHydrationVersion((version) => version + 1);
     const showId = String(item.id);
     const requestRevision = (signalRequestRevisionsRef.current.get(showId) || 0) + 1;
     signalRequestRevisionsRef.current.set(showId, requestRevision);
     const requestOwner = getInteractionOwner();
+    const interactionContext = getInteractionContext();
     const previousSignal = ratings[item.id];
     setRatings((current) => ({ ...current, [item.id]: { ...signal, savedAt: new Date().toISOString() } }));
     const isCurrentRequest = () => requestRevision === signalRequestRevisionsRef.current.get(showId)
       && requestOwner === getInteractionOwner();
     try {
-      await submitSignal({ record: item, ...signal, ...interactionMetadata() });
+      await submitSignal({ record: item, ...signal, ...interactionMetadata() }, interactionContext);
       if (!isCurrentRequest()) return;
       if (String(modalItemRef.current?.id) !== showId) return;
       setModalItem(null);
       setToast(translate(language, "savedSignal"));
     } catch (error) {
+      const dropped = consumePendingInteractionLossNotice();
+      if (dropped > 0) setToast(translate(language, "pendingInteractionsDropped", { count: dropped }));
       if (!isCurrentRequest()) return;
       if (isRetryableInteractionError(error)) {
         if (String(modalItemRef.current?.id) === showId) {

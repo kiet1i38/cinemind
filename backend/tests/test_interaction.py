@@ -28,10 +28,12 @@ class FakeTransaction:
     def __enter__(self):
         self.repository.transactions_started += 1
         self.snapshot = (
+            copy.deepcopy(self.repository.search_events),
             copy.deepcopy(self.repository.watch_sessions),
             copy.deepcopy(self.repository.ratings),
             copy.deepcopy(self.repository.watch_mutations),
             copy.deepcopy(self.repository.rating_mutations),
+            copy.deepcopy(self.repository.search_mutations),
         )
         return self
 
@@ -39,10 +41,12 @@ class FakeTransaction:
         if error_type:
             self.repository.transactions_rolled_back += 1
             (
+                self.repository.search_events,
                 self.repository.watch_sessions,
                 self.repository.ratings,
                 self.repository.watch_mutations,
                 self.repository.rating_mutations,
+                self.repository.search_mutations,
             ) = self.snapshot
         else:
             self.repository.transactions_committed += 1
@@ -71,6 +75,7 @@ class FakeInteractionRepository:
             },
         }
         self.watch_sessions = {}
+        self.search_events = []
         self.ratings = []
         self.transactions_started = 0
         self.transactions_committed = 0
@@ -78,6 +83,7 @@ class FakeInteractionRepository:
         self.fail_rating = False
         self.watch_mutations = {}
         self.rating_mutations = {}
+        self.search_mutations = {}
         self.search_result_count = 17
 
     def transaction(self):
@@ -120,9 +126,11 @@ class FakeInteractionRepository:
     def catalog_genre_exists(self, _genre):
         return True
 
-    def create_search_event(self, session_id, query_text, normalized_query, result_count, filters, client_mutation_id=None, client_occurred_at=None):
-        return {
-            "search_event_id": 1,
+    def create_search_event(self, session_id, query_text, normalized_query, result_count, filters, client_mutation_id=None, client_occurred_at=None, client_device_id=None, client_event_sequence=None):
+        if client_mutation_id is not None and client_mutation_id in self.search_mutations:
+            return self.search_mutations[client_mutation_id]
+        row = {
+            "search_event_id": len(self.search_events) + 1,
             "session_id": session_id,
             "query_text": query_text,
             "normalized_query": normalized_query,
@@ -130,10 +138,16 @@ class FakeInteractionRepository:
             "filters": filters,
             "occurred_at": datetime.now(timezone.utc),
             "client_occurred_at": client_occurred_at,
+            "client_device_id": client_device_id,
+            "client_event_sequence": client_event_sequence,
         }
+        self.search_events.append(row)
+        if client_mutation_id is not None:
+            self.search_mutations[client_mutation_id] = row
+        return row
 
-    def create_watch_session(self, watch_session_id, session_id, title_id, watch_seconds, runtime_seconds, completion_rate, duration_basis, client_mutation_id=None, client_occurred_at=None):
-        mutation_key = (session_id, client_mutation_id)
+    def create_watch_session(self, watch_session_id, session_id, title_id, watch_seconds, runtime_seconds, completion_rate, duration_basis, client_mutation_id=None, client_occurred_at=None, client_device_id=None, client_event_sequence=None):
+        mutation_key = client_mutation_id
         if client_mutation_id is not None and mutation_key in self.watch_mutations:
             return self.watch_mutations[mutation_key]
         row = {
@@ -146,6 +160,8 @@ class FakeInteractionRepository:
             "duration_basis": duration_basis,
             "recorded_at": datetime.now(timezone.utc),
             "client_occurred_at": client_occurred_at,
+            "client_device_id": client_device_id,
+            "client_event_sequence": client_event_sequence,
         }
         self.watch_sessions[watch_session_id] = row
         if client_mutation_id is not None:
@@ -155,10 +171,13 @@ class FakeInteractionRepository:
     def get_watch_session(self, watch_session_id):
         return self.watch_sessions.get(watch_session_id)
 
-    def create_rating(self, session_id, title_id, rating, watch_session_id, client_mutation_id=None, client_occurred_at=None):
+    def get_rating_by_mutation(self, client_mutation_id):
+        return self.rating_mutations.get(client_mutation_id)
+
+    def create_rating(self, session_id, title_id, rating, watch_session_id, client_mutation_id=None, client_occurred_at=None, client_device_id=None, client_event_sequence=None):
         if self.fail_rating:
             raise RuntimeError("simulated rating failure")
-        mutation_key = (session_id, client_mutation_id)
+        mutation_key = client_mutation_id
         if client_mutation_id is not None and mutation_key in self.rating_mutations:
             return self.rating_mutations[mutation_key]
         row = {
@@ -180,6 +199,8 @@ class FakeInteractionRepository:
             ),
             "rated_at": datetime.now(timezone.utc),
             "client_occurred_at": client_occurred_at,
+            "client_device_id": client_device_id,
+            "client_event_sequence": client_event_sequence,
         }
         self.ratings.append(row)
         if client_mutation_id is not None:
@@ -187,15 +208,25 @@ class FakeInteractionRepository:
         return row
 
     def interaction_state(self, session_id, _user_id=None):
-        latest_by_title = {}
+        latest_by_device = {}
         for row in self.ratings:
             if row["session_id"] != session_id:
                 continue
-            effective_time = row["client_occurred_at"] or row["rated_at"]
-            sort_key = (effective_time, row["rated_at"], row["rating_id"])
-            current = latest_by_title.get(row["title_id"])
+            device_key = (row["title_id"], row.get("client_device_id") or row["session_id"])
+            sort_key = (
+                row.get("client_event_sequence") or 0,
+                row["rated_at"],
+                row["rating_id"],
+            )
+            current = latest_by_device.get(device_key)
             if current is None or sort_key > current[0]:
-                latest_by_title[row["title_id"]] = (sort_key, row)
+                latest_by_device[device_key] = (sort_key, row)
+        latest_by_title = {}
+        for _sort_key, row in latest_by_device.values():
+            current = latest_by_title.get(row["title_id"])
+            server_sort_key = (row["rated_at"], row["rating_id"])
+            if current is None or server_sort_key > current[0]:
+                latest_by_title[row["title_id"]] = (server_sort_key, row)
         return {
             "ratings": tuple(
                 row
@@ -284,18 +315,23 @@ class InteractionServiceTests(unittest.TestCase):
 
     def test_state_keeps_newer_client_event_when_older_retry_arrives_later(self):
         newer_event_time = datetime.now(timezone.utc) - timedelta(hours=2)
+        device_id = uuid4()
 
         self.service.record_rating(
             self.session_id,
             "movie-1",
             Decimal("8"),
             client_occurred_at=newer_event_time,
+            client_device_id=device_id,
+            client_event_sequence=2,
         )
         self.service.record_rating(
             self.session_id,
             "movie-1",
             Decimal("2"),
             client_occurred_at=newer_event_time - timedelta(hours=1),
+            client_device_id=device_id,
+            client_event_sequence=1,
         )
 
         state = self.service.get_state(self.session_id)
@@ -362,6 +398,94 @@ class InteractionServiceTests(unittest.TestCase):
                 self.session_id, "show-1", Decimal("8.5"), 30,
                 client_mutation_id=mutation_id,
             )
+
+    def test_signal_replay_after_session_rotation_reuses_the_original_event(self):
+        mutation_id = uuid4()
+        device_id = uuid4()
+        first = self.service.record_signal(
+            self.session_id,
+            "movie-1",
+            Decimal("8.5"),
+            30,
+            client_mutation_id=mutation_id,
+            client_device_id=device_id,
+            client_event_sequence=1,
+        )
+        rotated_session = uuid4()
+        now = datetime.now(timezone.utc)
+        self.repository.sessions[rotated_session] = {
+            "session_id": rotated_session,
+            "started_at": now,
+            "last_seen_at": now,
+            "ended_at": None,
+        }
+        replay = self.service.record_signal(
+            rotated_session,
+            "movie-1",
+            Decimal("8.5"),
+            30,
+            client_mutation_id=mutation_id,
+            client_device_id=device_id,
+            client_event_sequence=1,
+        )
+
+        self.assertEqual(replay["watch_session"]["watch_session_id"], first["watch_session"]["watch_session_id"])
+        self.assertEqual(replay["rating"]["rating_id"], first["rating"]["rating_id"])
+        self.assertEqual(len(self.repository.watch_sessions), 1)
+        self.assertEqual(len(self.repository.ratings), 1)
+
+    def test_rating_replay_after_session_rotation_reuses_linked_watch(self):
+        mutation_id = uuid4()
+        watch = self.service.record_watch_session(self.session_id, "movie-1", 30)
+        first = self.service.record_rating(
+            self.session_id,
+            "movie-1",
+            Decimal("8.5"),
+            watch["watch_session_id"],
+            client_mutation_id=mutation_id,
+        )
+        rotated_session = uuid4()
+        now = datetime.now(timezone.utc)
+        self.repository.sessions[rotated_session] = {
+            "session_id": rotated_session,
+            "started_at": now,
+            "last_seen_at": now,
+            "ended_at": None,
+        }
+
+        replay = self.service.record_rating(
+            rotated_session,
+            "movie-1",
+            Decimal("8.5"),
+            watch["watch_session_id"],
+            client_mutation_id=mutation_id,
+        )
+
+        self.assertEqual(replay["rating_id"], first["rating_id"])
+        self.assertEqual(len(self.repository.ratings), 1)
+
+    def test_same_device_sequence_wins_over_a_wrong_client_clock(self):
+        device_id = uuid4()
+        self.service.record_rating(
+            self.session_id,
+            "movie-1",
+            Decimal("8"),
+            client_device_id=device_id,
+            client_event_sequence=2,
+            client_occurred_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+        self.service.record_rating(
+            self.session_id,
+            "movie-1",
+            Decimal("2"),
+            client_device_id=device_id,
+            client_event_sequence=1,
+            client_occurred_at=datetime.now(timezone.utc),
+        )
+
+        state = self.service.get_state(self.session_id)
+
+        self.assertEqual(state["ratings"][0]["rating"], Decimal("8.0"))
 
     def test_signal_rolls_back_when_rating_write_fails(self):
         self.repository.fail_rating = True

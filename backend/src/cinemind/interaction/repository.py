@@ -162,17 +162,35 @@ class InteractionRepository:
         filters: dict[str, str],
         client_mutation_id: UUID | None = None,
         client_occurred_at: datetime | None = None,
+        client_device_id: UUID | None = None,
+        client_event_sequence: int | None = None,
     ) -> dict:
+        if client_mutation_id is not None:
+            existing = self.connection.execute(
+                """
+                SELECT search_event_id, session_id, query_text, normalized_query,
+                       result_count, filters, occurred_at, client_occurred_at,
+                       client_device_id, client_event_sequence
+                FROM interaction.search_events
+                WHERE client_mutation_id = %s
+                ORDER BY search_event_id ASC
+                LIMIT 1
+                """,
+                (client_mutation_id,),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
         if client_mutation_id is None:
             row = self.connection.execute(
                 """
                 INSERT INTO interaction.search_events (
                     session_id, query_text, normalized_query, result_count, filters,
-                    client_occurred_at
+                    client_occurred_at, client_device_id, client_event_sequence
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING search_event_id, session_id, query_text, normalized_query,
-                          result_count, filters, occurred_at, client_occurred_at
+                          result_count, filters, occurred_at, client_occurred_at,
+                          client_device_id, client_event_sequence
                 """,
                 (
                     session_id,
@@ -181,6 +199,8 @@ class InteractionRepository:
                     result_count,
                     Jsonb(filters),
                     client_occurred_at,
+                    client_device_id,
+                    client_event_sequence,
                 ),
             ).fetchone()
         else:
@@ -188,13 +208,15 @@ class InteractionRepository:
                 """
                 INSERT INTO interaction.search_events (
                     session_id, query_text, normalized_query, result_count, filters,
-                    client_occurred_at, client_mutation_id
+                    client_occurred_at, client_mutation_id, client_device_id,
+                    client_event_sequence
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (session_id, client_mutation_id)
                     WHERE client_mutation_id IS NOT NULL DO NOTHING
-                RETURNING search_event_id, session_id, query_text, normalized_query,
-                          result_count, filters, occurred_at, client_occurred_at
+                    RETURNING search_event_id, session_id, query_text, normalized_query,
+                          result_count, filters, occurred_at, client_occurred_at,
+                          client_device_id, client_event_sequence
                 """,
                 (
                     session_id,
@@ -204,17 +226,22 @@ class InteractionRepository:
                     Jsonb(filters),
                     client_occurred_at,
                     client_mutation_id,
+                    client_device_id,
+                    client_event_sequence,
                 ),
             ).fetchone()
             if row is None:
                 row = self.connection.execute(
                     """
                     SELECT search_event_id, session_id, query_text, normalized_query,
-                           result_count, filters, occurred_at, client_occurred_at
+                           result_count, filters, occurred_at, client_occurred_at,
+                           client_device_id, client_event_sequence
                     FROM interaction.search_events
-                    WHERE session_id = %s AND client_mutation_id = %s
+                    WHERE client_mutation_id = %s
+                    ORDER BY search_event_id ASC
+                    LIMIT 1
                     """,
-                    (session_id, client_mutation_id),
+                    (client_mutation_id,),
                 ).fetchone()
         if row is None:
             raise RuntimeError("Could not create search event")
@@ -231,20 +258,38 @@ class InteractionRepository:
         duration_basis: str,
         client_mutation_id: UUID | None = None,
         client_occurred_at: datetime | None = None,
+        client_device_id: UUID | None = None,
+        client_event_sequence: int | None = None,
     ) -> dict:
+        if client_mutation_id is not None:
+            existing = self.connection.execute(
+                """
+                SELECT watch_session_id, session_id, title_id, watch_seconds,
+                       runtime_seconds, completion_rate, duration_basis, recorded_at,
+                       client_occurred_at, client_device_id, client_event_sequence
+                FROM interaction.watch_sessions
+                WHERE client_mutation_id = %s
+                ORDER BY recorded_at ASC, watch_session_id ASC
+                LIMIT 1
+                """,
+                (client_mutation_id,),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
         row = self.connection.execute(
             """
             INSERT INTO interaction.watch_sessions (
                 watch_session_id, session_id, title_id, watch_seconds,
                 runtime_seconds, completion_rate, duration_basis,
-                client_occurred_at, client_mutation_id
+                client_occurred_at, client_mutation_id, client_device_id,
+                client_event_sequence
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (session_id, client_mutation_id)
                 WHERE client_mutation_id IS NOT NULL DO NOTHING
             RETURNING watch_session_id, session_id, title_id, watch_seconds,
                       runtime_seconds, completion_rate, duration_basis, recorded_at,
-                      client_occurred_at
+                      client_occurred_at, client_device_id, client_event_sequence
             """,
             (
                 watch_session_id,
@@ -256,6 +301,8 @@ class InteractionRepository:
                 duration_basis,
                 client_occurred_at,
                 client_mutation_id,
+                client_device_id,
+                client_event_sequence,
             ),
         ).fetchone()
         if row is None and client_mutation_id is not None:
@@ -263,11 +310,13 @@ class InteractionRepository:
                 """
                 SELECT watch_session_id, session_id, title_id, watch_seconds,
                        runtime_seconds, completion_rate, duration_basis, recorded_at,
-                       client_occurred_at
+                       client_occurred_at, client_device_id, client_event_sequence
                 FROM interaction.watch_sessions
-                WHERE session_id = %s AND client_mutation_id = %s
+                WHERE client_mutation_id = %s
+                ORDER BY recorded_at ASC, watch_session_id ASC
+                LIMIT 1
                 """,
-                (session_id, client_mutation_id),
+                (client_mutation_id,),
             ).fetchone()
         if row is None:
             raise RuntimeError("Could not create watch session")
@@ -281,18 +330,37 @@ class InteractionRepository:
         watch_session_id: UUID | None,
         client_mutation_id: UUID | None = None,
         client_occurred_at: datetime | None = None,
+        client_device_id: UUID | None = None,
+        client_event_sequence: int | None = None,
     ) -> dict:
+        if client_mutation_id is not None:
+            existing = self.connection.execute(
+                """
+                SELECT rating_id, session_id, watch_session_id, title_id,
+                       rating_value, rated_at, client_occurred_at,
+                       client_device_id, client_event_sequence
+                FROM interaction.ratings
+                WHERE client_mutation_id = %s
+                ORDER BY rating_id ASC
+                LIMIT 1
+                """,
+                (client_mutation_id,),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
         row = self.connection.execute(
             """
             INSERT INTO interaction.ratings (
                 session_id, watch_session_id, title_id, rating_value,
-                client_occurred_at, client_mutation_id
+                client_occurred_at, client_mutation_id, client_device_id,
+                client_event_sequence
             )
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (session_id, client_mutation_id)
                 WHERE client_mutation_id IS NOT NULL DO NOTHING
             RETURNING rating_id, session_id, watch_session_id, title_id,
                       rating_value, rated_at, client_occurred_at
+                      , client_device_id, client_event_sequence
             """,
             (
                 session_id,
@@ -301,17 +369,22 @@ class InteractionRepository:
                 rating,
                 client_occurred_at,
                 client_mutation_id,
+                client_device_id,
+                client_event_sequence,
             ),
         ).fetchone()
         if row is None and client_mutation_id is not None:
             row = self.connection.execute(
                 """
                 SELECT rating_id, session_id, watch_session_id, title_id,
-                       rating_value, rated_at, client_occurred_at
+                       rating_value, rated_at, client_occurred_at,
+                       client_device_id, client_event_sequence
                 FROM interaction.ratings
-                WHERE session_id = %s AND client_mutation_id = %s
+                WHERE client_mutation_id = %s
+                ORDER BY rating_id ASC
+                LIMIT 1
                 """,
-                (session_id, client_mutation_id),
+                (client_mutation_id,),
             ).fetchone()
         if row is None:
             raise RuntimeError("Could not create rating")
@@ -330,6 +403,23 @@ class InteractionRepository:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_rating_by_mutation(self, client_mutation_id: UUID) -> dict | None:
+        """Find an acknowledged rating before validating a rotated session link."""
+
+        row = self.connection.execute(
+            """
+            SELECT rating_id, session_id, watch_session_id, title_id,
+                   rating_value, rated_at, client_occurred_at,
+                   client_device_id, client_event_sequence
+            FROM interaction.ratings
+            WHERE client_mutation_id = %s
+            ORDER BY rating_id ASC
+            LIMIT 1
+            """,
+            (client_mutation_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def interaction_state(
         self,
         session_id: UUID,
@@ -339,20 +429,43 @@ class InteractionRepository:
         session_parameter = user_id if user_id is not None else session_id
         ratings = self.connection.execute(
             f"""
-            SELECT DISTINCT ON (r.title_id)
-                   t.show_id,
-                   r.rating_value AS rating,
+            WITH device_latest AS (
+                SELECT
+                   r.rating_id,
+                   r.title_id,
+                   r.rating_value,
+                   r.rated_at,
+                   r.client_occurred_at,
+                   r.client_device_id,
+                   r.client_event_sequence,
+                   r.watch_session_id,
                    ws.watch_seconds,
-                   r.rated_at
-            FROM interaction.ratings r
-            JOIN interaction.sessions s ON s.session_id = r.session_id
-            JOIN catalog.titles t ON t.title_id = r.title_id AND t.is_active = TRUE
-            LEFT JOIN interaction.watch_sessions ws ON ws.watch_session_id = r.watch_session_id
-            WHERE {session_clause}
-            ORDER BY r.title_id,
-                     COALESCE(r.client_occurred_at, r.rated_at) DESC,
-                     r.rated_at DESC,
-                     r.rating_id DESC
+                   t.show_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY r.title_id, COALESCE(r.client_device_id, r.session_id)
+                           ORDER BY
+                               r.client_event_sequence DESC NULLS LAST,
+                               r.rated_at DESC,
+                               r.rating_id DESC
+                       ) AS device_rank
+                FROM interaction.ratings r
+                JOIN interaction.sessions s ON s.session_id = r.session_id
+                JOIN catalog.titles t ON t.title_id = r.title_id AND t.is_active = TRUE
+                LEFT JOIN interaction.watch_sessions ws ON ws.watch_session_id = r.watch_session_id
+                WHERE {session_clause}
+            )
+            SELECT DISTINCT ON (title_id)
+                   show_id,
+                   rating_value AS rating,
+                   watch_seconds,
+                   rated_at,
+                   rated_at AS event_at,
+                   client_occurred_at,
+                   client_device_id,
+                   client_event_sequence
+            FROM device_latest
+            WHERE device_rank = 1
+            ORDER BY title_id, rated_at DESC, rating_id DESC
             """,
             (session_parameter,),
         ).fetchall()

@@ -7,6 +7,8 @@ const interactionConfig = appConfig.interaction;
 const ownerStoreBase = createJsonStore(interactionConfig.ownerStorageKey, "anonymous");
 const sessionStoreBase = createJsonStore(interactionConfig.sessionStorageKey, null);
 const sessionTokenStoreBase = createJsonStore(`${interactionConfig.sessionStorageKey}:token`, null);
+const deviceStoreBase = createJsonStore(interactionConfig.deviceStorageKey || "cinemind-interaction-device-id", null);
+const sequenceStoreBase = createJsonStore(interactionConfig.sequenceStorageKey || "cinemind-interaction-event-sequence", 0);
 const signalStoreBase = createJsonStore(appConfig.signals.storageKey, {});
 const outboxStoreBase = createJsonStore(interactionConfig.outboxStorageKey, () => ({ signals: {}, searches: {} }));
 const legacyFavoriteStore = createJsonStore("cinemind-favorites", null);
@@ -19,6 +21,10 @@ let lastPendingWritePersisted = true;
 // async operation that captured an older generation must stop before it can
 // read or write the current owner's namespace.
 let interactionRevision = 0;
+const memoryOutboxEntries = new Map();
+const memoryOutboxTombstones = new Set();
+const reportedPendingLosses = new Set();
+let pendingInteractionLossCount = 0;
 
 // Remove obsolete preference data as soon as the new bundle loads.
 legacyFavoriteStore.remove();
@@ -72,6 +78,21 @@ function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(String(value || "").trim());
 }
 
+export function getInteractionDeviceId() {
+  const current = deviceStoreBase.read();
+  if (isUuid(current)) return String(current).toLowerCase();
+  const deviceId = createMutationId();
+  deviceStoreBase.write(deviceId);
+  return deviceId;
+}
+
+export function nextInteractionEventSequence() {
+  const current = Number(sequenceStoreBase.read());
+  const next = Number.isSafeInteger(current) && current >= 0 ? current + 1 : 1;
+  sequenceStoreBase.write(next);
+  return next;
+}
+
 function normalizeOutbox(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const signals = source.signals && typeof source.signals === "object" && !Array.isArray(source.signals) ? source.signals : {};
@@ -121,7 +142,11 @@ function normalizePendingSignal(key, entry, now, ttlMs) {
     firstQueuedAt,
     lastAttemptAt,
     queuedAt: firstQueuedAt,
-    mutationId
+    mutationId,
+    clientDeviceId: isUuid(entry.clientDeviceId) ? String(entry.clientDeviceId).toLowerCase() : null,
+    clientEventSequence: Number.isSafeInteger(Number(entry.clientEventSequence)) && Number(entry.clientEventSequence) > 0
+      ? Number(entry.clientEventSequence)
+      : null
   }];
 }
 
@@ -141,11 +166,20 @@ function normalizePendingSearch(key, entry, now, ttlMs) {
     firstQueuedAt,
     lastAttemptAt,
     queuedAt: firstQueuedAt,
-    mutationId
+    mutationId,
+    clientDeviceId: isUuid(entry.clientDeviceId) ? String(entry.clientDeviceId).toLowerCase() : null,
+    clientEventSequence: Number.isSafeInteger(Number(entry.clientEventSequence)) && Number(entry.clientEventSequence) > 0
+      ? Number(entry.clientEventSequence)
+      : null
   }];
 }
 
 function comparePendingEntries([leftId, left], [rightId, right]) {
+  if (left.clientDeviceId && left.clientDeviceId === right.clientDeviceId
+    && left.clientEventSequence && right.clientEventSequence) {
+    return left.clientEventSequence - right.clientEventSequence
+      || String(leftId).localeCompare(String(rightId));
+  }
   const timestampDifference = Date.parse(left.firstQueuedAt || left.queuedAt) - Date.parse(right.firstQueuedAt || right.queuedAt);
   return timestampDifference || String(leftId).localeCompare(String(rightId));
 }
@@ -193,6 +227,17 @@ function outboxEntryKey(owner, type, mutationId) {
   return `${outboxOwnerPrefix(owner)}${type}:${encodeURIComponent(String(mutationId).toLowerCase())}`;
 }
 
+function memoryOutboxKey(owner, type, mutationId) {
+  return outboxEntryKey(owner, type, mutationId);
+}
+
+function notePendingLoss(owner, type, mutationId) {
+  const key = memoryOutboxKey(owner, type, mutationId);
+  if (reportedPendingLosses.has(key)) return;
+  reportedPendingLosses.add(key);
+  pendingInteractionLossCount += 1;
+}
+
 function outboxMigrationKey(owner) {
   return `${outboxMigrationPrefix}${encodedOwner(owner)}`;
 }
@@ -208,13 +253,16 @@ function parseStorageJson(storage, key) {
 
 function outboxEntryKeys(owner) {
   const storage = usableBrowserStorage();
-  if (!storage) return [];
   const prefix = outboxOwnerPrefix(owner);
   const keys = [];
+  for (const key of memoryOutboxEntries.keys()) {
+    if (key.startsWith(prefix)) keys.push(key);
+  }
+  if (!storage) return keys;
   try {
     for (let index = 0; index < storage.length; index += 1) {
       const key = storage.key(index);
-      if (key?.startsWith(prefix)) keys.push(key);
+      if (key?.startsWith(prefix) && !keys.includes(key)) keys.push(key);
     }
   } catch {
     return [];
@@ -230,7 +278,12 @@ function writeOutboxEntry(owner, type, mutationId, value) {
     lastPendingWritePersisted = writeScopedValueForOwner(outboxStoreBase, owner, outbox);
     return lastPendingWritePersisted;
   }
-  lastPendingWritePersisted = createJsonStore(outboxEntryKey(owner, type, mutationId), null).write(value);
+  const key = memoryOutboxKey(owner, type, mutationId);
+  memoryOutboxTombstones.delete(key);
+  reportedPendingLosses.delete(key);
+  lastPendingWritePersisted = createJsonStore(key, null).write(value);
+  if (lastPendingWritePersisted) memoryOutboxEntries.delete(key);
+  else memoryOutboxEntries.set(key, value);
   return lastPendingWritePersisted;
 }
 
@@ -243,7 +296,10 @@ function removeOutboxEntry(owner, type, mutationId) {
     return lastPendingWritePersisted;
   }
   const key = outboxEntryKey(owner, type, mutationId);
-  createJsonStore(key, null).remove();
+  const removed = createJsonStore(key, null).remove();
+  memoryOutboxEntries.delete(key);
+  if (!removed) memoryOutboxTombstones.add(key);
+  else memoryOutboxTombstones.delete(key);
   try {
     lastPendingWritePersisted = storage.getItem(key) === null;
   } catch {
@@ -256,9 +312,14 @@ function removeOutboxEntryIfUnchanged(owner, type, mutationId, expectedValue) {
   const storage = usableBrowserStorage();
   if (!storage) return removeOutboxEntry(owner, type, mutationId);
   const key = outboxEntryKey(owner, type, mutationId);
-  const currentValue = parseStorageJson(storage, key);
+  if (memoryOutboxTombstones.has(key)) return false;
+  const memoryValue = memoryOutboxEntries.get(key);
+  if (memoryValue !== undefined && JSON.stringify(memoryValue) !== JSON.stringify(expectedValue)) return false;
+  const currentValue = memoryValue !== undefined ? memoryValue : parseStorageJson(storage, key);
   if (JSON.stringify(currentValue) !== JSON.stringify(expectedValue)) return false;
-  createJsonStore(key, null).remove();
+  const removed = createJsonStore(key, null).remove();
+  memoryOutboxEntries.delete(key);
+  if (!removed) memoryOutboxTombstones.add(key);
   try {
     lastPendingWritePersisted = storage.getItem(key) === null;
   } catch {
@@ -301,7 +362,10 @@ function pruneOutboxType(owner, type) {
     } catch {
       continue;
     }
-    const value = parseStorageJson(storage, key);
+    const value = memoryOutboxEntries.has(key)
+      ? memoryOutboxEntries.get(key)
+      : parseStorageJson(storage, key);
+    if (memoryOutboxTombstones.has(key)) continue;
     if (value === null) continue;
     snapshots.set(mutationId, value);
     const normalized = type === "signals"
@@ -313,6 +377,7 @@ function pruneOutboxType(owner, type) {
   let persisted = true;
   for (const [mutationId, value] of snapshots) {
     if (retained.has(mutationId)) continue;
+    notePendingLoss(owner, type, mutationId);
     persisted = removeOutboxEntryIfUnchanged(owner, type, mutationId, value) && persisted;
   }
   return persisted;
@@ -325,7 +390,9 @@ function clearOutboxForOwner(owner) {
     return;
   }
   for (const key of outboxEntryKeys(owner)) {
-    createJsonStore(key, null).remove();
+    const removed = createJsonStore(key, null).remove();
+    memoryOutboxEntries.delete(key);
+    if (!removed) memoryOutboxTombstones.add(key);
   }
   // The aggregate key is legacy-only, but clear its owner namespace as well
   // so a later storage fallback cannot resurrect pre-migration data.
@@ -335,7 +402,18 @@ function clearOutboxForOwner(owner) {
 function readOutboxForOwner(owner) {
   const normalizedOwner = String(owner || "anonymous");
   const storage = usableBrowserStorage();
-  if (!storage) return normalizeOutbox(ownerScopedValue(outboxStoreBase, normalizedOwner, {}));
+  if (!storage) {
+    const source = ownerScopedValue(outboxStoreBase, normalizedOwner, {});
+    const normalized = normalizeOutbox(source);
+    for (const type of OUTBOX_TYPES) {
+      for (const mutationId of Object.keys(source?.[type] || {})) {
+        if (!Object.prototype.hasOwnProperty.call(normalized[type], mutationId)) {
+          notePendingLoss(normalizedOwner, type, mutationId);
+        }
+      }
+    }
+    return normalized;
+  }
 
   const raw = { signals: {}, searches: {} };
   for (const key of outboxEntryKeys(normalizedOwner)) {
@@ -348,6 +426,24 @@ function readOutboxForOwner(owner) {
     try {
       mutationId = decodeURIComponent(suffix.slice(separator + 1));
     } catch {
+      continue;
+    }
+    const memoryValue = memoryOutboxEntries.get(key);
+    if (memoryValue !== undefined) {
+      const value = createJsonStore(key, null).read();
+      if (!memoryOutboxTombstones.has(key) && value !== null) raw[type][mutationId] = value;
+      // Keep the in-memory copy authoritative until a later queue write or
+      // acknowledgement removes it. A persistent stale value may still be
+      // readable while quota writes are failing.
+      continue;
+    }
+    if (memoryOutboxTombstones.has(key)) {
+      try {
+        storage.removeItem(key);
+        memoryOutboxTombstones.delete(key);
+      } catch {
+        // Ignore a stale persistent value for this page lifetime.
+      }
       continue;
     }
     const value = parseStorageJson(storage, key);
@@ -370,6 +466,7 @@ function readOutboxForOwner(owner) {
       for (const type of OUTBOX_TYPES) {
         for (const mutationId of Object.keys(raw[type])) {
           if (!Object.prototype.hasOwnProperty.call(combined[type], mutationId)) {
+            notePendingLoss(normalizedOwner, type, mutationId);
             removeOutboxEntry(normalizedOwner, type, mutationId);
           }
         }
@@ -390,6 +487,12 @@ function readOutboxForOwner(owner) {
   if (Object.keys(ownerScopedValue(outboxStoreBase, normalizedOwner, {})).length) {
     removeScopedValueForOwner(outboxStoreBase, normalizedOwner);
   }
+  // Expired or over-limit entries can be discovered during a read (for
+  // example after a browser stayed offline for several days). Remove them
+  // now and retain a one-shot notice for the UI instead of silently losing
+  // the event at the next interaction.
+  pruneOutboxType(normalizedOwner, "signals");
+  pruneOutboxType(normalizedOwner, "searches");
   return normalizeOutbox(raw);
 }
 
@@ -479,6 +582,14 @@ export const interactionSessionStore = {
       if (value !== null && value !== undefined) writeScopedValueForOwner(sessionStoreBase, owner, null);
       return null;
     }
+    const token = ownerScopedValue(sessionTokenStoreBase, owner, null);
+    if (typeof token !== "string" || token.trim().length < 20 || token.trim().length > 256) {
+      // A session id without its proof is not a usable session. Clear the
+      // pair together so an auth-cookie user cannot loop on 401 responses.
+      writeScopedValueForOwner(sessionStoreBase, owner, null);
+      writeScopedValueForOwner(sessionTokenStoreBase, owner, null);
+      return null;
+    }
     return String(value).toLowerCase();
   },
   readToken(ownerId = getInteractionOwner()) {
@@ -528,6 +639,12 @@ export function pendingInteractionsPersisted() {
   return lastPendingWritePersisted;
 }
 
+export function consumePendingInteractionLossNotice() {
+  const count = pendingInteractionLossCount;
+  pendingInteractionLossCount = 0;
+  return count;
+}
+
 export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId = createMutationId(), requestedFirstQueuedAt = null, ownerId = getInteractionOwner()) {
   const normalizedShowId = String(showId || "").trim();
   const normalizedRating = Number(rating);
@@ -541,6 +658,8 @@ export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId 
   const firstQueuedAt = existing?.firstQueuedAt
     || existing?.queuedAt
     || normalizeTimestamp(requestedFirstQueuedAt, new Date().toISOString());
+  const clientDeviceId = existing?.clientDeviceId || getInteractionDeviceId();
+  const clientEventSequence = existing?.clientEventSequence || nextInteractionEventSequence();
   const writePersisted = writeOutboxEntry(owner, "signals", normalizedMutationId, {
     showId: normalizedShowId,
     rating: normalizedRating,
@@ -548,7 +667,9 @@ export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId 
     firstQueuedAt,
     lastAttemptAt: new Date().toISOString(),
     queuedAt: firstQueuedAt,
-    mutationId: normalizedMutationId
+    mutationId: normalizedMutationId,
+    clientDeviceId,
+    clientEventSequence
   });
   lastPendingWritePersisted = writePersisted && pruneOutboxType(owner, "signals");
   return normalizedMutationId;
@@ -571,6 +692,8 @@ export function queuePendingSearch({ query, resultCount, filters }, mutationId =
   const firstQueuedAt = existing?.firstQueuedAt
     || existing?.queuedAt
     || normalizeTimestamp(requestedFirstQueuedAt, new Date().toISOString());
+  const clientDeviceId = existing?.clientDeviceId || getInteractionDeviceId();
+  const clientEventSequence = existing?.clientEventSequence || nextInteractionEventSequence();
   const writePersisted = writeOutboxEntry(owner, "searches", normalizedMutationId, {
     query: normalizedQuery,
     resultCount: Math.max(0, Number(resultCount) || 0),
@@ -578,7 +701,9 @@ export function queuePendingSearch({ query, resultCount, filters }, mutationId =
     firstQueuedAt,
     lastAttemptAt: new Date().toISOString(),
     queuedAt: firstQueuedAt,
-    mutationId: normalizedMutationId
+    mutationId: normalizedMutationId,
+    clientDeviceId,
+    clientEventSequence
   });
   lastPendingWritePersisted = writePersisted && pruneOutboxType(owner, "searches");
   return normalizedMutationId;
@@ -602,7 +727,12 @@ export function mergeInteractionState(remoteState, localState = {}) {
     const remoteRating = Number(item?.rating);
     const remoteWatchMinutes = item?.watch_minutes === null ? 0 : Number(item?.watch_minutes);
     if (!item || typeof item !== "object" || !item.show_id || !isValidRating(remoteRating) || !Number.isInteger(remoteWatchMinutes) || remoteWatchMinutes < 0 || remoteWatchMinutes > interactionConfig.maxWatchMinutes) continue;
-    ratings[String(item.show_id)] = { rating: remoteRating, watchMinutes: remoteWatchMinutes, savedAt: item.rated_at };
+    ratings[String(item.show_id)] = {
+      rating: remoteRating,
+      watchMinutes: remoteWatchMinutes,
+      savedAt: item.event_at || item.client_occurred_at || item.rated_at,
+      serverSavedAt: item.rated_at
+    };
   }
   const latestPendingByShow = new Map();
   for (const signal of Object.values(pending.signals)) {
