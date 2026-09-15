@@ -6,6 +6,7 @@ import copy
 from types import SimpleNamespace
 from uuid import uuid4
 import unittest
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -136,6 +137,7 @@ class FakeInteractionRepository:
             "normalized_query": normalized_query,
             "result_count": result_count,
             "filters": filters,
+            "client_mutation_id": client_mutation_id,
             "occurred_at": datetime.now(timezone.utc),
             "client_occurred_at": client_occurred_at,
             "client_device_id": client_device_id,
@@ -146,6 +148,9 @@ class FakeInteractionRepository:
             self.search_mutations[client_mutation_id] = row
         return row
 
+    def get_search_event_by_mutation(self, client_mutation_id):
+        return self.search_mutations.get(client_mutation_id)
+
     def create_watch_session(self, watch_session_id, session_id, title_id, watch_seconds, runtime_seconds, completion_rate, duration_basis, client_mutation_id=None, client_occurred_at=None, client_device_id=None, client_event_sequence=None):
         mutation_key = client_mutation_id
         if client_mutation_id is not None and mutation_key in self.watch_mutations:
@@ -154,6 +159,11 @@ class FakeInteractionRepository:
             "watch_session_id": watch_session_id,
             "session_id": session_id,
             "title_id": title_id,
+            "show_id": next(
+                title["show_id"]
+                for title in self.titles.values()
+                if title["title_id"] == title_id
+            ),
             "watch_seconds": watch_seconds,
             "runtime_seconds": runtime_seconds,
             "completion_rate": completion_rate,
@@ -167,6 +177,9 @@ class FakeInteractionRepository:
         if client_mutation_id is not None:
             self.watch_mutations[mutation_key] = row
         return row
+
+    def get_watch_session_by_mutation(self, client_mutation_id):
+        return self.watch_mutations.get(client_mutation_id)
 
     def get_watch_session(self, watch_session_id):
         return self.watch_sessions.get(watch_session_id)
@@ -201,6 +214,7 @@ class FakeInteractionRepository:
             "client_occurred_at": client_occurred_at,
             "client_device_id": client_device_id,
             "client_event_sequence": client_event_sequence,
+            "client_mutation_id": client_mutation_id,
         }
         self.ratings.append(row)
         if client_mutation_id is not None:
@@ -299,6 +313,98 @@ class InteractionServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(replay["result_count"], 17)
+
+    def test_search_replay_does_not_revalidate_removed_genre(self):
+        mutation_id = uuid4()
+        filters = {"type": "all", "genre": "Drama", "year": "all"}
+        self.service.record_search_event(
+            self.session_id,
+            "Drama",
+            2,
+            filters,
+            client_mutation_id=mutation_id,
+        )
+        self.repository.catalog_genre_exists = lambda _genre: False
+
+        replay = self.service.record_search_event(
+            self.session_id,
+            "Drama",
+            2,
+            filters,
+            client_mutation_id=mutation_id,
+        )
+
+        self.assertEqual(replay["search_event_id"], 1)
+
+    def test_replay_does_not_conflict_when_client_timestamp_leaves_skew_window(self):
+        mutation_id = uuid4()
+        first_now = datetime(2026, 9, 15, 12, tzinfo=timezone.utc)
+        occurred_at = first_now - timedelta(days=6)
+        with patch("cinemind.interaction.service.datetime") as clock:
+            clock.now.return_value = first_now
+            self.service.record_search_event(
+                self.session_id,
+                "Drama",
+                0,
+                {},
+                client_mutation_id=mutation_id,
+                client_occurred_at=occurred_at,
+            )
+            clock.now.return_value = first_now + timedelta(days=2)
+            replay = self.service.record_search_event(
+                self.session_id,
+                "Drama",
+                0,
+                {},
+                client_mutation_id=mutation_id,
+                client_occurred_at=occurred_at,
+            )
+
+        self.assertEqual(replay["search_event_id"], 1)
+
+    def test_watch_replay_survives_title_deactivation(self):
+        mutation_id = uuid4()
+        first = self.service.record_watch_session(
+            self.session_id, "movie-1", 30, client_mutation_id=mutation_id
+        )
+        self.repository.titles.pop("movie-1")
+
+        replay = self.service.record_watch_session(
+            self.session_id, "movie-1", 30, client_mutation_id=mutation_id
+        )
+
+        self.assertEqual(replay["watch_session_id"], first["watch_session_id"])
+
+    def test_rating_replay_survives_title_deactivation(self):
+        mutation_id = uuid4()
+        first = self.service.record_rating(
+            self.session_id, "movie-1", Decimal("8.5"), client_mutation_id=mutation_id
+        )
+        self.repository.titles.pop("movie-1")
+
+        replay = self.service.record_rating(
+            self.session_id, "movie-1", Decimal("8.5"), client_mutation_id=mutation_id
+        )
+
+        self.assertEqual(replay["rating_id"], first["rating_id"])
+
+    def test_signal_replay_survives_title_deactivation(self):
+        mutation_id = uuid4()
+        first = self.service.record_signal(
+            self.session_id, "movie-1", Decimal("8.5"), 30,
+            client_mutation_id=mutation_id,
+        )
+        self.repository.titles.pop("movie-1")
+
+        replay = self.service.record_signal(
+            self.session_id, "movie-1", Decimal("8.5"), 30,
+            client_mutation_id=mutation_id,
+        )
+
+        self.assertEqual(
+            replay["watch_session"]["watch_session_id"],
+            first["watch_session"]["watch_session_id"],
+        )
 
     def test_client_event_time_is_preserved_when_clock_skew_is_bounded(self):
         occurred_at = datetime.now(timezone.utc) - timedelta(hours=2)

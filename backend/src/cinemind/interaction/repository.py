@@ -247,6 +247,23 @@ class InteractionRepository:
             raise RuntimeError("Could not create search event")
         return dict(row)
 
+    def get_search_event_by_mutation(self, client_mutation_id: UUID) -> dict | None:
+        """Find an acknowledged search event before consulting current catalog data."""
+
+        row = self.connection.execute(
+            """
+            SELECT search_event_id, session_id, query_text, normalized_query,
+                   result_count, filters, occurred_at, client_occurred_at,
+                   client_device_id, client_event_sequence
+            FROM interaction.search_events
+            WHERE client_mutation_id = %s
+            ORDER BY search_event_id ASC
+            LIMIT 1
+            """,
+            (client_mutation_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def create_watch_session(
         self,
         watch_session_id: UUID,
@@ -321,6 +338,26 @@ class InteractionRepository:
         if row is None:
             raise RuntimeError("Could not create watch session")
         return dict(row)
+
+    def get_watch_session_by_mutation(self, client_mutation_id: UUID) -> dict | None:
+        """Find an acknowledged watch event even when its title is inactive."""
+
+        row = self.connection.execute(
+            """
+            SELECT ws.watch_session_id, ws.session_id, ws.title_id,
+                   t.show_id, ws.watch_seconds, ws.runtime_seconds,
+                   ws.completion_rate, ws.duration_basis, ws.recorded_at,
+                   ws.client_occurred_at, ws.client_device_id,
+                   ws.client_event_sequence
+            FROM interaction.watch_sessions ws
+            LEFT JOIN catalog.titles t ON t.title_id = ws.title_id
+            WHERE ws.client_mutation_id = %s
+            ORDER BY ws.recorded_at ASC, ws.watch_session_id ASC
+            LIMIT 1
+            """,
+            (client_mutation_id,),
+        ).fetchone()
+        return dict(row) if row else None
 
     def create_rating(
         self,
@@ -408,12 +445,14 @@ class InteractionRepository:
 
         row = self.connection.execute(
             """
-            SELECT rating_id, session_id, watch_session_id, title_id,
-                   rating_value, rated_at, client_occurred_at,
-                   client_device_id, client_event_sequence
-            FROM interaction.ratings
-            WHERE client_mutation_id = %s
-            ORDER BY rating_id ASC
+            SELECT r.rating_id, r.session_id, r.watch_session_id, r.title_id,
+                   t.show_id,
+                   r.rating_value, r.rated_at, r.client_occurred_at,
+                   r.client_device_id, r.client_event_sequence
+            FROM interaction.ratings r
+            LEFT JOIN catalog.titles t ON t.title_id = r.title_id
+            WHERE r.client_mutation_id = %s
+            ORDER BY r.rating_id ASC
             LIMIT 1
             """,
             (client_mutation_id,),

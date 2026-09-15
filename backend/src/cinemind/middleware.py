@@ -9,6 +9,7 @@ from starlette.responses import JSONResponse
 from cinemind.security import (
     SlidingWindowRateLimiter,
     client_address_from_headers,
+    consume_many,
     is_trusted_proxy,
 )
 
@@ -141,20 +142,30 @@ class InteractionRateLimitMiddleware:
         )
         decision = self.client_limiter.check(client_key)
         principal_decision = self.session_limiter.check(principal_key)
-        creation_decision = (
-            self.session_creation_limiter.consume(client_key)
-            if is_session_creation
-            else None
-        )
-        write_client_decision = (
-            self.write_client_limiter.consume(client_key) if is_write else None
-        )
-        write_principal_decision = (
-            self.write_principal_limiter.consume(principal_key) if is_write else None
-        )
-        write_endpoint_decision = (
-            self.write_endpoint_limiter.consume(endpoint_key) if is_write else None
-        )
+        reservations = []
+        reservation_names = []
+        if is_session_creation:
+            reservations.append((self.session_creation_limiter, client_key))
+            reservation_names.append("creation")
+        if is_write:
+            reservations.extend(
+                (
+                    (self.write_client_limiter, client_key),
+                    (self.write_principal_limiter, principal_key),
+                    (self.write_endpoint_limiter, endpoint_key),
+                )
+            )
+            reservation_names.extend(("write_client", "write_principal", "write_endpoint"))
+        # Do not consume any write/creation bucket when the base client or
+        # principal failure bucket is already denied. More importantly, reserve
+        # all write dimensions together so a denied principal cannot poison the
+        # shared client or endpoint bucket for later callers.
+        reserved = consume_many(tuple(reservations)) if decision.allowed and principal_decision.allowed else ()
+        reservation_decisions = dict(zip(reservation_names, reserved))
+        creation_decision = reservation_decisions.get("creation")
+        write_client_decision = reservation_decisions.get("write_client")
+        write_principal_decision = reservation_decisions.get("write_principal")
+        write_endpoint_decision = reservation_decisions.get("write_endpoint")
         if (
             not decision.allowed
             or not principal_decision.allowed

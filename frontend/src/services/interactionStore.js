@@ -110,7 +110,25 @@ export function getInteractionDeviceId() {
 
 export function nextInteractionEventSequence() {
   const current = Number(sequenceStoreBase.read());
-  const next = Number.isSafeInteger(current) && current >= 0 ? current + 1 : 1;
+  // localStorage has no compare-and-swap primitive, so a plain read/write
+  // counter can hand the same value to two tabs. Use a safe-integer hybrid
+  // logical clock: wall time gives independent tabs an ordering domain while
+  // a cryptographic slot makes same-millisecond allocations distinct; the
+  // persisted value still prevents backwards movement when the system clock
+  // is adjusted.
+  const now = Date.now();
+  const randomSlotLimit = 1_000_000;
+  let randomSlot = Math.floor(Math.random() * randomSlotLimit);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const random = new Uint32Array(1);
+    crypto.getRandomValues(random);
+    randomSlot = random[0] % randomSlotLimit;
+  }
+  // Keep the value below Number.MAX_SAFE_INTEGER while retaining a million
+  // independent slots per wall-clock second.
+  const wallClockCandidate = Math.floor(now / 1000) * randomSlotLimit + randomSlot;
+  const safeCurrent = Number.isSafeInteger(current) && current >= 0 ? current : 0;
+  const next = Math.max(safeCurrent + 1, wallClockCandidate, 1);
   sequenceStoreBase.write(next);
   return next;
 }
@@ -796,7 +814,7 @@ export function mergeInteractionState(remoteState, localState = {}) {
   for (const signal of Object.values(pending.signals)) {
     if (!signal || !signal.showId || !isValidRating(Number(signal.rating)) || !Number.isInteger(Number(signal.watchMinutes)) || Number(signal.watchMinutes) < 0 || Number(signal.watchMinutes) > interactionConfig.maxWatchMinutes) continue;
     const current = latestPendingByShow.get(signal.showId);
-    if (!current || Date.parse(signal.firstQueuedAt || signal.queuedAt) >= Date.parse(current.firstQueuedAt || current.queuedAt)) latestPendingByShow.set(signal.showId, signal);
+    if (!current || comparePendingRecency(signal, current) > 0) latestPendingByShow.set(signal.showId, signal);
   }
   for (const [showId, signal] of latestPendingByShow) {
     ratings[showId] = {
@@ -808,6 +826,22 @@ export function mergeInteractionState(remoteState, localState = {}) {
     };
   }
   return { ratings };
+}
+
+function comparePendingRecency(left, right) {
+  const leftDevice = left?.clientDeviceId ? String(left.clientDeviceId).toLowerCase() : "";
+  const rightDevice = right?.clientDeviceId ? String(right.clientDeviceId).toLowerCase() : "";
+  const leftSequence = Number(left?.clientEventSequence);
+  const rightSequence = Number(right?.clientEventSequence);
+  if (leftDevice && leftDevice === rightDevice
+    && Number.isSafeInteger(leftSequence) && leftSequence > 0
+    && Number.isSafeInteger(rightSequence) && rightSequence > 0) {
+    return leftSequence - rightSequence
+      || Date.parse(left?.firstQueuedAt || left?.queuedAt || "") - Date.parse(right?.firstQueuedAt || right?.queuedAt || "")
+      || String(left?.mutationId || "").localeCompare(String(right?.mutationId || ""));
+  }
+  return Date.parse(left?.firstQueuedAt || left?.queuedAt || "") - Date.parse(right?.firstQueuedAt || right?.queuedAt || "")
+    || String(left?.mutationId || "").localeCompare(String(right?.mutationId || ""));
 }
 
 function isValidRating(value) {

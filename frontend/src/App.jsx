@@ -53,6 +53,7 @@ export default function App() {
   const searchEventSignature = useRef("");
   const languageRef = useRef(language);
   const interactionRevisionRef = useRef(0);
+  const interactionHydrationGenerationRef = useRef(0);
   const signalRequestRevisionsRef = useRef(new Map());
   const authRequestRef = useRef(null);
   const authRevisionRef = useRef(0);
@@ -119,6 +120,7 @@ export default function App() {
       const transition = setInteractionOwner(user?.user_id);
       if (transition.changed) {
         interactionRevisionRef.current += 1;
+        interactionHydrationGenerationRef.current += 1;
         signalRequestRevisionsRef.current.clear();
         setInteractionHydrationVersion((version) => version + 1);
       }
@@ -198,6 +200,7 @@ export default function App() {
         invalidateAuthRequest();
         clearRetry();
         interactionRevisionRef.current += 1;
+        interactionHydrationGenerationRef.current += 1;
         signalRequestRevisionsRef.current.clear();
         const ownerId = authEvent.ownerId || authUserRef.current?.user_id || getInteractionOwner();
         const preservePendingInteractions = authEvent.preservePendingInteractions === true
@@ -254,10 +257,12 @@ export default function App() {
     let retryTimer = null;
     const hydrationOwner = authUser?.user_id ? String(authUser.user_id) : "anonymous";
     const hydrationRevision = interactionRevisionRef.current;
+    const hydrationGeneration = interactionHydrationGenerationRef.current;
     const applyRemoteState = (state) => {
         if (
           cancelled
           || hydrationRevision !== interactionRevisionRef.current
+          || hydrationGeneration !== interactionHydrationGenerationRef.current
           || hydrationOwner !== (authUser?.user_id ? String(authUser.user_id) : "anonymous")
         ) return;
         const merged = mergeInteractionState(state, {
@@ -302,6 +307,9 @@ export default function App() {
   useEffect(() => {
     if (!authReady || !catalog.length) return undefined;
     const retryPending = () => {
+      const requestGeneration = interactionHydrationGenerationRef.current;
+      const requestRevision = interactionRevisionRef.current;
+      const requestOwner = getInteractionOwner();
       syncPendingInteractions(catalog, interactionMetadata())
         .then((results) => {
           const hasDefinitiveFailure = Array.isArray(results)
@@ -310,7 +318,12 @@ export default function App() {
               && result.reason?.code !== "CATALOG_RECORD_UNAVAILABLE");
           if (!hasDefinitiveFailure) return null;
           return getInteractionState(interactionMetadata()).then((state) => {
-            if (authReady) setRatings(mergeInteractionState(state, { ratings: signalStore.read() }).ratings);
+            if (
+              authReady
+              && requestGeneration === interactionHydrationGenerationRef.current
+              && requestRevision === interactionRevisionRef.current
+              && requestOwner === getInteractionOwner()
+            ) setRatings(mergeInteractionState(state, { ratings: signalStore.read() }).ratings);
           });
         })
         .catch(() => undefined);
@@ -347,33 +360,50 @@ export default function App() {
   const tvShows = useMemo(() => getTitlesByType(catalog, catalogTypes.tvShow), [catalog]);
   const ratedRecords = useMemo(() => Object.keys(ratings).map((id) => catalog.find((record) => record.id === id)).filter(Boolean), [catalog, ratings]);
   const lastRated = useMemo(() => {
-    let latestRecord = null;
-    let latestSignal = null;
-    let latestTimestamp = Number.NEGATIVE_INFINITY;
+    const compareTimestamp = (signal) => {
+      const value = Date.parse(signal?.serverSavedAt || signal?.savedAt || "");
+      return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+    };
+    const compareText = (left, right) => left === right ? 0 : (left > right ? 1 : -1);
+    const compareWithinDevice = (left, right) => {
+      const leftDevice = left?.signal?.clientDeviceId ? String(left.signal.clientDeviceId).toLowerCase() : "";
+      const rightDevice = right?.signal?.clientDeviceId ? String(right.signal.clientDeviceId).toLowerCase() : "";
+      const leftSequence = Number(left?.signal?.clientEventSequence);
+      const rightSequence = Number(right?.signal?.clientEventSequence);
+      if (leftDevice && leftDevice === rightDevice
+        && Number.isSafeInteger(leftSequence) && leftSequence > 0
+        && Number.isSafeInteger(rightSequence) && rightSequence > 0) {
+        return leftSequence - rightSequence
+          || compareTimestamp(left.signal) - compareTimestamp(right.signal)
+          || compareText(left.id, right.id);
+      }
+      return compareTimestamp(left?.signal) - compareTimestamp(right?.signal)
+        || compareText(left.id, right.id);
+    };
+    const latestByDevice = new Map();
     for (const [id, signal] of Object.entries(ratings)) {
-      const timestamp = Date.parse(signal?.savedAt || "");
       const record = catalog.find((candidate) => String(candidate.id) === String(id));
       if (!record) continue;
-      const sameDevice = signal?.clientDeviceId
-        && latestSignal?.clientDeviceId
-        && String(signal.clientDeviceId).toLowerCase() === String(latestSignal.clientDeviceId).toLowerCase();
-      const currentSequence = Number(signal?.clientEventSequence);
-      const latestSequence = Number(latestSignal?.clientEventSequence);
-      const hasComparableSequence = sameDevice
-        && Number.isSafeInteger(currentSequence)
-        && currentSequence > 0
-        && Number.isSafeInteger(latestSequence)
-        && latestSequence > 0;
-      const isNewer = hasComparableSequence
-        ? currentSequence > latestSequence || (currentSequence === latestSequence && timestamp > latestTimestamp)
-        : Number.isFinite(timestamp) && timestamp > latestTimestamp;
-      if (isNewer) {
-        latestRecord = record;
-        latestSignal = signal;
-        latestTimestamp = timestamp;
-      }
+      // Choose one latest event per device first. This makes sequence ordering
+      // transitive within a device; only then compare device representatives
+      // by server receipt time with deterministic tie-breakers.
+      const deviceKey = signal?.clientDeviceId
+        ? `device:${String(signal.clientDeviceId).toLowerCase()}`
+        : `legacy:${String(id)}`;
+      const candidate = { id: String(id), record, signal };
+      const current = latestByDevice.get(deviceKey);
+      if (!current || compareWithinDevice(candidate, current) > 0) latestByDevice.set(deviceKey, candidate);
     }
-    return latestRecord || ratedRecords[ratedRecords.length - 1] || null;
+    const representatives = [...latestByDevice.values()];
+    representatives.sort((left, right) => (
+      compareTimestamp(left.signal) - compareTimestamp(right.signal)
+      || compareText(
+        left.signal?.clientDeviceId ? String(left.signal.clientDeviceId).toLowerCase() : `legacy:${left.id}`,
+        right.signal?.clientDeviceId ? String(right.signal.clientDeviceId).toLowerCase() : `legacy:${right.id}`
+      )
+      || compareText(left.id, right.id)
+    ));
+    return representatives[representatives.length - 1]?.record || ratedRecords[ratedRecords.length - 1] || null;
   }, [catalog, ratedRecords, ratings]);
   const previewPicks = useMemo(() => getRelatedTitles(lastRated, catalog), [catalog, lastRated]);
   const routeItem = routeId ? catalog.find((record) => record.id === routeId) : null;
@@ -485,7 +515,7 @@ export default function App() {
     const item = modalItem;
     if (!item || !authUser) return;
     interactionRevisionRef.current += 1;
-    setInteractionHydrationVersion((version) => version + 1);
+    interactionHydrationGenerationRef.current += 1;
     const showId = String(item.id);
     const requestRevision = (signalRequestRevisionsRef.current.get(showId) || 0) + 1;
     signalRequestRevisionsRef.current.set(showId, requestRevision);
@@ -497,6 +527,24 @@ export default function App() {
       && requestOwner === getInteractionOwner();
     try {
       await submitSignal({ record: item, ...signal, ...interactionMetadata() }, interactionContext);
+      if (!isCurrentRequest()) return;
+      // The submit may have overlapped a state request that read the database
+      // before the POST committed. Invalidate every older hydration and fetch
+      // a post-commit projection before allowing it to replace the optimistic
+      // rating. If the refresh itself is unavailable, keep the optimistic
+      // value and let the next hydration retry reconcile it.
+      interactionHydrationGenerationRef.current += 1;
+      try {
+        const refreshedState = await getInteractionState(interactionMetadata());
+        if (isCurrentRequest()) {
+          const refreshedRatings = mergeInteractionState(refreshedState, { ratings: signalStore.read() }).ratings;
+          setRatings((current) => refreshedRatings[item.id]
+            ? refreshedRatings
+            : { ...refreshedRatings, [item.id]: current[item.id] || { ...signal, savedAt: new Date().toISOString() } });
+        }
+      } catch {
+        setInteractionHydrationVersion((version) => version + 1);
+      }
       if (!isCurrentRequest()) return;
       if (String(modalItemRef.current?.id) !== showId) return;
       setModalItem(null);

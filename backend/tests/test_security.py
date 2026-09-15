@@ -389,6 +389,21 @@ class InteractionRateLimitMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.request("/api/interaction/search-events"), 201)
         self.assertEqual(await self.request("/api/interaction/search-events"), 429)
 
+    async def test_denied_principal_does_not_poison_client_or_endpoint_buckets(self):
+        principal_key = "interaction-principal:203.0.113.10"
+        client_key = "interaction-client:203.0.113.10"
+        endpoint_key = "interaction-write-endpoint:POST:/api/interaction/search-events:203.0.113.10"
+        for _ in range(self.middleware.write_principal_limiter.max_attempts):
+            self.middleware.write_principal_limiter.record_attempt(principal_key)
+
+        status = await self.request(
+            "/api/interaction/search-events",
+            "POST",
+        )
+        self.assertEqual(status, 429)
+        self.assertTrue(self.middleware.write_client_limiter.check(client_key).allowed)
+        self.assertTrue(self.middleware.write_endpoint_limiter.check(endpoint_key).allowed)
+
 
 class CSRFMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_same_origin_lan_request_with_port_is_allowed(self):

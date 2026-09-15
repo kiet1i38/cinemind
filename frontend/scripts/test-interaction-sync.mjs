@@ -34,6 +34,9 @@ const {
   getInteractionOwner,
   hasPendingInteractions,
   interactionSessionStore,
+  mergeInteractionState,
+  nextInteractionEventSequence,
+  queuePendingSignal,
   queuePendingSearch,
   readPendingInteractions,
   setInteractionOwner
@@ -150,6 +153,65 @@ test("429 stops replay, preserves the rest, and honors Retry-After", { concurren
     assert.equal(retried.length, 2);
     assert.equal(searchCallCount(calls), 4);
     assert.equal(hasPendingInteractions(), false);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("unavailable catalog entries do not starve available replay", { concurrency: false }, async () => {
+  appConfig.interaction.pendingSyncBatchSize = 1;
+  appConfig.interaction.pendingSyncPacingMs = 0;
+  setInteractionOwner("sync-test-unavailable");
+  clearInteractionState({ resetOwner: false });
+  queuePendingSignal(
+    "missing-title",
+    { rating: 7, watchMinutes: 10 },
+    "00000000-0000-4000-8000-000000000301",
+    new Date(Date.now() - 2000).toISOString()
+  );
+  queuePendingSignal(
+    "available-title",
+    { rating: 8, watchMinutes: 20 },
+    "00000000-0000-4000-8000-000000000302",
+    new Date(Date.now() - 1000).toISOString()
+  );
+  const calls = installFetch([
+    response(201, sessionPayload),
+    response(201, { accepted: true })
+  ]);
+
+  const results = await syncPendingInteractions([{ id: "available-title" }]);
+
+  assert.equal(searchCallCount(calls), 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith("/signals")).length, 1);
+  assert.equal(results.some((result) => result.reason?.code === "CATALOG_RECORD_UNAVAILABLE"), true);
+  assert.equal(Object.keys(readPendingInteractions().signals).length, 1);
+  assert.equal(readPendingInteractions().signals["00000000-0000-4000-8000-000000000301"].showId, "missing-title");
+});
+
+test("pending same-title state follows device sequence rather than a moved clock", { concurrency: false }, () => {
+  setInteractionOwner("sync-test-sequence");
+  clearInteractionState({ resetOwner: false });
+  const first = "00000000-0000-4000-8000-000000000311";
+  const second = "00000000-0000-4000-8000-000000000312";
+  queuePendingSignal("same-title", { rating: 2, watchMinutes: 1 }, first, new Date(Date.now() - 5000).toISOString());
+  queuePendingSignal("same-title", { rating: 9, watchMinutes: 2 }, second, new Date(Date.now() - 6000).toISOString());
+  // The queue assigns one device id and increasing sequences. The second
+  // event has an earlier queued timestamp to reproduce a clock moving back.
+  const merged = mergeInteractionState({ ratings: [] });
+  assert.equal(merged.ratings["same-title"].rating, 9);
+});
+
+test("event sequence allocations remain distinct in one millisecond", { concurrency: false }, () => {
+  setInteractionOwner("sync-test-sequence-allocations");
+  clearInteractionState({ resetOwner: false });
+  const originalNow = Date.now;
+  Date.now = () => 2_000_000;
+  try {
+    const first = nextInteractionEventSequence();
+    const second = nextInteractionEventSequence();
+    assert.notEqual(first, second);
+    assert.ok(second > first);
   } finally {
     Date.now = originalNow;
   }

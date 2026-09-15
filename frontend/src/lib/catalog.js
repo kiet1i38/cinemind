@@ -32,7 +32,13 @@ export function filterCatalog(catalog, { query = "", type = catalogConfig.allVal
     // Keep the browser query semantics aligned with the backend telemetry
     // count: a query must match one catalog field, not text spanning the
     // boundary between two unrelated fields.
-    const searchableFields = [record.title, record.director, ...(record.cast || []), ...(record.listedIn || [])]
+    // The backend stores one row per director (splitting the catalog's
+    // comma-separated source field). Search each director independently so
+    // browser filtering and telemetry count the same fields.
+    const directors = Array.isArray(record.director)
+      ? record.director
+      : String(record.director || "").split(",");
+    const searchableFields = [record.title, ...directors, ...(record.cast || []), ...(record.listedIn || [])]
       .filter(Boolean)
       .map(normalizeSearchTerm);
     const queryMatches = !normalizedQuery || searchableFields.some((field) => field.includes(normalizedQuery));

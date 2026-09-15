@@ -107,6 +107,19 @@ class InteractionService:
         with self.repository.transaction():
             self._acquire_write_lock()
             self._require_session(session_id, user_id, session_token)
+            if client_mutation_id is not None:
+                existing = self.repository.get_search_event_by_mutation(client_mutation_id)
+                if existing is not None:
+                    self._require_idempotent_match(
+                        existing,
+                        query_text=query_text,
+                        normalized_query=normalized_query,
+                        filters=normalized_filters,
+                        client_device_id=client_device_id,
+                        client_event_sequence=client_event_sequence,
+                    )
+                    self._touch_session(session_id)
+                    return existing
             self._touch_session(session_id)
             if (
                 normalized_filters["genre"] != "all"
@@ -144,7 +157,6 @@ class InteractionService:
                     query_text=query_text,
                     normalized_query=normalized_query,
                     filters=normalized_filters,
-                    client_occurred_at=client_event_time,
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
                 )
@@ -167,10 +179,25 @@ class InteractionService:
             client_device_id, client_event_sequence
         )
         watch_session_id = uuid4()
+        normalized_show_id = self._normalize_show_id(show_id)
+        self._validate_watch_minutes(watch_minutes)
         with self.repository.transaction():
             self._acquire_write_lock()
+            self._require_session(session_id, user_id, session_token)
+            if client_mutation_id is not None:
+                existing = self.repository.get_watch_session_by_mutation(client_mutation_id)
+                if existing is not None:
+                    self._require_idempotent_match(
+                        existing,
+                        show_id=normalized_show_id,
+                        watch_seconds=watch_minutes * 60,
+                        client_device_id=client_device_id,
+                        client_event_sequence=client_event_sequence,
+                    )
+                    self._touch_session(session_id)
+                    return existing | {"show_id": existing.get("show_id") or normalized_show_id}
             title, metrics = self._prepare_watch(
-                session_id, show_id, watch_minutes, user_id, session_token
+                session_id, normalized_show_id, watch_minutes, user_id, session_token
             )
             if client_mutation_id is None:
                 watch_session = self.repository.create_watch_session(
@@ -203,7 +230,6 @@ class InteractionService:
                     watch_session,
                     title_id=title["title_id"],
                     watch_seconds=metrics.watch_seconds,
-                    client_occurred_at=client_event_time,
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
                 )
@@ -228,24 +254,27 @@ class InteractionService:
             client_device_id, client_event_sequence
         )
         rating_value = self._normalize_rating(rating)
+        normalized_show_id = self._normalize_show_id(show_id)
         with self.repository.transaction():
             self._acquire_write_lock()
             self._require_session(session_id, user_id, session_token)
-            title = self._require_title(show_id)
             if client_mutation_id is not None:
                 existing = self.repository.get_rating_by_mutation(client_mutation_id)
                 if existing is not None:
                     self._require_idempotent_match(
                         existing,
-                        title_id=title["title_id"],
+                        show_id=normalized_show_id,
                         rating_value=rating_value,
                         watch_session_id=watch_session_id,
-                        client_occurred_at=client_event_time,
                         client_device_id=client_device_id,
                         client_event_sequence=client_event_sequence,
                     )
                     self._touch_session(session_id)
-                    return existing | {"show_id": title["show_id"], "rating": rating_value}
+                    return existing | {
+                        "show_id": existing.get("show_id") or normalized_show_id,
+                        "rating": rating_value,
+                    }
+            title = self._require_title(normalized_show_id)
             if watch_session_id is not None:
                 linked_watch = self.repository.get_watch_session(watch_session_id)
                 if linked_watch is None or (
@@ -282,7 +311,6 @@ class InteractionService:
                     title_id=title["title_id"],
                     rating_value=rating_value,
                     watch_session_id=watch_session_id,
-                    client_occurred_at=client_event_time,
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
                 )
@@ -307,10 +335,66 @@ class InteractionService:
         )
         rating_value = self._normalize_rating(rating)
         watch_session_id = uuid4()
+        normalized_show_id = self._normalize_show_id(show_id)
+        self._validate_watch_minutes(watch_minutes)
         with self.repository.transaction():
             self._acquire_write_lock()
+            self._require_session(session_id, user_id, session_token)
+            if client_mutation_id is not None:
+                existing_watch = self.repository.get_watch_session_by_mutation(client_mutation_id)
+                if existing_watch is not None:
+                    self._require_idempotent_match(
+                        existing_watch,
+                        show_id=normalized_show_id,
+                        watch_seconds=watch_minutes * 60,
+                        client_device_id=client_device_id,
+                        client_event_sequence=client_event_sequence,
+                    )
+                    existing_rating = self.repository.get_rating_by_mutation(client_mutation_id)
+                    if existing_rating is not None:
+                        self._require_idempotent_match(
+                            existing_rating,
+                            show_id=normalized_show_id,
+                            rating_value=rating_value,
+                            watch_session_id=existing_watch["watch_session_id"],
+                            client_device_id=client_device_id,
+                            client_event_sequence=client_event_sequence,
+                        )
+                        rating_row = existing_rating
+                    else:
+                        # A historical partial write can contain the watch
+                        # row without its paired rating. Complete that pair
+                        # using the retained title id without consulting the
+                        # current active catalog.
+                        rating_row = self.repository.create_rating(
+                            session_id,
+                            existing_watch["title_id"],
+                            rating_value,
+                            existing_watch["watch_session_id"],
+                            client_mutation_id,
+                            client_occurred_at=client_event_time,
+                            client_device_id=client_device_id,
+                            client_event_sequence=client_event_sequence,
+                        )
+                        self._require_idempotent_match(
+                            rating_row,
+                            show_id=normalized_show_id,
+                            rating_value=rating_value,
+                            watch_session_id=existing_watch["watch_session_id"],
+                            client_device_id=client_device_id,
+                            client_event_sequence=client_event_sequence,
+                        )
+                    self._touch_session(session_id)
+                    response_show_id = existing_watch.get("show_id") or normalized_show_id
+                    return {
+                        "watch_session": existing_watch | {"show_id": response_show_id},
+                        "rating": rating_row | {
+                            "show_id": response_show_id,
+                            "rating": rating_value,
+                        },
+                    }
             title, metrics = self._prepare_watch(
-                session_id, show_id, watch_minutes, user_id, session_token
+                session_id, normalized_show_id, watch_minutes, user_id, session_token
             )
             if client_mutation_id is None:
                 watch_session = self.repository.create_watch_session(
@@ -343,7 +427,6 @@ class InteractionService:
                     watch_session,
                     title_id=title["title_id"],
                     watch_seconds=metrics.watch_seconds,
-                    client_occurred_at=client_event_time,
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
                 )
@@ -374,7 +457,6 @@ class InteractionService:
                     title_id=title["title_id"],
                     rating_value=rating_value,
                     watch_session_id=watch_session_id,
-                    client_occurred_at=client_event_time,
                     client_device_id=client_device_id,
                     client_event_sequence=client_event_sequence,
                 )
@@ -433,10 +515,11 @@ class InteractionService:
             actual_value = row.get(field_name)
             if field_name == "rating_value" and actual_value is None:
                 actual_value = row.get("rating")
-            if field_name == "client_occurred_at" and actual_value is None:
-                # Rows created before client timeline capture remain safely
-                # replayable; a later retry cannot retroactively add metadata
-                # to that already-acknowledged event.
+            if field_name == "client_occurred_at":
+                # This is observational metadata, not client intent. A retry
+                # can arrive outside the clock-skew window even though the
+                # original mutation was accepted, so never make it part of
+                # the idempotency conflict key.
                 continue
             if field_name in {"client_device_id", "client_event_sequence"} and actual_value is None:
                 # Metadata was introduced after the first event-log release;
@@ -455,12 +538,7 @@ class InteractionService:
         user_id: UUID | None = None,
         session_token: str | None = None,
     ) -> tuple[dict, WatchMetrics]:
-        if watch_minutes < 0:
-            raise InteractionValidationError("watch_minutes must be greater than or equal to zero")
-        if watch_minutes > self.settings.max_watch_minutes:
-            raise InteractionValidationError(
-                f"watch_minutes must be less than or equal to {self.settings.max_watch_minutes}"
-            )
+        self._validate_watch_minutes(watch_minutes)
         title = self._require_title(show_id)
         self._require_session(session_id, user_id, session_token)
         runtime_seconds = None
@@ -482,6 +560,16 @@ class InteractionService:
             completion_rate=completion_rate,
             duration_basis=duration_basis,
         )
+
+    def _validate_watch_minutes(self, watch_minutes: int) -> None:
+        if not isinstance(watch_minutes, int) or isinstance(watch_minutes, bool):
+            raise InteractionValidationError("watch_minutes must be an integer")
+        if watch_minutes < 0:
+            raise InteractionValidationError("watch_minutes must be greater than or equal to zero")
+        if watch_minutes > self.settings.max_watch_minutes:
+            raise InteractionValidationError(
+                f"watch_minutes must be less than or equal to {self.settings.max_watch_minutes}"
+            )
 
     def _require_session(
         self,
@@ -510,13 +598,18 @@ class InteractionService:
         return session
 
     def _require_title(self, show_id: str) -> dict:
-        normalized = self._normalize_text(show_id, "show_id")
-        if len(normalized) > 32:
-            raise InteractionValidationError("show_id must be at most 32 characters")
+        normalized = self._normalize_show_id(show_id)
         title = self.repository.get_title(normalized)
         if title is None:
             raise InteractionTitleNotFoundError(f"Catalog title not found: {normalized}")
         return title
+
+    @classmethod
+    def _normalize_show_id(cls, show_id: str) -> str:
+        normalized = cls._normalize_text(show_id, "show_id")
+        if len(normalized) > 32:
+            raise InteractionValidationError("show_id must be at most 32 characters")
+        return normalized
 
     def _acquire_write_lock(self) -> None:
         lock = getattr(self.repository, "acquire_write_lock", None)

@@ -120,10 +120,6 @@ def register(
     except psycopg.errors.UniqueViolation as error:
         _record_auth_failure(request, rate_key)
         raise HTTPException(status_code=400, detail="Unable to create account") from error
-    finally:
-        # Count every registration attempt, including successful ones.  A
-        # success must not create a loophole for automated account creation.
-        _record_registration_attempt(request)
     _record_auth_success(request, rate_key)
     return _complete_auth_response(response, request, result, settings)
 
@@ -332,7 +328,7 @@ def _enforce_login_attempt_rate_limit(request: Request, identifier_key: str) -> 
 def _enforce_registration_rate_limit(request: Request) -> None:
     """Bound total account-creation attempts from one client address."""
 
-    decision = auth_registration_rate_limiter.check(_auth_ip_key(request, "register"))
+    decision = auth_registration_rate_limiter.consume(_auth_ip_key(request, "register"))
     if decision.allowed:
         return
     raise HTTPException(

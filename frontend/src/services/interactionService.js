@@ -393,8 +393,18 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
   let attempted = 0;
   let rateLimited = false;
   let authBlocked = false;
-  const batch = orderedPending.slice(0, batchSize);
-  for (const { kind, entry, record, unavailable } of batch) {
+  // A title missing from the current catalog is intentionally retained for a
+  // later refresh, but it must not consume network batch capacity. Otherwise
+  // a full prefix of unavailable titles starves every valid event behind it
+  // until the queue TTL expires.
+  const unavailableEntries = orderedPending.filter((event) => event.unavailable);
+  results.push(...unavailableEntries.map((event) => {
+    const reason = new Error(`Catalog title ${event.entry.showId} is not available yet`);
+    reason.code = "CATALOG_RECORD_UNAVAILABLE";
+    return { status: "rejected", reason, entry: event.entry };
+  }));
+  const batch = orderedPending.filter((event) => !event.unavailable).slice(0, batchSize);
+  for (const { kind, entry, record } of batch) {
     if (attempted > 0 && pacingMs > 0) await waitForPendingSyncPacing(pacingMs);
     try {
       assertInteractionContext(interactionContext);
@@ -405,12 +415,6 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
       break;
     }
     attempted += 1;
-    if (unavailable) {
-      const reason = new Error(`Catalog title ${entry.showId} is not available yet`);
-      reason.code = "CATALOG_RECORD_UNAVAILABLE";
-      results.push({ status: "rejected", reason, entry });
-      continue;
-    }
     try {
       const task = kind === "search"
         ? recordSearchEvent({
