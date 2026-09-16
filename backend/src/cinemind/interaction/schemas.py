@@ -4,9 +4,13 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, StrictStr, field_validator
+from pydantic import BaseModel, Field, StrictInt, StrictStr, field_validator
 
-from cinemind.interaction.limits import normalize_search_filters
+from cinemind.interaction.limits import (
+    MAX_CLIENT_EVENT_SEQUENCE,
+    MAX_WATCH_MINUTES,
+    normalize_search_filters,
+)
 
 
 class SessionCreateRequest(BaseModel):
@@ -42,12 +46,16 @@ class SearchEventCreateRequest(BaseModel):
 
     session_id: UUID
     query: str = Field(..., min_length=1, max_length=200)
-    result_count: int = Field(default=0, ge=0, le=2_147_483_647)
+    result_count: StrictInt = Field(default=0, ge=0, le=2_147_483_647)
     filters: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
     client_device_id: UUID | None = None
-    client_event_sequence: int | None = Field(default=None, ge=1)
+    client_event_sequence: StrictInt | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_CLIENT_EVENT_SEQUENCE,
+    )
 
     @field_validator("filters")
     @classmethod
@@ -77,11 +85,15 @@ class WatchSessionCreateRequest(BaseModel):
 
     session_id: UUID
     show_id: str = Field(..., min_length=1, max_length=32)
-    watch_minutes: int = Field(..., ge=0)
+    watch_minutes: StrictInt = Field(..., ge=0, le=MAX_WATCH_MINUTES)
     client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
     client_device_id: UUID | None = None
-    client_event_sequence: int | None = Field(default=None, ge=1)
+    client_event_sequence: StrictInt | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_CLIENT_EVENT_SEQUENCE,
+    )
 
 
 class WatchSessionResponse(BaseModel):
@@ -110,7 +122,11 @@ class RatingCreateRequest(BaseModel):
     client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
     client_device_id: UUID | None = None
-    client_event_sequence: int | None = Field(default=None, ge=1)
+    client_event_sequence: StrictInt | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_CLIENT_EVENT_SEQUENCE,
+    )
 
     @field_validator("rating")
     @classmethod
@@ -138,11 +154,15 @@ class SignalCreateRequest(BaseModel):
     session_id: UUID
     show_id: str = Field(..., min_length=1, max_length=32)
     rating: Decimal = Field(...)
-    watch_minutes: int = Field(..., ge=0)
+    watch_minutes: StrictInt = Field(..., ge=0, le=MAX_WATCH_MINUTES)
     client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
     client_device_id: UUID | None = None
-    client_event_sequence: int | None = Field(default=None, ge=1)
+    client_event_sequence: StrictInt | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_CLIENT_EVENT_SEQUENCE,
+    )
 
     @field_validator("rating")
     @classmethod
@@ -175,6 +195,7 @@ class InteractionStateResponse(BaseModel):
 
     session_id: UUID
     ratings: list[RatingStateResponse] = Field(default_factory=list)
+    snapshot_at: datetime
 
 
 def _validate_rating(value: Decimal) -> Decimal:

@@ -195,6 +195,16 @@ class AuthRepository:
         )
 
     def revoke_all_sessions(self, user_id: UUID) -> None:
+        # Serialize logout-all with create_session(), which takes the same
+        # user-row lock before inserting a new session. Without this lock a
+        # login that already acquired the user row can insert after the
+        # UPDATE snapshot and survive an otherwise successful logout-all.
+        user_exists = self.connection.execute(
+            "SELECT user_id FROM auth.users WHERE user_id = %s FOR UPDATE",
+            (user_id,),
+        ).fetchone()
+        if user_exists is None:
+            return
         self.connection.execute(
             """
             UPDATE auth.sessions
@@ -226,6 +236,28 @@ class AuthRepository:
             (user_id, session_id, session_token_hash, user_id),
         ).fetchone()
         return row is not None
+
+    def get_attached_interaction_session(
+        self,
+        session_id: UUID,
+        user_id: UUID,
+        session_token_hash: str,
+    ) -> UUID | None:
+        """Return a currently attached session only when its proof matches."""
+
+        row = self.connection.execute(
+            """
+            SELECT session_id
+            FROM interaction.sessions
+            WHERE session_id = %s
+              AND user_id = %s
+              AND ended_at IS NULL
+              AND expires_at > CURRENT_TIMESTAMP
+              AND session_token_hash = %s
+            """,
+            (session_id, user_id, session_token_hash),
+        ).fetchone()
+        return row["session_id"] if row else None
 
     def end_interaction_session(
         self,

@@ -49,10 +49,27 @@ function interactionSessionPayload() {
     : {};
 }
 
+function interactionSessionHeaders() {
+  const sessionId = interactionSessionStore.read();
+  const sessionToken = interactionSessionStore.readToken();
+  if (!sessionId || !sessionToken) return {};
+  return {
+    "X-Cinemind-Session": sessionId,
+    "X-Cinemind-Session-Token": sessionToken
+  };
+}
+
 export async function getCurrentUser({ signal } = {}) {
   try {
-    const payload = await request("/me", { signal });
-    return payload?.authenticated ? payload.user : null;
+    const payload = await request("/me", { signal, headers: interactionSessionHeaders() });
+    if (!payload?.authenticated || !payload.user) return null;
+    return {
+      ...payload.user,
+      // `/me` confirms the anonymous lineage only when the supplied browser
+      // proof is still attached to this account. This makes auth recovery
+      // safe after a tab crash between login and promotion cleanup.
+      interaction_session_id: payload.interaction_session_id || null
+    };
   } catch (error) {
     // An expired or revoked cookie is an anonymous state, not an outage.
     if (error?.status === 401 || error?.status === 403) return null;
@@ -89,7 +106,7 @@ async function authenticate(path, payload) {
   // Write the cross-tab promotion marker before the auth cookie can be set.
   // Without this durable marker another tab may observe /me first and clear
   // the anonymous namespace before the login response confirms the transfer.
-  const promotionId = beginAuthenticatedInteractionPromotion();
+  const promotionId = await beginAuthenticatedInteractionPromotion();
   if (promotionId === false) throw promotionUnavailableError();
   try {
     const result = await request(path, {
@@ -107,11 +124,17 @@ function completeAuthenticatedInteraction(result, promotionId = null) {
   const interactionTransition = promoteAuthenticatedInteraction(
     result?.user?.user_id,
     result?.interaction_session_id,
+    {
+      discardUnconfirmedPromotion: Boolean(
+        result?.user?.user_id && !result?.interaction_session_id
+      )
+    },
   );
+  const transferWasAbandoned = interactionTransition?.discardedAnonymousPromotion === true;
   const transferReady = interactionTransition?.promotionPending !== true
     && interactionTransition?.persisted !== false
     && interactionTransition?.pendingOwnerTransfer !== true
-    && interactionTransition?.transferPersisted !== false;
+    && (transferWasAbandoned || interactionTransition?.transferPersisted !== false);
   const promotionCleared = transferReady
     && clearPendingAuthenticatedInteractionPromotion(promotionId);
   // Other tabs must not react to the account cookie until this tab has a

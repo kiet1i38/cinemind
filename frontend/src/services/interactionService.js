@@ -6,6 +6,7 @@ import {
   acknowledgePendingSearch,
   acknowledgePendingSignal,
   cacheSignalReceipt,
+  clearInteractionSessionIfUnchanged,
   createMutationId,
   getInteractionOwner,
   getInteractionRevision,
@@ -13,7 +14,8 @@ import {
   pendingInteractionsPersisted,
   queuePendingSearch,
   queuePendingSignal,
-  readPendingInteractions
+  readPendingInteractions,
+  withInteractionSessionCreationLock
 } from "./interactionStore";
 
 const interactionConfig = appConfig.interaction;
@@ -35,14 +37,20 @@ function ownerChangedError() {
 }
 
 function captureInteractionContext() {
-  return { owner: getInteractionOwner(), revision: getInteractionRevision() };
+  const owner = getInteractionOwner();
+  return {
+    owner,
+    revision: getInteractionRevision(),
+    sessionId: interactionSessionStore.read(owner)
+  };
 }
 
 function normalizeInteractionContext(context = null) {
   if (context && typeof context === "object" && typeof context.owner === "string") {
     return {
       owner: context.owner,
-      revision: Number.isInteger(context.revision) ? context.revision : getInteractionRevision()
+      revision: Number.isInteger(context.revision) ? context.revision : getInteractionRevision(),
+      sessionId: typeof context.sessionId === "string" ? context.sessionId : null
     };
   }
   return captureInteractionContext();
@@ -147,24 +155,68 @@ export async function ensureInteractionSession({ locale, platform } = {}, contex
   if (sessionRequest?.owner === interactionContext.owner
     && sessionRequest?.revision === interactionContext.revision) return sessionRequest.promise;
 
-  const promise = request("/sessions", {
-    method: "POST",
-    body: JSON.stringify({ locale, platform })
-  }, interactionContext)
-    .then((payload) => {
-      // A response from a previous account must never hydrate the current
-      // owner's browser namespace.
-      assertInteractionContext(interactionContext);
-      const sessionId = payload?.session_id;
-      if (!sessionId) throw new Error("Interaction session response is missing session_id");
-      interactionSessionStore.write(sessionId, payload?.session_token, interactionContext.owner);
-      return sessionId;
-    })
+  const promise = withInteractionSessionCreationLock(async () => {
+    assertInteractionContext(interactionContext);
+    // Two browser contexts can pass the initial empty read at the same time.
+    // Re-read while holding the cross-context lock so only one session is
+    // created and the other tab adopts the durable pair written by the first.
+    const sharedSessionId = interactionSessionStore.read(interactionContext.owner);
+    if (sharedSessionId) return sharedSessionId;
+
+    const payload = await request("/sessions", {
+      method: "POST",
+      body: JSON.stringify({ locale, platform })
+    }, interactionContext);
+    // A response from a previous account must never hydrate the current
+    // owner's browser namespace.
+    assertInteractionContext(interactionContext);
+    const sessionId = payload?.session_id;
+    if (!sessionId) throw new Error("Interaction session response is missing session_id");
+    interactionSessionStore.write(sessionId, payload?.session_token, interactionContext.owner);
+    return sessionId;
+  }).then((lockResult) => {
+    if (!lockResult.supported) {
+      const error = new Error("The browser cannot coordinate interaction sessions safely.");
+      error.code = "INTERACTION_COORDINATION_UNAVAILABLE";
+      throw error;
+    }
+    return lockResult.value;
+  })
     .finally(() => {
       if (sessionRequest?.promise === promise) sessionRequest = null;
     });
   sessionRequest = { ...interactionContext, promise };
   return promise;
+}
+
+async function recoverFromExpiredInteractionSession(metadata, interactionContext, staleSessionId) {
+  const lockResult = await withInteractionSessionCreationLock(async () => {
+    assertInteractionContext(interactionContext);
+    const currentSessionId = interactionSessionStore.read(interactionContext.owner);
+    if (currentSessionId
+      && String(currentSessionId).toLowerCase() !== String(staleSessionId).toLowerCase()) {
+      // Another tab already rotated the shared session. Adopt it instead of
+      // clearing a session that was never the one that returned the 404.
+      return currentSessionId;
+    }
+    if (!clearInteractionSessionIfUnchanged(staleSessionId, interactionContext.owner)) {
+      const replacementSessionId = interactionSessionStore.read(interactionContext.owner);
+      if (replacementSessionId
+        && String(replacementSessionId).toLowerCase() !== String(staleSessionId).toLowerCase()) {
+        return replacementSessionId;
+      }
+      const error = new Error("The expired interaction session could not be cleared safely.");
+      error.code = "INTERACTION_SESSION_RECOVERY_UNAVAILABLE";
+      throw error;
+    }
+    return null;
+  });
+  if (!lockResult.supported) {
+    const error = new Error("The browser cannot coordinate interaction session recovery safely.");
+    error.code = "INTERACTION_COORDINATION_UNAVAILABLE";
+    throw error;
+  }
+  return lockResult.value || ensureInteractionSession(metadata, interactionContext);
 }
 
 export async function getInteractionState(metadata = {}) {
@@ -178,8 +230,7 @@ export async function getInteractionState(metadata = {}) {
   } catch (error) {
     if (error.code !== "SESSION_NOT_FOUND") throw error;
     assertInteractionContext(interactionContext);
-    interactionSessionStore.write(null, null, interactionContext.owner);
-    sessionId = await ensureInteractionSession(metadata, interactionContext);
+    sessionId = await recoverFromExpiredInteractionSession(metadata, interactionContext, sessionId);
     assertInteractionContext(interactionContext);
     try {
       const result = await request(`/state/${encodeURIComponent(sessionId)}`, {}, interactionContext);
@@ -199,7 +250,8 @@ export function recordSearchEvent({ query, resultCount, filters, ...metadata }, 
     { query, resultCount, filters },
     metadata.mutationId || createMutationId(),
     metadata.firstQueuedAt,
-    interactionContext.owner
+    interactionContext.owner,
+    interactionContext.sessionId
   );
   const pendingPersisted = pendingInteractionsPersisted();
   const pendingEntry = readPendingInteractions(interactionContext.owner).searches[mutationId];
@@ -221,12 +273,12 @@ export function recordSearchEvent({ query, resultCount, filters, ...metadata }, 
         })
       }, interactionContext), interactionContext);
       assertInteractionContext(interactionContext);
-      acknowledgePendingSearch(mutationId, interactionContext.owner);
+      acknowledgePendingSearch(mutationId, interactionContext.owner, pendingEntry);
       return result;
     } catch (error) {
       error.pendingPersisted = pendingPersisted;
       if (!shouldKeepPendingInteraction(error) && isCurrentInteractionContext(interactionContext)) {
-        acknowledgePendingSearch(mutationId, interactionContext.owner);
+        acknowledgePendingSearch(mutationId, interactionContext.owner, pendingEntry);
       }
       throw error;
     }
@@ -236,7 +288,14 @@ export function recordSearchEvent({ query, resultCount, filters, ...metadata }, 
 export function submitSignal({ record, rating, watchMinutes, ...metadata }, context = null) {
   const interactionContext = normalizeInteractionContext(context);
   assertInteractionContext(interactionContext);
-  const mutationId = queuePendingSignal(record.id, { rating, watchMinutes }, metadata.mutationId, metadata.firstQueuedAt, interactionContext.owner);
+  const mutationId = queuePendingSignal(
+    record.id,
+    { rating, watchMinutes },
+    metadata.mutationId,
+    metadata.firstQueuedAt,
+    interactionContext.owner,
+    interactionContext.sessionId,
+  );
   const pendingPersisted = pendingInteractionsPersisted();
   const pendingEntry = readPendingInteractions(interactionContext.owner).signals[mutationId];
   const clientOccurredAt = pendingEntry?.firstQueuedAt || new Date().toISOString();
@@ -257,7 +316,7 @@ export function submitSignal({ record, rating, watchMinutes, ...metadata }, cont
         })
       }, interactionContext), interactionContext);
       assertInteractionContext(interactionContext);
-      acknowledgePendingSignal(record.id, mutationId, interactionContext.owner);
+      acknowledgePendingSignal(record.id, mutationId, interactionContext.owner, pendingEntry);
       cacheSignalReceipt(
         pendingEntry?.showId || record.id,
         pendingEntry || { rating, watchMinutes, savedAt: clientOccurredAt },
@@ -268,7 +327,7 @@ export function submitSignal({ record, rating, watchMinutes, ...metadata }, cont
     } catch (error) {
       error.pendingPersisted = pendingPersisted;
       if (!shouldKeepPendingInteraction(error) && isCurrentInteractionContext(interactionContext)) {
-        acknowledgePendingSignal(record.id, mutationId, interactionContext.owner);
+        acknowledgePendingSignal(record.id, mutationId, interactionContext.owner, pendingEntry);
       }
       throw error;
     }
@@ -305,8 +364,7 @@ async function withFreshInteractionSession(metadata, operation, context = null) 
   } catch (error) {
     if (error.code !== "SESSION_NOT_FOUND") throw error;
     assertInteractionContext(interactionContext);
-    interactionSessionStore.write(null, null, interactionContext.owner);
-    const freshSessionId = await ensureInteractionSession(metadata, interactionContext);
+    const freshSessionId = await recoverFromExpiredInteractionSession(metadata, interactionContext, sessionId);
     assertInteractionContext(interactionContext);
     try {
       const result = await operation(freshSessionId);
@@ -388,12 +446,11 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
   }
   // Preserve the historical event order during replay. Signals for the same
   // title are serialized by enqueueMutation, but Promise.all would still let
-  // different titles/searches reach PostgreSQL in an arbitrary order.
-  const orderedPending = pendingEvents.sort((left, right) => {
-    const leftTime = Date.parse(left.entry?.firstQueuedAt || left.entry?.queuedAt || "") || 0;
-    const rightTime = Date.parse(right.entry?.firstQueuedAt || right.entry?.queuedAt || "") || 0;
-    return leftTime - rightTime || String(left.entry?.mutationId || "").localeCompare(String(right.entry?.mutationId || ""));
-  });
+  // different titles/searches reach PostgreSQL in an arbitrary order. When
+  // two events share a millisecond, the per-device sequence is the only
+  // reliable ordering signal; UUID ordering is merely a deterministic tie
+  // breaker for events from different devices.
+  const orderedPending = pendingEvents.sort(comparePendingReplayEntries);
   if (!orderedPending.length) {
     pendingSyncBackoffs.delete(interactionContext.owner);
     return [];
@@ -461,6 +518,27 @@ async function syncPendingInteractionsOnce(records, metadata, interactionContext
   }
   if (!rateLimited && !authBlocked) pendingSyncBackoffs.delete(interactionContext.owner);
   return results;
+}
+
+function comparePendingReplayEntries(left, right) {
+  const leftEntry = left?.entry || {};
+  const rightEntry = right?.entry || {};
+  const leftDevice = leftEntry.clientDeviceId ? String(leftEntry.clientDeviceId).toLowerCase() : "";
+  const rightDevice = rightEntry.clientDeviceId ? String(rightEntry.clientDeviceId).toLowerCase() : "";
+  const leftSequence = Number(leftEntry.clientEventSequence);
+  const rightSequence = Number(rightEntry.clientEventSequence);
+  if (leftDevice && leftDevice === rightDevice
+    && Number.isSafeInteger(leftSequence) && leftSequence > 0
+    && Number.isSafeInteger(rightSequence) && rightSequence > 0) {
+    return leftSequence - rightSequence
+      || (Date.parse(leftEntry.firstQueuedAt || leftEntry.queuedAt || "") || 0)
+        - (Date.parse(rightEntry.firstQueuedAt || rightEntry.queuedAt || "") || 0)
+      || String(leftEntry.mutationId || "").localeCompare(String(rightEntry.mutationId || ""));
+  }
+  const leftTime = Date.parse(leftEntry.firstQueuedAt || leftEntry.queuedAt || "") || 0;
+  const rightTime = Date.parse(rightEntry.firstQueuedAt || rightEntry.queuedAt || "") || 0;
+  return leftTime - rightTime
+    || String(leftEntry.mutationId || "").localeCompare(String(rightEntry.mutationId || ""));
 }
 
 function configuredPendingSyncBatchSize() {

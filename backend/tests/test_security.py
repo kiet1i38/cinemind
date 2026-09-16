@@ -12,10 +12,14 @@ from fastapi import HTTPException
 from cinemind.config import Settings
 from cinemind.config import _bool_from_environment, get_settings
 from cinemind.auth import routes as auth_routes
-from cinemind.interaction.limits import normalize_filters
+from cinemind.interaction.limits import MAX_WATCH_MINUTES, normalize_filters
 from cinemind.middleware import CSRFMiddleware, _interaction_principal, _scope_origin
 from cinemind.middleware import InteractionRateLimitMiddleware
-from cinemind.security import SlidingWindowRateLimiter, client_address_from_headers
+from cinemind.security import (
+    SlidingWindowRateLimiter,
+    client_address_from_headers,
+    consume_many_with_checks,
+)
 
 
 class SecurityPrimitiveTests(unittest.TestCase):
@@ -38,6 +42,21 @@ class SecurityPrimitiveTests(unittest.TestCase):
 
         self.assertTrue(limiter.check("one", now=10).allowed)
         self.assertFalse(limiter.check("two", now=10).allowed)
+
+    def test_guarded_reservation_does_not_consume_when_a_check_only_bucket_is_blocked(self):
+        throughput = SlidingWindowRateLimiter(max_attempts=2, window_seconds=60)
+        failures = SlidingWindowRateLimiter(max_attempts=1, window_seconds=60)
+        failures.record_failure("client", now=10)
+
+        decisions = consume_many_with_checks(
+            ((throughput, "client"),),
+            checks=((failures, "client"),),
+            now=10,
+        )
+
+        self.assertFalse(decisions[0].allowed)
+        self.assertTrue(decisions[1].allowed)
+        self.assertTrue(throughput.check("client", now=10).allowed)
 
     def test_forwarded_ip_is_ignored_from_an_untrusted_direct_peer(self):
         headers = {"x-forwarded-for": "198.51.100.44", "x-real-ip": "198.51.100.45"}
@@ -242,8 +261,12 @@ class SecurityPrimitiveTests(unittest.TestCase):
                 admin_reset_username="",
                 admin_reset_password="",
                 reset_enabled=False,
-                full_reset_enabled=False,
+                    full_reset_enabled=False,
             )
+
+    def test_runtime_settings_reject_watch_limit_that_overflows_integer_seconds(self):
+        with self.assertRaisesRegex(ValueError, "max_watch_minutes"):
+            replace(get_settings(), max_watch_minutes=MAX_WATCH_MINUTES + 1)
 
     def test_runtime_settings_reject_invalid_database_connect_limits(self):
         for field_name, value in (
@@ -380,6 +403,67 @@ class SecurityPrimitiveTests(unittest.TestCase):
             auth_routes.auth_login_ip_attempt_limiter.clear()
             auth_routes.auth_ip_rate_limiter.clear()
 
+    def test_blocked_login_failure_ip_does_not_poison_login_throughput(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.46"),
+            headers={},
+        )
+        auth_routes.auth_login_ip_attempt_limiter.clear()
+        auth_routes.auth_ip_rate_limiter.clear()
+        ip_key = auth_routes._auth_ip_key(request, "login")
+        try:
+            for _ in range(auth_routes.auth_ip_rate_limiter.max_attempts):
+                auth_routes.auth_ip_rate_limiter.record_failure(ip_key)
+
+            for _ in range(auth_routes.auth_login_ip_attempt_limiter.max_attempts):
+                with self.assertRaises(HTTPException):
+                    auth_routes._enforce_login_ip_preflight(request)
+
+            auth_routes.auth_ip_rate_limiter.clear()
+            self.assertTrue(
+                auth_routes.auth_login_ip_attempt_limiter.check(ip_key).allowed
+            )
+        finally:
+            auth_routes.auth_login_ip_attempt_limiter.clear()
+            auth_routes.auth_ip_rate_limiter.clear()
+
+    def test_login_ip_preflight_reserves_quota_atomically_before_db_work(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.45"),
+            headers={},
+        )
+        auth_routes.auth_login_ip_attempt_limiter.clear()
+        auth_routes.auth_ip_rate_limiter.clear()
+        try:
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                decisions = list(
+                    executor.map(
+                        lambda _index: self._reserve_login_ip(request),
+                        range(auth_routes.auth_login_ip_attempt_limiter.max_attempts * 2),
+                    )
+                )
+
+            self.assertEqual(
+                sum(decisions),
+                auth_routes.auth_login_ip_attempt_limiter.max_attempts,
+            )
+            self.assertFalse(
+                auth_routes.auth_login_ip_attempt_limiter.check(
+                    auth_routes._auth_ip_key(request, "login")
+                ).allowed
+            )
+        finally:
+            auth_routes.auth_login_ip_attempt_limiter.clear()
+            auth_routes.auth_ip_rate_limiter.clear()
+
+    @staticmethod
+    def _reserve_login_ip(request):
+        try:
+            auth_routes._enforce_login_ip_preflight(request)
+            return True
+        except HTTPException:
+            return False
+
     def test_blank_boolean_environment_uses_the_environment_default(self):
         with patch.dict(os.environ, {"REQUIRE_HTTPS": "", "RESET_ENABLED": ""}):
             self.assertTrue(_bool_from_environment("REQUIRE_HTTPS", True))
@@ -481,17 +565,22 @@ class InteractionRateLimitMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_success_does_not_clear_previous_failures(self):
         self.status = 400
-        self.assertEqual(await self.request("/api/interaction/search-events", "GET"), 400)
+        self.assertEqual(await self.request("/api/interaction/search-events", "OPTIONS"), 400)
         self.status = 201
-        self.assertEqual(await self.request("/api/interaction/search-events", "GET"), 201)
+        self.assertEqual(await self.request("/api/interaction/search-events", "OPTIONS"), 201)
         self.status = 400
-        self.assertEqual(await self.request("/api/interaction/search-events", "GET"), 400)
-        self.assertEqual(await self.request("/api/interaction/search-events", "GET"), 429)
+        self.assertEqual(await self.request("/api/interaction/search-events", "OPTIONS"), 400)
+        self.assertEqual(await self.request("/api/interaction/search-events", "OPTIONS"), 429)
 
     async def test_successful_session_creation_is_bounded(self):
         self.assertEqual(await self.request("/api/interaction/sessions"), 201)
         self.assertEqual(await self.request("/api/interaction/sessions"), 201)
         self.assertEqual(await self.request("/api/interaction/sessions"), 429)
+
+    async def test_successful_reads_are_bounded_before_route_execution(self):
+        self.assertEqual(await self.request("/api/interaction/state", "GET"), 201)
+        self.assertEqual(await self.request("/api/interaction/state", "GET"), 201)
+        self.assertEqual(await self.request("/api/interaction/state", "GET"), 429)
 
     async def test_successful_writes_are_bounded_before_route_execution(self):
         self.assertEqual(await self.request("/api/interaction/search-events"), 201)

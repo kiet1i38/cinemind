@@ -8,7 +8,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from cinemind.catalog.repository import CatalogRepository
-from cinemind.db.locks import acquire_write_lock
+from cinemind.db.locks import acquire_mutation_lock, acquire_write_lock
 
 
 class InteractionRepository:
@@ -26,6 +26,11 @@ class InteractionRepository:
         """Serialize interaction writes with destructive maintenance."""
 
         acquire_write_lock(self.connection)
+
+    def acquire_mutation_lock(self, client_mutation_id: UUID) -> None:
+        """Serialize scope lookup and insert for one client mutation id."""
+
+        acquire_mutation_lock(self.connection, client_mutation_id)
 
     def create_session(
         self,
@@ -263,6 +268,33 @@ class InteractionRepository:
             (client_mutation_id,),
         ).fetchone()
         return dict(row) if row else None
+
+    def get_mutation_scopes(self, client_mutation_id: UUID) -> set[str]:
+        """Return every interaction kind that already owns a mutation id.
+
+        The three event tables have separate unique indexes, while a signal
+        deliberately creates one watch row and one rating row. The service
+        uses this lookup under the per-mutation advisory lock to reject reuse
+        of one client intent for another event kind.
+        """
+
+        rows = self.connection.execute(
+            """
+            SELECT 'search' AS scope
+            FROM interaction.search_events
+            WHERE client_mutation_id = %s
+            UNION ALL
+            SELECT 'watch' AS scope
+            FROM interaction.watch_sessions
+            WHERE client_mutation_id = %s
+            UNION ALL
+            SELECT 'rating' AS scope
+            FROM interaction.ratings
+            WHERE client_mutation_id = %s
+            """,
+            (client_mutation_id, client_mutation_id, client_mutation_id),
+        ).fetchall()
+        return {row["scope"] for row in rows}
 
     def create_watch_session(
         self,

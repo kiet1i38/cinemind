@@ -23,7 +23,18 @@ class CatalogRepositoryTests(unittest.TestCase):
         )
 
         self.assertIn("ESCAPE '!'", sql)
-        self.assertEqual(params, ["%!%!_!!%", "%!%!_!!%"])
+        self.assertEqual(params, ["%!%!_!!%"] * 4)
+
+    def test_filters_searches_the_same_catalog_fields_as_interaction_telemetry(self):
+        sql, params = CatalogRepository._filters(
+            query="director", content_type=None, genre=None, release_year=None
+        )
+
+        self.assertIn("title_directors", sql)
+        self.assertIn("title_cast", sql)
+        self.assertIn("title_genres", sql)
+        self.assertNotIn("COALESCE(t.description", sql)
+        self.assertEqual(params, ["%director%"] * 4)
 
     def test_list_titles_has_a_unique_pagination_tiebreaker(self):
         connection = FakeConnection()

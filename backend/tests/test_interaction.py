@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from pydantic import ValidationError
 
+from cinemind.interaction.limits import MAX_WATCH_MINUTES
 from cinemind.interaction.schemas import RatingCreateRequest, SearchEventCreateRequest, SessionCreateRequest, SignalCreateRequest
 from cinemind.interaction.service import (
     InteractionConflictError,
@@ -85,6 +86,7 @@ class FakeInteractionRepository:
         self.watch_mutations = {}
         self.rating_mutations = {}
         self.search_mutations = {}
+        self.mutation_locks = []
         self.search_result_count = 17
 
     def transaction(self):
@@ -92,6 +94,9 @@ class FakeInteractionRepository:
 
     def acquire_write_lock(self):
         return None
+
+    def acquire_mutation_lock(self, client_mutation_id):
+        self.mutation_locks.append(client_mutation_id)
 
     def create_session(self, session_id, started_at, expires_at, locale, platform, user_id=None, session_token_hash=None):
         row = {
@@ -150,6 +155,16 @@ class FakeInteractionRepository:
 
     def get_search_event_by_mutation(self, client_mutation_id):
         return self.search_mutations.get(client_mutation_id)
+
+    def get_mutation_scopes(self, client_mutation_id):
+        scopes = set()
+        if client_mutation_id in self.search_mutations:
+            scopes.add("search")
+        if client_mutation_id in self.watch_mutations:
+            scopes.add("watch")
+        if client_mutation_id in self.rating_mutations:
+            scopes.add("rating")
+        return scopes
 
     def create_watch_session(self, watch_session_id, session_id, title_id, watch_seconds, runtime_seconds, completion_rate, duration_basis, client_mutation_id=None, client_occurred_at=None, client_device_id=None, client_event_sequence=None, is_repair=False, repair_source_watch_session_id=None):
         mutation_key = client_mutation_id
@@ -382,6 +397,63 @@ class InteractionServiceTests(unittest.TestCase):
 
         self.assertEqual(replay["search_event_id"], 1)
 
+    def test_mutation_id_cannot_be_reused_across_interaction_intents(self):
+        search_mutation_id = uuid4()
+        self.service.record_search_event(
+            self.session_id,
+            "Drama",
+            0,
+            {"type": "all", "genre": "all", "year": "all"},
+            client_mutation_id=search_mutation_id,
+        )
+
+        with self.assertRaises(InteractionConflictError):
+            self.service.record_signal(
+                self.session_id,
+                "movie-1",
+                Decimal("8.5"),
+                30,
+                client_mutation_id=search_mutation_id,
+            )
+
+        signal_mutation_id = uuid4()
+        self.service.record_signal(
+            self.session_id,
+            "movie-1",
+            Decimal("8.5"),
+            30,
+            client_mutation_id=signal_mutation_id,
+        )
+
+        with self.assertRaises(InteractionConflictError):
+            self.service.record_search_event(
+                self.session_id,
+                "Drama",
+                0,
+                {"type": "all", "genre": "all", "year": "all"},
+                client_mutation_id=signal_mutation_id,
+            )
+
+        rating_mutation_id = uuid4()
+        self.service.record_rating(
+            self.session_id,
+            "movie-1",
+            Decimal("7.5"),
+            client_mutation_id=rating_mutation_id,
+        )
+
+        with self.assertRaises(InteractionConflictError):
+            self.service.record_watch_session(
+                self.session_id,
+                "movie-1",
+                30,
+                client_mutation_id=rating_mutation_id,
+            )
+
+        self.assertEqual(self.repository.mutation_locks.count(search_mutation_id), 2)
+        self.assertEqual(self.repository.mutation_locks.count(signal_mutation_id), 2)
+        self.assertEqual(self.repository.mutation_locks.count(rating_mutation_id), 2)
+
     def test_replay_does_not_conflict_when_client_timestamp_leaves_skew_window(self):
         mutation_id = uuid4()
         first_now = datetime(2026, 9, 15, 12, tzinfo=timezone.utc)
@@ -474,6 +546,17 @@ class InteractionServiceTests(unittest.TestCase):
                 0,
                 {},
                 client_occurred_at=datetime.now(),
+            )
+
+    def test_client_event_sequence_rejects_values_above_browser_safe_integer(self):
+        with self.assertRaises(InteractionValidationError):
+            self.service.record_search_event(
+                self.session_id,
+                "audit",
+                0,
+                {"type": "all", "genre": "all", "year": "all"},
+                client_device_id=uuid4(),
+                client_event_sequence=2**53,
             )
 
     def test_client_event_time_with_excessive_skew_is_discarded(self):
@@ -845,6 +928,19 @@ class InteractionServiceTests(unittest.TestCase):
     def test_invalid_duration_and_unknown_title_are_rejected(self):
         with self.assertRaises(InteractionValidationError):
             self.service.record_watch_session(self.session_id, "movie-1", 10081)
+        unsafe_service = InteractionService(
+            self.repository,
+            SimpleNamespace(max_watch_minutes=MAX_WATCH_MINUTES + 1),
+        )
+        with self.assertRaises(InteractionValidationError):
+            unsafe_service.record_watch_session(
+                self.session_id,
+                "movie-1",
+                MAX_WATCH_MINUTES + 1,
+            )
+        self.repository.titles["movie-1"]["movie_duration_min"] = MAX_WATCH_MINUTES + 1
+        with self.assertRaises(InteractionValidationError):
+            self.service.record_watch_session(self.session_id, "movie-1", 10)
         with self.assertRaises(InteractionNotFoundError):
             self.service.record_watch_session(self.session_id, "missing", 10)
         with self.assertRaises(InteractionValidationError):
@@ -898,6 +994,46 @@ class InteractionSchemaTests(unittest.TestCase):
                 show_id="movie-1",
                 rating=8,
                 watch_minutes=-1,
+            )
+
+    def test_signal_schema_rejects_watch_minutes_that_overflow_integer_seconds(self):
+        with self.assertRaises(ValidationError):
+            SignalCreateRequest(
+                session_id=uuid4(),
+                show_id="movie-1",
+                rating=8,
+                watch_minutes=MAX_WATCH_MINUTES + 1,
+            )
+
+    def test_event_sequence_schema_rejects_values_above_browser_safe_integer(self):
+        with self.assertRaises(ValidationError):
+            SearchEventCreateRequest(
+                session_id=uuid4(),
+                query="audit",
+                client_device_id=uuid4(),
+                client_event_sequence=2**53,
+            )
+
+    def test_interaction_integer_schemas_reject_boolean_coercion(self):
+        with self.assertRaises(ValidationError):
+            SearchEventCreateRequest(
+                session_id=uuid4(),
+                query="audit",
+                result_count=True,
+            )
+        with self.assertRaises(ValidationError):
+            SearchEventCreateRequest(
+                session_id=uuid4(),
+                query="audit",
+                client_device_id=uuid4(),
+                client_event_sequence=True,
+            )
+        with self.assertRaises(ValidationError):
+            SignalCreateRequest(
+                session_id=uuid4(),
+                show_id="movie-1",
+                rating=8,
+                watch_minutes=True,
             )
 
     def test_session_schema_rejects_blank_metadata(self):

@@ -27,7 +27,12 @@ from cinemind.auth.service import (
 )
 from cinemind.config import Settings, get_settings
 from cinemind.db.connection import connection_scope
-from cinemind.security import SlidingWindowRateLimiter, consume_many, is_trusted_proxy
+from cinemind.security import (
+    SlidingWindowRateLimiter,
+    consume_many,
+    consume_many_with_checks,
+    is_trusted_proxy,
+)
 from fastapi import HTTPException
 
 
@@ -95,7 +100,9 @@ def _prepare_login_request(request: Request, payload: LoginRequest) -> str:
     principal = _login_rate_limit_principal(payload.identifier, user_id)
     rate_key = _auth_rate_limit_key(request, payload.identifier, "login", principal=principal)
     account_rate_key = _auth_identifier_rate_limit_key(payload.identifier, "login", principal=principal)
-    _enforce_login_attempt_rate_limit(request, account_rate_key)
+    # The IP throughput slot was reserved before the account lookup. Do not
+    # charge it a second time after the database-backed alias resolution.
+    _enforce_login_attempt_rate_limit(request, account_rate_key, ip_reserved=True)
     _enforce_auth_rate_limit(request, rate_key)
     return rate_key
 
@@ -178,6 +185,7 @@ def me(
     return AuthStateResponse(
         authenticated=True,
         user=UserResponse(**context.user),
+        interaction_session_id=context.interaction_session_id,
     )
 
 
@@ -363,16 +371,16 @@ def _enforce_auth_rate_limit(request: Request, identifier_key: str) -> None:
 
 
 def _enforce_login_ip_preflight(request: Request) -> None:
-    """Fail fast when the request address already exhausted login quotas."""
+    """Atomically reserve the login-IP slot before any account lookup."""
 
     ip_key = _auth_ip_key(request, "login")
-    decisions = (
-        auth_login_ip_attempt_limiter.check(ip_key),
-        auth_ip_rate_limiter.check(ip_key),
+    failure_decision, login_decision = consume_many_with_checks(
+        ((auth_login_ip_attempt_limiter, ip_key),),
+        checks=((auth_ip_rate_limiter, ip_key),),
     )
-    decision = next((candidate for candidate in decisions if not candidate.allowed), None)
-    if decision is None:
+    if login_decision.allowed and failure_decision.allowed:
         return
+    decision = login_decision if not login_decision.allowed else failure_decision
     raise HTTPException(
         status_code=429,
         detail="Too many login attempts. Please try again later.",
@@ -380,8 +388,23 @@ def _enforce_login_ip_preflight(request: Request) -> None:
     )
 
 
-def _enforce_login_attempt_rate_limit(request: Request, identifier_key: str) -> None:
+def _enforce_login_attempt_rate_limit(
+    request: Request,
+    identifier_key: str,
+    *,
+    ip_reserved: bool = False,
+) -> None:
     """Consume a quota for every login, including valid-password attempts."""
+
+    if ip_reserved:
+        decision = auth_login_attempt_limiter.consume(identifier_key)
+        if decision.allowed:
+            return
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Please try again later.",
+            headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
 
     operation = identifier_key.split(":", 1)[0]
     identifier_decision, ip_decision = consume_many(

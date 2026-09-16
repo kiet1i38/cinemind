@@ -19,6 +19,7 @@ class AuthContext:
     user_id: UUID
     auth_session_id: UUID
     user: dict
+    interaction_session_id: UUID | None = None
 
 
 def get_optional_auth_context(request: Request) -> AuthContext | None:
@@ -32,11 +33,24 @@ def get_optional_auth_context(request: Request) -> AuthContext | None:
         with repository.transaction():
             repository.acquire_write_lock()
             record = repository.get_auth_context(hash_session_token(token))
+            interaction_session_id = None
+            raw_interaction_session_id = request.headers.get("x-cinemind-session")
+            interaction_session_token = request.headers.get("x-cinemind-session-token")
+            if record and raw_interaction_session_id and interaction_session_token:
+                try:
+                    interaction_session_id = repository.get_attached_interaction_session(
+                        UUID(raw_interaction_session_id),
+                        record["user_id"],
+                        hash_session_token(interaction_session_token),
+                    )
+                except ValueError:
+                    interaction_session_id = None
     if not record:
         return None
     return AuthContext(
         user_id=record["user_id"],
         auth_session_id=record["auth_session_id"],
+        interaction_session_id=interaction_session_id,
         user={
             key: record[key]
             for key in (

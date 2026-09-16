@@ -8,7 +8,12 @@ from uuid import UUID, uuid4
 
 from cinemind.auth.crypto import hash_session_token, new_session_token
 from cinemind.config import Settings
-from cinemind.interaction.limits import MAX_SEARCH_QUERY_LENGTH, normalize_search_filters
+from cinemind.interaction.limits import (
+    MAX_CLIENT_EVENT_SEQUENCE,
+    MAX_SEARCH_QUERY_LENGTH,
+    MAX_WATCH_MINUTES,
+    normalize_search_filters,
+)
 from cinemind.interaction.models import WatchMetrics
 from cinemind.interaction.repository import InteractionRepository
 
@@ -47,6 +52,10 @@ class InteractionService:
     """Coordinate interaction use cases and keep database writes atomic."""
 
     client_event_clock_skew = timedelta(days=7)
+    _search_mutation_scopes = frozenset({"search"})
+    _watch_mutation_scopes = frozenset({"watch"})
+    _rating_mutation_scopes = frozenset({"rating"})
+    _signal_mutation_scopes = frozenset({"watch", "rating"})
 
     def __init__(self, repository: InteractionRepository, settings: Settings):
         self.repository = repository
@@ -108,6 +117,7 @@ class InteractionService:
             self._acquire_write_lock()
             self._require_session(session_id, user_id, session_token)
             if client_mutation_id is not None:
+                self._require_mutation_scope(client_mutation_id, self._search_mutation_scopes)
                 existing = self.repository.get_search_event_by_mutation(client_mutation_id)
                 if existing is not None:
                     self._require_existing_mutation_owner(existing, session_id, user_id)
@@ -187,6 +197,7 @@ class InteractionService:
             self._acquire_write_lock()
             self._require_session(session_id, user_id, session_token)
             if client_mutation_id is not None:
+                self._require_mutation_scope(client_mutation_id, self._watch_mutation_scopes)
                 existing = self.repository.get_watch_session_by_mutation(client_mutation_id)
                 if existing is not None:
                     self._require_existing_mutation_owner(existing, session_id, user_id)
@@ -263,6 +274,7 @@ class InteractionService:
             self._acquire_write_lock()
             self._require_session(session_id, user_id, session_token)
             if client_mutation_id is not None:
+                self._require_mutation_scope(client_mutation_id, self._rating_mutation_scopes)
                 existing = self.repository.get_rating_by_mutation(client_mutation_id)
                 if existing is not None:
                     self._require_existing_mutation_owner(existing, session_id, user_id)
@@ -347,6 +359,7 @@ class InteractionService:
             self._acquire_write_lock()
             self._require_session(session_id, user_id, session_token)
             if client_mutation_id is not None:
+                self._require_mutation_scope(client_mutation_id, self._signal_mutation_scopes)
                 existing_watch = self.repository.get_watch_session_by_mutation(client_mutation_id)
                 existing_rating = self.repository.get_rating_by_mutation(client_mutation_id)
                 if existing_watch is not None:
@@ -585,9 +598,11 @@ class InteractionService:
         session_token: str | None = None,
     ) -> dict:
         self._require_session(session_id, user_id, session_token)
+        snapshot_at = datetime.now(timezone.utc)
         state = self.repository.interaction_state(session_id, user_id)
         return {
             "session_id": session_id,
+            "snapshot_at": snapshot_at,
             "ratings": tuple(
                 {
                     "show_id": row["show_id"],
@@ -642,6 +657,30 @@ class InteractionService:
                     "client_mutation_id was already used with a different payload"
                 )
 
+    def _require_mutation_scope(
+        self,
+        client_mutation_id: UUID,
+        allowed_scopes: frozenset[str],
+    ) -> None:
+        """Keep one client mutation id tied to one interaction intent.
+
+        A signal is the one deliberate composite operation: it owns exactly
+        one watch row and one rating row. Search, direct watch, and direct
+        rating mutations each have a single scope. The repository lookup runs
+        after an exclusive per-mutation advisory lock is acquired, so the
+        check and the later insert cannot race with a different interaction
+        intent using the same UUID. The shared interaction lock alone is
+        intentionally not enough for this guarantee.
+        """
+
+        self._acquire_mutation_lock(client_mutation_id)
+        existing_scopes = self.repository.get_mutation_scopes(client_mutation_id)
+        if existing_scopes and not existing_scopes.issubset(allowed_scopes):
+            scopes = ", ".join(sorted(existing_scopes))
+            raise InteractionConflictError(
+                f"client_mutation_id is already used by another interaction intent ({scopes})"
+            )
+
     def _require_existing_mutation_owner(
         self,
         existing: dict,
@@ -695,7 +734,12 @@ class InteractionService:
         runtime_seconds = None
         completion_rate = None
         if title["content_type"] == "Movie" and title["movie_duration_min"]:
-            runtime_seconds = int(title["movie_duration_min"]) * 60
+            runtime_minutes = int(title["movie_duration_min"])
+            if runtime_minutes < 1 or runtime_minutes > MAX_WATCH_MINUTES:
+                raise InteractionValidationError(
+                    "catalog movie duration is outside the supported storage range"
+                )
+            runtime_seconds = runtime_minutes * 60
             completion_rate = min(
                 Decimal(watch_minutes * 60) / Decimal(runtime_seconds),
                 Decimal("1"),
@@ -717,9 +761,10 @@ class InteractionService:
             raise InteractionValidationError("watch_minutes must be an integer")
         if watch_minutes < 0:
             raise InteractionValidationError("watch_minutes must be greater than or equal to zero")
-        if watch_minutes > self.settings.max_watch_minutes:
+        allowed_max = min(self.settings.max_watch_minutes, MAX_WATCH_MINUTES)
+        if watch_minutes > allowed_max:
             raise InteractionValidationError(
-                f"watch_minutes must be less than or equal to {self.settings.max_watch_minutes}"
+                f"watch_minutes must be less than or equal to {allowed_max}"
             )
 
     def _require_session(
@@ -767,6 +812,11 @@ class InteractionService:
         if lock is not None:
             lock()
 
+    def _acquire_mutation_lock(self, client_mutation_id: UUID) -> None:
+        lock = getattr(self.repository, "acquire_mutation_lock", None)
+        if lock is not None:
+            lock(client_mutation_id)
+
     @staticmethod
     def normalize_query(value: str) -> str:
         """Normalize a search term without changing its user-visible form."""
@@ -787,11 +837,24 @@ class InteractionService:
     ) -> tuple[UUID | None, int | None]:
         if device_id is None and sequence is None:
             return None, None
-        if device_id is None or sequence is None or int(sequence) < 1:
+        try:
+            normalized_sequence = int(sequence) if sequence is not None else None
+        except (TypeError, ValueError, OverflowError) as error:
             raise InteractionValidationError(
-                "client_device_id and client_event_sequence must be provided together"
+                "client_device_id and client_event_sequence must be valid together"
+            ) from error
+        if (
+            device_id is None
+            or sequence is None
+            or isinstance(sequence, bool)
+            or normalized_sequence is None
+            or normalized_sequence < 1
+            or normalized_sequence > MAX_CLIENT_EVENT_SEQUENCE
+        ):
+            raise InteractionValidationError(
+                "client_device_id and client_event_sequence must be valid together"
             )
-        return device_id, int(sequence)
+        return device_id, normalized_sequence
 
     @staticmethod
     def _normalize_rating(value: Decimal) -> Decimal:

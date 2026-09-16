@@ -7,9 +7,13 @@ const interactionConfig = appConfig.interaction;
 const ownerStoreBase = createJsonStore(interactionConfig.ownerStorageKey, "anonymous");
 const sessionStoreBase = createJsonStore(interactionConfig.sessionStorageKey, null);
 const sessionTokenStoreBase = createJsonStore(`${interactionConfig.sessionStorageKey}:token`, null);
-// Keep the session proof and its id in one JSON value. A pair written through
-// one storage operation can never be observed after only the id has changed.
+// Keep the session proof and its id in one JSON value. New bundles store one
+// record per owner so two tabs cannot lose each other's namespace through a
+// shared aggregate read-modify-write. The aggregate key remains a read-only
+// migration fallback for values written by older bundles.
 const sessionPairStoreBase = createJsonStore(`${interactionConfig.sessionStorageKey}:pair`, null);
+const sessionPairEntryPrefix = `${interactionConfig.sessionStorageKey}:pair:owner:`;
+const SESSION_PAIR_ENTRY_VERSION = 1;
 // These values describe one top-level browser tab. Keeping them in
 // sessionStorage gives each tab its own sequence namespace, so allocating a
 // sequence never depends on a cross-tab read/modify/write race in localStorage.
@@ -42,6 +46,10 @@ const ownerTransferSessionStoreBase = createJsonStore(
   null,
   getBrowserSessionStorage,
 );
+const ownerTransferBridgeStoreBase = createJsonStore(
+  `${interactionConfig.ownerStorageKey}:recent-transfer`,
+  null,
+);
 const ownerPromotionStoreBase = createJsonStore(
   `${interactionConfig.ownerStorageKey}:promotion-in-progress`,
   null,
@@ -51,6 +59,8 @@ const legacyFavoriteStore = createJsonStore("cinemind-favorites", null);
 const legacyWatchlistStore = createJsonStore("cinemind-watchlist", null);
 const outboxEntryPrefix = `${interactionConfig.outboxStorageKey}:entry:`;
 const outboxMigrationPrefix = `${interactionConfig.outboxStorageKey}:migration:`;
+const outboxTombstonePrefix = `${interactionConfig.outboxStorageKey}:tombstone:`;
+const signalClearMarkerPrefix = `${appConfig.signals.storageKey}:clear:`;
 const OUTBOX_TYPES = new Set(["signals", "searches"]);
 let lastPendingWritePersisted = true;
 // Incremented whenever the interaction owner/session boundary changes. Any
@@ -58,7 +68,13 @@ let lastPendingWritePersisted = true;
 // read or write the current owner's namespace.
 let interactionRevision = 0;
 const memoryOutboxEntries = new Map();
+// When a per-entry write falls back to memory, remember the persistent value
+// that was present at the failed write. A later read must not blindly replay
+// that memory copy over a durable write made by another tab in the meantime.
+const memoryOutboxEntryBaselines = new Map();
 const memoryOutboxTombstones = new Set();
+const memoryOutboxTombstoneValues = new Map();
+const memoryOutboxTombstoneCreatedAt = new Map();
 const memorySignalEntries = new Set();
 const reportedPendingLosses = new Set();
 let pendingInteractionLossCount = 0;
@@ -67,10 +83,28 @@ const UNREADABLE_OPENER_STREAM = "__unreadable_opener_stream__";
 const DEVICE_STREAM_LEASE_MS = 15000;
 const DEVICE_STREAM_HEARTBEAT_MS = 5000;
 const OWNER_PROMOTION_TTL_MS = 120000;
+const OWNER_TRANSFER_BRIDGE_TTL_MS = 120000;
+const PROMOTION_LOCK_NAME = "cinemind-auth-promotion";
+const PROMOTION_LOCK_DB_NAME = "cinemind-coordination";
+const PROMOTION_LOCK_STORE_NAME = "locks";
+const PROMOTION_LOCK_DB_VERSION = 1;
+const PROMOTION_LOCK_TTL_MS = 5000;
+const PROMOTION_LOCK_WAIT_MS = 4000;
+const PROMOTION_LOCK_RETRY_MS = 25;
+const INTERACTION_SESSION_LOCK_NAME = "cinemind-interaction-session";
 const deviceStreamClaimId = createMutationId();
+// A promotion belongs to one JavaScript browsing context. Reusing a shared
+// marker for two tabs lets one tab clear the other tab's recovery state.
+const promotionClaimId = createMutationId();
+let promotionLockDatabasePromise = null;
 let activeDeviceStreamClaimKey = null;
 let deviceStreamHeartbeat = null;
 let deviceStreamLifecycleBound = false;
+// When browser storage is unavailable, a fresh browsing context cannot prove
+// that a cloned sessionStorage stream belongs to it. Keep the stream selected
+// by this JS context stable after it has been forked/created, so fail-closed
+// detection does not rotate the id again on every later call.
+let memoryOnlyDeviceStreamId = null;
 
 // Remove obsolete preference data as soon as the new bundle loads.
 legacyFavoriteStore.remove();
@@ -135,6 +169,144 @@ function deviceStreamClaimKey(deviceId) {
   return `${interactionConfig.deviceStorageKey || "cinemind-interaction-device-id"}:active:${encodeURIComponent(String(deviceId))}`;
 }
 
+function isBrowserRuntime() {
+  return typeof window !== "undefined" && typeof window.navigator !== "undefined";
+}
+
+function currentBrowserNavigator() {
+  if (typeof window !== "undefined" && window.navigator) return window.navigator;
+  if (typeof navigator !== "undefined") return navigator;
+  return null;
+}
+
+function openPromotionLockDatabase() {
+  if (promotionLockDatabasePromise) return promotionLockDatabasePromise;
+  if (typeof indexedDB === "undefined") return Promise.resolve(null);
+
+  promotionLockDatabasePromise = new Promise((resolve) => {
+    let request;
+    try {
+      request = indexedDB.open(PROMOTION_LOCK_DB_NAME, PROMOTION_LOCK_DB_VERSION);
+    } catch {
+      resolve(null);
+      return;
+    }
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(PROMOTION_LOCK_STORE_NAME)) {
+        database.createObjectStore(PROMOTION_LOCK_STORE_NAME, { keyPath: "name" });
+      }
+    };
+    request.onsuccess = () => {
+      const database = request.result;
+      database.onversionchange = () => database.close();
+      resolve(database);
+    };
+    request.onerror = () => resolve(null);
+    request.onblocked = () => resolve(null);
+  });
+  return promotionLockDatabasePromise;
+}
+
+function tryAcquireCoordinationLock(database, lockName, ownerId) {
+  return new Promise((resolve) => {
+    let acquired = false;
+    let transaction;
+    try {
+      transaction = database.transaction(PROMOTION_LOCK_STORE_NAME, "readwrite");
+      const store = transaction.objectStore(PROMOTION_LOCK_STORE_NAME);
+       const read = store.get(lockName);
+      read.onsuccess = () => {
+        const current = read.result;
+        const leaseLive = current
+          && current.ownerId !== ownerId
+          && Number(current.expiresAt) > Date.now();
+        if (leaseLive) {
+          transaction.abort();
+          return;
+        }
+        store.put({
+           name: lockName,
+          ownerId,
+          expiresAt: Date.now() + PROMOTION_LOCK_TTL_MS
+        });
+        acquired = true;
+      };
+      read.onerror = () => transaction.abort();
+      transaction.oncomplete = () => resolve(acquired);
+      transaction.onerror = () => resolve(false);
+      transaction.onabort = () => resolve(false);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+function releaseCoordinationLock(database, lockName, ownerId) {
+  return new Promise((resolve) => {
+    let transaction;
+    try {
+      transaction = database.transaction(PROMOTION_LOCK_STORE_NAME, "readwrite");
+      const store = transaction.objectStore(PROMOTION_LOCK_STORE_NAME);
+       const read = store.get(lockName);
+       read.onsuccess = () => {
+         if (read.result?.ownerId === ownerId) store.delete(lockName);
+      };
+      read.onerror = () => transaction.abort();
+      transaction.oncomplete = () => resolve(true);
+      transaction.onerror = () => resolve(false);
+      transaction.onabort = () => resolve(false);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+async function acquireIndexedDbCoordinationLock(lockName) {
+  const database = await openPromotionLockDatabase();
+  if (!database) return null;
+  const ownerId = createMutationId();
+  const deadline = Date.now() + PROMOTION_LOCK_WAIT_MS;
+  while (Date.now() < deadline) {
+     if (await tryAcquireCoordinationLock(database, lockName, ownerId)) return { database, ownerId };
+    await new Promise((resolve) => setTimeout(resolve, PROMOTION_LOCK_RETRY_MS));
+  }
+  return null;
+}
+
+async function withCoordinationLock(lockName, work) {
+  // Node-based service tests do not have independent browsing contexts. Keep
+  // their synchronous storage harness usable while real browsers use an
+  // inter-context lock before touching shared coordination state.
+  if (!isBrowserRuntime()) {
+    return { supported: true, value: await work() };
+  }
+
+  const browserNavigator = currentBrowserNavigator();
+  if (typeof browserNavigator?.locks?.request === "function") {
+    return {
+      supported: true,
+      value: await browserNavigator.locks.request(lockName, () => work())
+    };
+  }
+
+  const lease = await acquireIndexedDbCoordinationLock(lockName);
+  if (!lease) return { supported: false, value: null };
+  try {
+    return { supported: true, value: await work() };
+  } finally {
+    await releaseCoordinationLock(lease.database, lockName, lease.ownerId);
+  }
+}
+
+async function withPromotionLock(work) {
+  return withCoordinationLock(PROMOTION_LOCK_NAME, work);
+}
+
+export function withInteractionSessionCreationLock(work) {
+  return withCoordinationLock(INTERACTION_SESSION_LOCK_NAME, work);
+}
+
 function readStorageJson(storage, key) {
   try {
     const raw = storage.getItem(key);
@@ -160,8 +332,15 @@ function releaseDeviceStreamClaim(key = activeDeviceStreamClaimKey) {
   const storage = usableBrowserStorage();
   if (storage) {
     try {
-      const current = readStorageJson(storage, key);
-      if (current?.claimId === deviceStreamClaimId) storage.removeItem(key);
+      const currentRaw = storage.getItem(key);
+      const current = currentRaw === null ? null : JSON.parse(currentRaw);
+      if (current?.claimId === deviceStreamClaimId
+        && storage.getItem(key) === currentRaw) {
+        // Do not let a newer tab claim get removed after this tab's first read.
+        // The lease can safely expire when the compare fails or storage is
+        // unavailable; losing another tab's live claim cannot be recovered.
+        storage.removeItem(key);
+      }
     } catch {
       // A failed release expires naturally after the lease timeout.
     }
@@ -206,8 +385,20 @@ function startDeviceStreamHeartbeat() {
 
 function claimDeviceStream(deviceId) {
   if (!isUuid(deviceId)) return true;
+  const normalizedDeviceId = String(deviceId).toLowerCase();
   const storage = usableBrowserStorage();
-  if (!storage) return true;
+  // Without a durable claim store, a duplicated browsing context cannot be
+  // distinguished from the current tab unless the navigation is a reload.
+  // Reusing the cloned stream would allow both contexts to emit the same
+  // device/sequence pair, so fail closed for a fresh navigation.
+  if (!storage) {
+    if (!isBrowserRuntime()) return true;
+    if (memoryOnlyDeviceStreamId === normalizedDeviceId || isReloadNavigation()) {
+      memoryOnlyDeviceStreamId = normalizedDeviceId;
+      return true;
+    }
+    return false;
+  }
   const key = deviceStreamClaimKey(deviceId);
   const existing = readStorageJson(storage, key);
   const existingClaimId = String(existing?.claimId || "");
@@ -225,9 +416,25 @@ function claimDeviceStream(deviceId) {
   try {
     storage.setItem(key, JSON.stringify({ claimId: deviceStreamClaimId, touchedAt: Date.now() }));
     const claimed = readStorageJson(storage, key);
-    if (claimed?.claimId !== deviceStreamClaimId) return false;
+    if (claimed?.claimId !== deviceStreamClaimId) {
+      // Some storage wrappers silently ignore writes instead of throwing. Treat
+      // that exactly like an unavailable claim store so a memory-only stream is
+      // stable for this page, while a fresh cloned navigation still fails
+      // closed and forks to avoid duplicate device/sequence pairs.
+      if (!isBrowserRuntime()) return true;
+      if (memoryOnlyDeviceStreamId === normalizedDeviceId || isReloadNavigation()) {
+        memoryOnlyDeviceStreamId = normalizedDeviceId;
+        return true;
+      }
+      return false;
+    }
   } catch {
-    return true;
+    if (!isBrowserRuntime()) return true;
+    if (memoryOnlyDeviceStreamId === normalizedDeviceId || isReloadNavigation()) {
+      memoryOnlyDeviceStreamId = normalizedDeviceId;
+      return true;
+    }
+    return false;
   }
   activeDeviceStreamClaimKey = key;
   bindDeviceStreamLifecycle();
@@ -239,6 +446,7 @@ function ensureUniqueDeviceStream() {
   const storage = getBrowserSessionStorage();
   if (!storage || storage === deviceStorageContext) return;
   deviceStorageContext = storage;
+  memoryOnlyDeviceStreamId = null;
   let currentDevice = deviceStoreBase.read();
   let forked = false;
   if (isUuid(currentDevice) && !claimDeviceStream(currentDevice)) {
@@ -249,6 +457,7 @@ function ensureUniqueDeviceStream() {
     deviceStoreBase.write(createMutationId());
     sequenceStoreBase.write(0);
     currentDevice = deviceStoreBase.read();
+    if (isUuid(currentDevice)) memoryOnlyDeviceStreamId = String(currentDevice).toLowerCase();
     deviceForkParentStore.write(forkParent);
     forked = true;
   }
@@ -282,7 +491,9 @@ function ensureUniqueDeviceStream() {
   deviceStoreBase.write(createMutationId());
   sequenceStoreBase.write(0);
   deviceForkParentStore.write(openerDevice || UNREADABLE_OPENER_STREAM);
-  claimDeviceStream(deviceStoreBase.read());
+  const forkedDevice = deviceStoreBase.read();
+  if (isUuid(forkedDevice)) memoryOnlyDeviceStreamId = String(forkedDevice).toLowerCase();
+  claimDeviceStream(forkedDevice);
 }
 
 // Run the fork check during document boot as well as before allocation. This
@@ -307,6 +518,7 @@ function normalizeOwnerPromotion(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const sourceSessionId = String(value.sourceSessionId || "").trim();
   const promotionId = String(value.promotionId || "").trim();
+  const claimId = isUuid(value.claimId) ? String(value.claimId).toLowerCase() : null;
   const startedAt = normalizeTimestamp(value.startedAt, null);
   const expiresAt = normalizeTimestamp(value.expiresAt, null);
   if (!isUuid(sourceSessionId) || !isUuid(promotionId) || !startedAt || !expiresAt) return null;
@@ -321,12 +533,13 @@ function normalizeOwnerPromotion(value) {
     sourceOwner: "anonymous",
     sourceSessionId: sourceSessionId.toLowerCase(),
     promotionId: promotionId.toLowerCase(),
+    claimId,
     startedAt,
     expiresAt
   };
 }
 
-function readPendingAuthenticatedInteractionPromotion() {
+export function readPendingAuthenticatedInteractionPromotion() {
   const raw = ownerPromotionStoreBase.read();
   const normalized = normalizeOwnerPromotion(raw);
   if (!normalized) {
@@ -336,42 +549,47 @@ function readPendingAuthenticatedInteractionPromotion() {
   return normalized;
 }
 
-export function beginAuthenticatedInteractionPromotion() {
+export async function beginAuthenticatedInteractionPromotion() {
   const source = ownerSessionData("anonymous");
   const sourcePair = isValidSessionPair(source.pair) ? source.pair : null;
   if (!sourcePair) return null;
 
-  const existing = readPendingAuthenticatedInteractionPromotion();
-  if (existing) {
-    return existing.sourceSessionId === String(sourcePair.sessionId).toLowerCase()
-      ? existing.promotionId
-      : false;
-  }
+  const lockResult = await withPromotionLock(async () => {
+    const existing = readPendingAuthenticatedInteractionPromotion();
+    if (existing) {
+      return existing.sourceSessionId === String(sourcePair.sessionId).toLowerCase()
+        && existing.claimId === promotionClaimId
+        ? existing.promotionId
+        : false;
+    }
 
-  const storage = usableBrowserStorage();
-  if (!storage) return false;
-  const now = Date.now();
-  const value = {
-    version: 1,
-    sourceOwner: "anonymous",
-    sourceSessionId: String(sourcePair.sessionId).toLowerCase(),
-    promotionId: createMutationId(),
-    startedAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + OWNER_PROMOTION_TTL_MS).toISOString()
-  };
-  const persisted = ownerPromotionStoreBase.write(value);
-  if (!persisted) {
-    // Do not let browserStore's in-memory fallback act as a cross-tab lock.
-    // A promotion marker is useful only when another tab can observe it after
-    // a reload, so an unwritable localStorage must fail closed.
-    ownerPromotionStoreBase.remove();
-    return false;
-  }
-  const confirmed = readPendingAuthenticatedInteractionPromotion();
-  return confirmed && confirmed.promotionId === value.promotionId
-    && confirmed.sourceSessionId === value.sourceSessionId
-    ? confirmed.promotionId
-    : false;
+    const storage = usableBrowserStorage();
+    if (!storage) return false;
+    const now = Date.now();
+    const value = {
+      version: 1,
+      sourceOwner: "anonymous",
+      sourceSessionId: String(sourcePair.sessionId).toLowerCase(),
+      promotionId: createMutationId(),
+      claimId: promotionClaimId,
+      startedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + OWNER_PROMOTION_TTL_MS).toISOString()
+    };
+    const persisted = ownerPromotionStoreBase.write(value);
+    if (!persisted) {
+      // Do not let browserStore's in-memory fallback act as a cross-tab lock.
+      // A promotion marker is useful only when another tab can observe it
+      // after a reload, so an unwritable localStorage must fail closed.
+      ownerPromotionStoreBase.remove();
+      return false;
+    }
+    const confirmed = readPendingAuthenticatedInteractionPromotion();
+    return confirmed && confirmed.promotionId === value.promotionId
+      && confirmed.sourceSessionId === value.sourceSessionId
+      ? confirmed.promotionId
+      : false;
+  });
+  return lockResult.supported ? lockResult.value : false;
 }
 
 export function clearPendingAuthenticatedInteractionPromotion(expectedPromotionId = null) {
@@ -394,6 +612,74 @@ function normalizeOwnerTransfer(value) {
     acceptedAnonymousSessionId: acceptedAnonymousSessionId.toLowerCase(),
     createdAt: normalizeTimestamp(value.createdAt, new Date().toISOString())
   };
+}
+
+function isSameOwnerTransfer(left, right) {
+  return Boolean(
+    left
+    && right
+    && left.sourceOwner === right.sourceOwner
+    && left.targetOwner === right.targetOwner
+    && left.acceptedAnonymousSessionId === right.acceptedAnonymousSessionId
+    && left.createdAt === right.createdAt
+  );
+}
+
+function normalizeOwnerTransferBridge(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const targetOwner = String(value.targetOwner || "").trim();
+  const acceptedAnonymousSessionId = String(value.acceptedAnonymousSessionId || "").trim();
+  const completedAt = normalizeTimestamp(value.completedAt, null);
+  const expiresAt = normalizeTimestamp(value.expiresAt, null);
+  if (!targetOwner || targetOwner === "anonymous"
+    || !isUuid(acceptedAnonymousSessionId) || !completedAt || !expiresAt) return null;
+  const completedAtMs = Date.parse(completedAt);
+  const expiresAtMs = Date.parse(expiresAt);
+  const now = Date.now();
+  if (!Number.isFinite(completedAtMs) || !Number.isFinite(expiresAtMs)
+    || expiresAtMs <= now || now - completedAtMs > OWNER_TRANSFER_BRIDGE_TTL_MS
+    || completedAtMs - now > OWNER_TRANSFER_BRIDGE_TTL_MS) return null;
+  return {
+    version: 1,
+    sourceOwner: "anonymous",
+    targetOwner,
+    acceptedAnonymousSessionId: acceptedAnonymousSessionId.toLowerCase(),
+    completedAt,
+    expiresAt
+  };
+}
+
+function readOwnerTransferBridge() {
+  const raw = ownerTransferBridgeStoreBase.read();
+  const normalized = normalizeOwnerTransferBridge(raw);
+  if (!normalized && raw !== null && raw !== undefined) ownerTransferBridgeStoreBase.remove();
+  return normalized;
+}
+
+function writeOwnerTransferBridge(targetOwner, acceptedAnonymousSessionId) {
+  const storage = usableBrowserStorage();
+  if (!storage || !isUuid(acceptedAnonymousSessionId)) return false;
+  const now = Date.now();
+  const value = {
+    version: 1,
+    sourceOwner: "anonymous",
+    targetOwner: String(targetOwner || "").trim(),
+    acceptedAnonymousSessionId: String(acceptedAnonymousSessionId).toLowerCase(),
+    completedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + OWNER_TRANSFER_BRIDGE_TTL_MS).toISOString()
+  };
+  const persisted = ownerTransferBridgeStoreBase.write(value);
+  if (!persisted) return false;
+  const confirmed = readOwnerTransferBridge();
+  return Boolean(
+    confirmed
+    && confirmed.targetOwner === value.targetOwner
+    && confirmed.acceptedAnonymousSessionId === value.acceptedAnonymousSessionId
+  );
+}
+
+function clearOwnerTransferBridge() {
+  ownerTransferBridgeStoreBase.remove();
 }
 
 function readPendingOwnerTransfer() {
@@ -443,12 +729,88 @@ function writePendingOwnerTransfer(sourceOwner, targetOwner, acceptedAnonymousSe
 }
 
 function clearPendingOwnerTransfer() {
-  const persistent = ownerTransferStoreBase.remove();
+  const pending = readPendingOwnerTransfer();
+  const persistentStorage = usableBrowserStorage();
+  const journalKey = `${interactionConfig.ownerStorageKey}:pending-transfer`;
+  let persistentJournal = null;
+  let persistentJournalReadable = false;
+  if (persistentStorage) {
+    try {
+      const raw = persistentStorage.getItem(journalKey);
+      persistentJournalReadable = true;
+      persistentJournal = raw === null ? null : normalizeOwnerTransfer(JSON.parse(raw));
+    } catch {
+      // Treat an unreadable durable journal as non-durable. The recovery copy
+      // must survive until this tab can prove the matching journal is gone.
+    }
+  }
+
+  const journalMatchesPending = Boolean(
+    persistentJournalReadable
+    && isSameOwnerTransfer(persistentJournal, pending)
+  );
+  if (!journalMatchesPending) {
+    // The pending record may exist only in the same-tab backup because the
+    // original localStorage write failed, or a newer tab may own the durable
+    // record. Never clear the backup based on removeItem(absent-key).
+    if (pending) {
+      // When storage is unavailable there is no durable record to protect;
+      // clear the browser-store memory-only marker before retaining the
+      // recovery value in memory. Otherwise a later storage recovery could
+      // mistake this cleanup residue for a live durable journal.
+      if (!persistentStorage) ownerTransferStoreBase.remove();
+      ownerTransferStoreBase.write(pending);
+      ownerTransferSessionStoreBase.write(pending);
+    }
+    return false;
+  }
+
+  const persistentRemoved = ownerTransferStoreBase.remove();
+  let journalGone = false;
+  try {
+    journalGone = persistentStorage.getItem(journalKey) === null;
+  } catch {
+    journalGone = false;
+  }
+  const durable = Boolean(persistentRemoved && journalGone);
   // sessionStorage is only a same-tab convenience copy. It must not make a
   // transfer appear durable when localStorage removal failed or was never
-  // available.
+  // available. Preserve it until the durable journal removal succeeds; when
+  // localStorage is temporarily unavailable, deleting the session copy here
+  // would strand the only newer recovery record in this tab.
+  if (!durable) {
+    // browserStore hides a failed removal behind a page-lifetime tombstone.
+    // Restore the journal best-effort so the failed cleanup cannot make the
+    // still-present durable value look absent to this tab.
+    let currentJournal = null;
+    try {
+      const raw = persistentStorage?.getItem(journalKey);
+      currentJournal = raw === null || raw === undefined
+        ? null
+        : normalizeOwnerTransfer(JSON.parse(raw));
+    } catch {
+      currentJournal = null;
+    }
+    if (pending && (!currentJournal || isSameOwnerTransfer(currentJournal, pending))) {
+      ownerTransferStoreBase.write(pending);
+    }
+    if (pending) ownerTransferSessionStoreBase.write(pending);
+    return false;
+  }
   ownerTransferSessionStoreBase.remove();
-  return Boolean(persistent && usableBrowserStorage());
+  if (durable && pending && ownerNamespaceHasRecoverableData(pending.sourceOwner)) {
+    // A stale tab can finish an anonymous write immediately after the source
+    // snapshot was cleaned and the journal was removed. Recreate the durable
+    // journal so the next auth/owner boundary retries the transfer instead of
+    // treating that late write as anonymous data that may be discarded.
+    writePendingOwnerTransfer(
+      pending.sourceOwner,
+      pending.targetOwner,
+      pending.acceptedAnonymousSessionId,
+    );
+    return false;
+  }
+  return durable;
 }
 
 function clearLegacySessionValues(owner) {
@@ -465,11 +827,13 @@ export function getInteractionDeviceId() {
     const forkedDevice = createMutationId();
     deviceStoreBase.write(forkedDevice);
     sequenceStoreBase.write(0);
+    memoryOnlyDeviceStreamId = String(forkedDevice).toLowerCase();
     claimDeviceStream(forkedDevice);
     return forkedDevice;
   }
   const deviceId = createMutationId();
   deviceStoreBase.write(deviceId);
+  memoryOnlyDeviceStreamId = String(deviceId).toLowerCase();
   claimDeviceStream(deviceId);
   return deviceId;
 }
@@ -479,8 +843,38 @@ export function nextInteractionEventSequence() {
   const current = Number(sequenceStoreBase.read());
   const safeCurrent = Number.isSafeInteger(current) && current >= 0 ? current : 0;
   const next = safeCurrent >= Number.MAX_SAFE_INTEGER ? 1 : safeCurrent + 1;
-  sequenceStoreBase.write(next);
-  return next;
+  // A sequence is only useful when it survives a reload of this browsing
+  // context. Never send a value that exists only in browserStore memory: a
+  // quota/security failure followed by a reload would reuse an older value
+  // for the same device stream and let the server select stale event state.
+  return sequenceStoreBase.write(next) ? next : null;
+}
+
+function pendingEventMetadata(existingEntry = null) {
+  // A mutation keeps its original event metadata for its whole retry life.
+  // In particular, do not add a newly allocated sequence to an entry that was
+  // first queued while sessionStorage was unavailable.
+  if (existingEntry) {
+    const existingDeviceId = isUuid(existingEntry.clientDeviceId)
+      ? String(existingEntry.clientDeviceId).toLowerCase()
+      : null;
+    const existingSequence = Number.isSafeInteger(Number(existingEntry.clientEventSequence))
+      && Number(existingEntry.clientEventSequence) > 0
+      ? Number(existingEntry.clientEventSequence)
+      : null;
+    return existingDeviceId && existingSequence
+      ? { clientDeviceId: existingDeviceId, clientEventSequence: existingSequence }
+      : { clientDeviceId: null, clientEventSequence: null };
+  }
+
+  const clientEventSequence = nextInteractionEventSequence();
+  if (!Number.isSafeInteger(clientEventSequence) || clientEventSequence <= 0) {
+    return { clientDeviceId: null, clientEventSequence: null };
+  }
+  const clientDeviceId = getInteractionDeviceId();
+  return isUuid(clientDeviceId)
+    ? { clientDeviceId: String(clientDeviceId).toLowerCase(), clientEventSequence }
+    : { clientDeviceId: null, clientEventSequence: null };
 }
 
 function normalizeOutbox(value) {
@@ -533,6 +927,7 @@ function normalizePendingSignal(key, entry, now, ttlMs) {
     lastAttemptAt,
     queuedAt: firstQueuedAt,
     mutationId,
+    outboxWriteNonce: typeof entry.outboxWriteNonce === "string" ? entry.outboxWriteNonce : null,
     clientDeviceId: isUuid(entry.clientDeviceId) ? String(entry.clientDeviceId).toLowerCase() : null,
     clientEventSequence: Number.isSafeInteger(Number(entry.clientEventSequence)) && Number(entry.clientEventSequence) > 0
       ? Number(entry.clientEventSequence)
@@ -557,6 +952,7 @@ function normalizePendingSearch(key, entry, now, ttlMs) {
     lastAttemptAt,
     queuedAt: firstQueuedAt,
     mutationId,
+    outboxWriteNonce: typeof entry.outboxWriteNonce === "string" ? entry.outboxWriteNonce : null,
     clientDeviceId: isUuid(entry.clientDeviceId) ? String(entry.clientDeviceId).toLowerCase() : null,
     clientEventSequence: Number.isSafeInteger(Number(entry.clientEventSequence)) && Number(entry.clientEventSequence) > 0
       ? Number(entry.clientEventSequence)
@@ -620,12 +1016,44 @@ function encodedOwner(owner) {
   return encodeURIComponent(String(owner || "anonymous"));
 }
 
+function sessionPairEntryKey(owner) {
+  return `${sessionPairEntryPrefix}${encodedOwner(owner)}`;
+}
+
+function readSessionPairForOwner(owner) {
+  const entry = createJsonStore(sessionPairEntryKey(owner), undefined).read();
+  if (entry !== undefined) {
+    if (entry && typeof entry === "object" && entry.version === SESSION_PAIR_ENTRY_VERSION) {
+      if (entry.deleted === true) return null;
+      if (Object.prototype.hasOwnProperty.call(entry, "value")) return entry.value;
+    }
+    return entry;
+  }
+
+  // Older bundles stored all owners in one aggregate. Read it only when the
+  // owner-specific record has not been created yet; never rewrite the
+  // aggregate from a current-tab snapshot.
+  const legacyPair = ownerScopedValue(sessionPairStoreBase, owner, undefined);
+  return legacyPair === undefined ? null : legacyPair;
+}
+
+function writeSessionPairForOwner(owner, pair) {
+  const record = pair === null || pair === undefined
+    ? { version: SESSION_PAIR_ENTRY_VERSION, deleted: true }
+    : { version: SESSION_PAIR_ENTRY_VERSION, value: pair };
+  return createJsonStore(sessionPairEntryKey(owner), undefined).write(record);
+}
+
 function signalOwnerPrefix(owner) {
   return `${signalEntryPrefix}${encodedOwner(owner)}:`;
 }
 
 function signalEntryKey(owner, showId) {
   return `${signalOwnerPrefix(owner)}${encodeURIComponent(String(showId))}`;
+}
+
+function signalClearMarkerKey(owner, showId) {
+  return `${signalClearMarkerPrefix}${encodedOwner(owner)}:${encodeURIComponent(String(showId))}`;
 }
 
 function signalEntryKeys(owner) {
@@ -667,8 +1095,51 @@ function isDeletedSignal(value) {
   return Boolean(signalValue(value)?.deleted === true);
 }
 
-function readSignalEntry(owner, showId) {
+function signalValueFingerprint(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+}
+
+function readSignalClearMarker(owner, showId) {
+  const marker = signalValue(createJsonStore(signalClearMarkerKey(owner, showId), null).read());
+  if (!marker || marker.version !== 1 || typeof marker.expectedFingerprint !== "string") return null;
+  return marker;
+}
+
+function writeSignalClearMarker(owner, showId, value) {
+  const expectedFingerprint = signalValueFingerprint(value);
+  if (!expectedFingerprint) return false;
+  return createJsonStore(signalClearMarkerKey(owner, showId), null).write({
+    version: 1,
+    expectedFingerprint,
+    clearedAt: new Date().toISOString()
+  });
+}
+
+function clearSignalClearMarker(owner, showId) {
+  return createJsonStore(signalClearMarkerKey(owner, showId), null).remove();
+}
+
+function readRawSignalEntry(owner, showId) {
   return signalValue(createJsonStore(signalEntryKey(owner, showId), null).read());
+}
+
+function readSignalEntry(owner, showId) {
+  const value = readRawSignalEntry(owner, showId);
+  if (!value) {
+    clearSignalClearMarker(owner, showId);
+    return null;
+  }
+  const marker = readSignalClearMarker(owner, showId);
+  if (!marker) return value;
+  if (signalValueFingerprint(value) === marker.expectedFingerprint) return null;
+  // A newer write replaced the value observed by the clear operation. It is
+  // now authoritative for this browser context; remove only the stale marker.
+  clearSignalClearMarker(owner, showId);
+  return value;
 }
 
 function readSignalSnapshotForOwner(owner) {
@@ -685,7 +1156,7 @@ function readSignalSnapshotForOwner(owner) {
   for (const key of signalEntryKeys(normalizedOwner)) {
     const showId = decodeSignalEntryShowId(normalizedOwner, key);
     if (!showId) continue;
-    const value = signalValue(createJsonStore(key, null).read());
+    const value = readSignalEntry(normalizedOwner, showId);
     if (!value) continue;
     if (isDeletedSignal(value)) {
       // A per-title tombstone must also hide an older legacy aggregate value.
@@ -727,8 +1198,15 @@ function compareSignalStorageRecency(left, right) {
 function persistSignalEntry(owner, showId, value, storage) {
   const key = signalEntryKey(owner, showId);
   const wrote = createJsonStore(key, null).write(value);
-  if (wrote && storage) memorySignalEntries.delete(key);
-  else memorySignalEntries.add(key);
+  if (wrote && storage) {
+    memorySignalEntries.delete(key);
+    // A new value supersedes any logical clear marker left by logout/reset.
+    // This is safe even if another tab created the marker just before this
+    // write: the value itself is newer than the marker's expected fingerprint.
+    clearSignalClearMarker(owner, showId);
+  } else {
+    memorySignalEntries.add(key);
+  }
   return Boolean(wrote && storage);
 }
 
@@ -769,7 +1247,20 @@ function writeSignalSnapshotForOwner(owner, value, { force = false } = {}) {
   return persisted;
 }
 
-function replaceSignalSnapshotForOwner(owner, value) {
+function shouldPreserveNewerServerSignal(current, incoming, snapshotAt = null) {
+  const currentValue = signalValue(current);
+  if (!currentValue) return false;
+  const currentServerAt = signalTimestamp(currentValue, "serverSavedAt");
+  if (currentServerAt === null) return false;
+
+  const incomingServerAt = signalTimestamp(incoming, "serverSavedAt");
+  if (incomingServerAt !== null) return currentServerAt > incomingServerAt;
+
+  const snapshotTimestamp = Date.parse(snapshotAt || "");
+  return Number.isFinite(snapshotTimestamp) && currentServerAt > snapshotTimestamp;
+}
+
+function replaceSignalSnapshotForOwner(owner, value, { snapshotAt = null } = {}) {
   const normalizedOwner = String(owner || "anonymous");
   const source = signalValue(value) ? value : {};
   const incoming = {};
@@ -796,13 +1287,21 @@ function replaceSignalSnapshotForOwner(owner, value) {
   let persisted = Boolean(usableBrowserStorage());
   for (const showId of knownShowIds) {
     if (Object.prototype.hasOwnProperty.call(incoming, showId) || pendingShowIds.has(showId)) continue;
+    const current = readSignalEntry(normalizedOwner, showId);
+    if (shouldPreserveNewerServerSignal(current, null, snapshotAt)) continue;
     persisted = deleteSignalSnapshotForOwner(normalizedOwner, showId, { authoritative: true }) && persisted;
   }
-  // This function is called after the server response has been merged with
-  // any still-pending local entries. For entries with no pending mutation, the
-  // server snapshot is authoritative even when a stale local sequence is
-  // higher, so bypass the local recency guard here.
-  persisted = writeSignalSnapshotForOwner(normalizedOwner, incoming, { force: true }) && persisted;
+  // A state response can be older than a committed write from another tab.
+  // Compare server receipts before applying it; client sequence numbers are
+  // not a safe cross-tab ordering primitive.
+  const safeIncoming = {};
+  for (const [showId, signal] of Object.entries(incoming)) {
+    const current = readSignalEntry(normalizedOwner, showId);
+    if (!shouldPreserveNewerServerSignal(current, signal, snapshotAt)) {
+      safeIncoming[showId] = signal;
+    }
+  }
+  persisted = writeSignalSnapshotForOwner(normalizedOwner, safeIncoming, { force: true }) && persisted;
   // The aggregate key is legacy-only now. Remove it after materializing its
   // authoritative per-title replacement; per-title tombstones cover a failed
   // cleanup and prevent old deleted titles from being read again.
@@ -815,9 +1314,18 @@ function removeSignalSnapshotForOwner(owner) {
   const storage = usableBrowserStorage();
   let removed = Boolean(storage);
   for (const key of signalEntryKeys(normalizedOwner)) {
-    const didRemove = createJsonStore(key, null).remove();
-    if (!didRemove || !storage) removed = false;
-    memorySignalEntries.delete(key);
+    const showId = decodeSignalEntryShowId(normalizedOwner, key);
+    if (!showId) continue;
+    const current = readRawSignalEntry(normalizedOwner, showId);
+    if (!current) continue;
+    // Do not physically delete the value after enumerating it. Another tab
+    // can write a newer receipt between that read and removeItem(), and an
+    // unconditional delete would erase the newer tab's local state. A
+    // fingerprinted marker hides exactly the value observed by this clear;
+    // a concurrent replacement remains visible and clears the marker on its
+    // next read/write.
+    const markerPersisted = writeSignalClearMarker(normalizedOwner, showId, current);
+    if (!markerPersisted || !storage) removed = false;
   }
   removeScopedValueForOwner(signalStoreBase, normalizedOwner);
   return removed;
@@ -868,8 +1376,238 @@ function outboxEntryKey(owner, type, mutationId) {
   return `${outboxOwnerPrefix(owner)}${type}:${encodeURIComponent(String(mutationId).toLowerCase())}`;
 }
 
+function outboxTombstoneKey(owner, type, mutationId) {
+  return `${outboxTombstonePrefix}${encodedOwner(owner)}:${type}:${encodeURIComponent(String(mutationId).toLowerCase())}`;
+}
+
 function memoryOutboxKey(owner, type, mutationId) {
   return outboxEntryKey(owner, type, mutationId);
+}
+
+function outboxValueFingerprint(value) {
+  try {
+    return stableSerialize(value);
+  } catch {
+    return null;
+  }
+}
+
+function stableSerialize(value) {
+  if (value === undefined) return "null";
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableSerialize(item)).join(",")}]`;
+  return `{${Object.keys(value)
+    .filter((key) => value[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`)
+    .join(",")}}`;
+}
+
+function readOutboxTombstone(storage, owner, type, mutationId) {
+  try {
+    const raw = storage.getItem(outboxTombstoneKey(owner, type, mutationId));
+    if (raw === null) return null;
+    return parseOutboxTombstone(raw);
+  } catch {
+    return null;
+  }
+}
+
+function parseOutboxTombstone(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed?.version === 1 && typeof parsed.fingerprint === "string"
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeOutboxTombstone(storage, owner, type, mutationId, expectedValue) {
+  const fingerprint = outboxValueFingerprint(expectedValue);
+  if (!fingerprint) return false;
+  try {
+    storage.setItem(
+      outboxTombstoneKey(owner, type, mutationId),
+      JSON.stringify({ version: 1, fingerprint, createdAt: new Date().toISOString() }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeOutboxEntryStorageIfUnchanged(storage, owner, type, mutationId, expectedValue) {
+  const key = outboxEntryKey(owner, type, mutationId);
+  const expectedFingerprint = outboxValueFingerprint(expectedValue);
+  if (!expectedFingerprint) return false;
+  const currentValue = parseStorageJson(storage, key);
+  if (currentValue === null) return true;
+  if (outboxValueFingerprint(currentValue) !== expectedFingerprint) return false;
+  try {
+    // localStorage operations are synchronous within this browser task. The
+    // post-delete read also makes a failed remove observable to the caller;
+    // a newer value is intentionally treated as a successful supersession.
+    storage.removeItem(key);
+    const remaining = parseStorageJson(storage, key);
+    return remaining === null || outboxValueFingerprint(remaining) !== expectedFingerprint;
+  } catch {
+    return false;
+  }
+}
+
+function outboxTombstoneEntries(storage, owner, type) {
+  const prefix = `${outboxTombstonePrefix}${encodedOwner(owner)}:${type}:`;
+  const entries = [];
+  try {
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      let mutationId;
+      try {
+        mutationId = decodeURIComponent(key.slice(prefix.length));
+      } catch {
+        continue;
+      }
+      const raw = storage.getItem(key);
+      const marker = raw === null ? null : parseOutboxTombstone(raw);
+      if (!marker) continue;
+      entries.push({ key, marker, mutationId, raw });
+    }
+  } catch {
+    return entries;
+  }
+  return entries;
+}
+
+function removeOutboxTombstoneIfUnchanged(storage, entry) {
+  if (!entry?.key || typeof entry.raw !== "string") return false;
+  try {
+    if (storage.getItem(entry.key) !== entry.raw) return false;
+    storage.removeItem(entry.key);
+    return storage.getItem(entry.key) !== entry.raw;
+  } catch {
+    return false;
+  }
+}
+
+function outboxTombstoneMaxItems() {
+  return Number.isInteger(interactionConfig.pendingMutationMaxItems)
+    && interactionConfig.pendingMutationMaxItems > 0
+    ? interactionConfig.pendingMutationMaxItems
+    : 100;
+}
+
+function pruneOutboxTombstones(owner, type, { clearAll = false } = {}) {
+  const memoryPrefix = `${outboxOwnerPrefix(owner)}${type}:`;
+  const memoryKeys = [...memoryOutboxTombstones]
+    .filter((key) => key.startsWith(memoryPrefix));
+  const memoryRetained = new Set(
+    (clearAll
+      ? []
+      : memoryKeys
+        .sort((left, right) => (memoryOutboxTombstoneCreatedAt.get(right) || 0)
+          - (memoryOutboxTombstoneCreatedAt.get(left) || 0))
+        .slice(0, outboxTombstoneMaxItems()))
+  );
+  for (const key of memoryKeys) {
+    if (memoryRetained.has(key)) continue;
+    memoryOutboxTombstones.delete(key);
+    memoryOutboxTombstoneValues.delete(key);
+    memoryOutboxTombstoneCreatedAt.delete(key);
+  }
+
+  const storage = usableBrowserStorage();
+  if (!storage) return true;
+  const candidates = [];
+  let persisted = true;
+
+  for (const entry of outboxTombstoneEntries(storage, owner, type)) {
+    const currentValue = parseStorageJson(storage, outboxEntryKey(owner, type, entry.mutationId));
+    if (currentValue !== null) {
+      const currentFingerprint = outboxValueFingerprint(currentValue);
+      if (currentFingerprint === entry.marker.fingerprint) {
+        // A failed prior compaction left the acknowledged raw value behind.
+        // Remove it only while its fingerprint still matches the marker.
+        if (!removeOutboxEntryStorageIfUnchanged(storage, owner, type, entry.mutationId, currentValue)) {
+          persisted = false;
+          continue;
+        }
+      } else {
+        // A newer write superseded this marker. It is safe to remove the old
+        // marker because the newer raw value is already visible to readers.
+        persisted = removeOutboxTombstoneIfUnchanged(storage, entry) && persisted;
+        continue;
+      }
+    }
+    candidates.push(entry);
+  }
+
+  candidates.sort((left, right) => {
+    const leftTime = Date.parse(left.marker.createdAt || "");
+    const rightTime = Date.parse(right.marker.createdAt || "");
+    return (Number.isFinite(rightTime) ? rightTime : 0)
+      - (Number.isFinite(leftTime) ? leftTime : 0);
+  });
+  const retained = new Set(
+    (clearAll ? [] : candidates.slice(0, outboxTombstoneMaxItems()))
+      .map((entry) => entry.key),
+  );
+  for (const entry of candidates) {
+    if (retained.has(entry.key)) continue;
+    persisted = removeOutboxTombstoneIfUnchanged(storage, entry) && persisted;
+  }
+  return persisted;
+}
+
+function isOutboxEntrySuppressed(storage, owner, type, mutationId, value) {
+  if (value === null || value === undefined) return false;
+  const key = outboxEntryKey(owner, type, mutationId);
+  const fingerprint = outboxValueFingerprint(value);
+  const memoryFingerprint = memoryOutboxTombstoneValues.get(key);
+  const persistentTombstone = readOutboxTombstone(storage, owner, type, mutationId);
+  const expectedFingerprint = persistentTombstone?.fingerprint || memoryFingerprint;
+  if (!expectedFingerprint) return false;
+  if (fingerprint === expectedFingerprint || JSON.stringify(value) === expectedFingerprint) return true;
+  try {
+    // Accept tombstones written by bundles that used insertion-order JSON.
+    // New writes use stableSerialize so property-order differences cannot
+    // turn an unchanged entry into a false newer write.
+    if (stableSerialize(JSON.parse(expectedFingerprint)) === fingerprint) return true;
+  } catch {
+    // Invalid historical markers remain non-authoritative.
+  }
+
+  // A newer writer won the race. Its value must stay visible and the stale
+  // suppression marker is harmless because readers compare its fingerprint.
+  // Do not physically clear the marker here: a concurrent acknowledgement
+  // may have replaced it with a marker for the newer value between the read
+  // and this cleanup attempt.
+  memoryOutboxTombstones.delete(key);
+  memoryOutboxTombstoneValues.delete(key);
+  memoryOutboxTombstoneCreatedAt.delete(key);
+  return false;
+}
+
+function hasOutboxTombstone(storage, owner, type, mutationId) {
+  const key = outboxEntryKey(owner, type, mutationId);
+  return memoryOutboxTombstones.has(key) || Boolean(readOutboxTombstone(storage, owner, type, mutationId));
+}
+
+function filterLegacyOutboxByTombstones(owner, value, storage) {
+  const filtered = { signals: {}, searches: {} };
+  for (const type of OUTBOX_TYPES) {
+    for (const [mutationId, entry] of Object.entries(value?.[type] || {})) {
+      // A legacy aggregate has no write nonce, so it cannot prove that it was
+      // written after a per-entry acknowledgement. Once a tombstone exists,
+      // treat the aggregate copy as stale; a newer bundle can still supersede
+      // it through the per-entry path and its fresh nonce.
+      if (hasOutboxTombstone(storage, owner, type, mutationId)) continue;
+      filtered[type][mutationId] = entry;
+    }
+  }
+  return filtered;
 }
 
 function notePendingLoss(owner, type, mutationId) {
@@ -913,20 +1651,73 @@ function outboxEntryKeys(owner) {
   return keys;
 }
 
-function writeOutboxEntry(owner, type, mutationId, value) {
+function memoryOutboxEntriesForOwner(owner) {
+  const prefix = outboxOwnerPrefix(owner);
+  const entries = { signals: {}, searches: {} };
+  for (const [key, value] of memoryOutboxEntries) {
+    if (!key.startsWith(prefix)) continue;
+    const suffix = key.slice(prefix.length);
+    const separator = suffix.indexOf(":");
+    if (separator <= 0) continue;
+    const type = suffix.slice(0, separator);
+    if (!OUTBOX_TYPES.has(type)) continue;
+    let mutationId;
+    try {
+      mutationId = decodeURIComponent(suffix.slice(separator + 1));
+    } catch {
+      continue;
+    }
+    entries[type][mutationId] = value;
+  }
+  return entries;
+}
+
+function writeOutboxEntry(owner, type, mutationId, value, { preserveWriteNonce = false } = {}) {
   const storage = usableBrowserStorage();
   if (!storage) {
     const outbox = normalizeOutbox(ownerScopedValue(outboxStoreBase, owner, {}));
     outbox[type][mutationId] = value;
-    lastPendingWritePersisted = writeScopedValueForOwner(outboxStoreBase, owner, outbox);
-    return lastPendingWritePersisted;
+    // browserStore keeps the aggregate in memory when localStorage is not
+    // available, but that copy disappears on reload. Surface the durability
+    // boundary to the caller so the UI can say session-only instead of
+    // claiming the interaction was saved locally.
+    writeScopedValueForOwner(outboxStoreBase, owner, outbox);
+    lastPendingWritePersisted = false;
+    return false;
   }
   const key = memoryOutboxKey(owner, type, mutationId);
+  const persistentBeforeWrite = parseStorageJson(storage, key);
   memoryOutboxTombstones.delete(key);
+  memoryOutboxTombstoneValues.delete(key);
+  memoryOutboxTombstoneCreatedAt.delete(key);
   reportedPendingLosses.delete(key);
-  lastPendingWritePersisted = createJsonStore(key, null).write(value);
-  if (lastPendingWritePersisted) memoryOutboxEntries.delete(key);
-  else memoryOutboxEntries.set(key, value);
+  const persistedValue = value && typeof value === "object" && !Array.isArray(value)
+    ? {
+      ...value,
+      // Migration/retry reads already carry the current write nonce. Keep it
+      // stable when persistence is temporarily unavailable; a fresh queue
+      // write omits the field and receives a new nonce below.
+      outboxWriteNonce: preserveWriteNonce && typeof value.outboxWriteNonce === "string"
+        ? value.outboxWriteNonce
+        : createMutationId()
+    }
+    : value;
+  lastPendingWritePersisted = createJsonStore(key, null).write(persistedValue);
+  if (lastPendingWritePersisted) {
+    // Publish the replacement before any later reader compares a stale
+    // tombstone. The marker is fingerprinted, so a newer value remains visible
+    // without a racy physical delete of another tab's marker.
+    memoryOutboxEntries.delete(key);
+    memoryOutboxEntryBaselines.delete(key);
+  } else {
+    if (!memoryOutboxEntryBaselines.has(key)) {
+      memoryOutboxEntryBaselines.set(
+        key,
+        persistentBeforeWrite === null ? null : outboxValueFingerprint(persistentBeforeWrite),
+      );
+    }
+    memoryOutboxEntries.set(key, persistedValue);
+  }
   return lastPendingWritePersisted;
 }
 
@@ -935,48 +1726,68 @@ function removeOutboxEntry(owner, type, mutationId) {
   if (!storage) {
     const outbox = normalizeOutbox(ownerScopedValue(outboxStoreBase, owner, {}));
     delete outbox[type][mutationId];
-    lastPendingWritePersisted = writeScopedValueForOwner(outboxStoreBase, owner, outbox);
-    return lastPendingWritePersisted;
+    writeScopedValueForOwner(outboxStoreBase, owner, outbox);
+    lastPendingWritePersisted = false;
+    return false;
   }
   const key = outboxEntryKey(owner, type, mutationId);
-  const removed = createJsonStore(key, null).remove();
-  memoryOutboxEntries.delete(key);
-  if (!removed) memoryOutboxTombstones.add(key);
-  else memoryOutboxTombstones.delete(key);
-  try {
-    lastPendingWritePersisted = storage.getItem(key) === null;
-  } catch {
-    lastPendingWritePersisted = false;
+  const currentValue = memoryOutboxEntries.has(key)
+    ? memoryOutboxEntries.get(key)
+    : parseStorageJson(storage, key);
+  if (currentValue === null || currentValue === undefined) {
+    lastPendingWritePersisted = true;
+    return true;
   }
+  const tombstonePersisted = writeOutboxTombstone(storage, owner, type, mutationId, currentValue);
+  memoryOutboxEntries.delete(key);
+  memoryOutboxEntryBaselines.delete(key);
+  memoryOutboxTombstones.add(key);
+  memoryOutboxTombstoneValues.set(key, outboxValueFingerprint(currentValue));
+  memoryOutboxTombstoneCreatedAt.set(key, Date.now());
+  if (tombstonePersisted) {
+    removeOutboxEntryStorageIfUnchanged(storage, owner, type, mutationId, currentValue);
+  }
+  pruneOutboxTombstones(owner, type);
+  // The marker is the durable acknowledgement. Physical compaction is best
+  // effort; a newer value may legitimately remain at the same key.
+  lastPendingWritePersisted = tombstonePersisted;
   return lastPendingWritePersisted;
 }
 
 function removeOutboxEntryIfUnchanged(owner, type, mutationId, expectedValue) {
   const storage = usableBrowserStorage();
-  if (!storage) return removeOutboxEntry(owner, type, mutationId);
-  const key = outboxEntryKey(owner, type, mutationId);
-  if (memoryOutboxTombstones.has(key)) return false;
-  const memoryValue = memoryOutboxEntries.get(key);
-  if (memoryValue !== undefined && JSON.stringify(memoryValue) !== JSON.stringify(expectedValue)) return false;
-  const currentValue = memoryValue !== undefined ? memoryValue : parseStorageJson(storage, key);
-  if (JSON.stringify(currentValue) !== JSON.stringify(expectedValue)) return false;
-  const removed = createJsonStore(key, null).remove();
-  memoryOutboxEntries.delete(key);
-  if (!removed) memoryOutboxTombstones.add(key);
-  try {
-    lastPendingWritePersisted = storage.getItem(key) === null;
-  } catch {
-    lastPendingWritePersisted = false;
+  if (!storage) {
+    const currentValue = readOutboxForOwner(owner)[type]?.[mutationId];
+    if (outboxValueFingerprint(currentValue) !== outboxValueFingerprint(expectedValue)) return false;
+    return removeOutboxEntry(owner, type, mutationId);
   }
+  const key = outboxEntryKey(owner, type, mutationId);
+  const memoryValue = memoryOutboxEntries.get(key);
+  if (memoryValue !== undefined && outboxValueFingerprint(memoryValue) !== outboxValueFingerprint(expectedValue)) return false;
+  const currentValue = memoryValue !== undefined ? memoryValue : parseStorageJson(storage, key);
+  if (outboxValueFingerprint(currentValue) !== outboxValueFingerprint(expectedValue)) return false;
+  const tombstonePersisted = writeOutboxTombstone(storage, owner, type, mutationId, expectedValue);
+  memoryOutboxEntries.delete(key);
+  memoryOutboxEntryBaselines.delete(key);
+  memoryOutboxTombstones.add(key);
+  memoryOutboxTombstoneValues.set(key, outboxValueFingerprint(expectedValue));
+  memoryOutboxTombstoneCreatedAt.set(key, Date.now());
+  if (tombstonePersisted) {
+    removeOutboxEntryStorageIfUnchanged(storage, owner, type, mutationId, expectedValue);
+  }
+  pruneOutboxTombstones(owner, type);
+  // The marker is the durable acknowledgement. Physical compaction is best
+  // effort; a newer value may legitimately remain at the same key.
+  lastPendingWritePersisted = tombstonePersisted;
   return lastPendingWritePersisted;
 }
 
-function writeOutboxEntriesForOwner(owner, value) {
+function writeOutboxEntriesForOwner(owner, value, options = {}) {
   const normalized = normalizeOutbox(value);
   let persisted = true;
   for (const type of OUTBOX_TYPES) {
     for (const [mutationId, entry] of Object.entries(normalized[type])) {
-      persisted = writeOutboxEntry(owner, type, mutationId, entry) && persisted;
+      persisted = writeOutboxEntry(owner, type, mutationId, entry, options) && persisted;
     }
   }
   lastPendingWritePersisted = persisted;
@@ -1008,8 +1819,8 @@ function pruneOutboxType(owner, type) {
     const value = memoryOutboxEntries.has(key)
       ? memoryOutboxEntries.get(key)
       : parseStorageJson(storage, key);
-    if (memoryOutboxTombstones.has(key)) continue;
     if (value === null) continue;
+    if (isOutboxEntrySuppressed(storage, owner, type, mutationId, value)) continue;
     snapshots.set(mutationId, value);
     const normalized = type === "signals"
       ? normalizePendingSignal(mutationId, value, now, ttlMs)
@@ -1023,7 +1834,7 @@ function pruneOutboxType(owner, type) {
     notePendingLoss(owner, type, mutationId);
     persisted = removeOutboxEntryIfUnchanged(owner, type, mutationId, value) && persisted;
   }
-  return persisted;
+  return pruneOutboxTombstones(owner, type) && persisted;
 }
 
 function clearOutboxForOwner(owner) {
@@ -1037,19 +1848,48 @@ function clearOutboxForOwner(owner) {
     for (const key of keys) {
       createJsonStore(key, null).remove();
       memoryOutboxEntries.delete(key);
+      memoryOutboxEntryBaselines.delete(key);
       memoryOutboxTombstones.delete(key);
+      memoryOutboxTombstoneValues.delete(key);
+      memoryOutboxTombstoneCreatedAt.delete(key);
     }
     writeScopedValueForOwner(outboxStoreBase, owner, { signals: {}, searches: {} });
     return;
   }
+  let persisted = true;
   for (const key of outboxEntryKeys(owner)) {
-    const removed = createJsonStore(key, null).remove();
-    memoryOutboxEntries.delete(key);
-    if (!removed) memoryOutboxTombstones.add(key);
+    const suffix = key.slice(outboxOwnerPrefix(owner).length);
+    const separator = suffix.indexOf(":");
+    if (separator <= 0) continue;
+    const type = suffix.slice(0, separator);
+    if (!OUTBOX_TYPES.has(type)) continue;
+    let mutationId;
+    try {
+      mutationId = decodeURIComponent(suffix.slice(separator + 1));
+    } catch {
+      continue;
+    }
+    const value = memoryOutboxEntries.has(key)
+      ? memoryOutboxEntries.get(key)
+      : parseStorageJson(storage, key);
+    if (value === null || value === undefined) continue;
+    if (isOutboxEntrySuppressed(storage, owner, type, mutationId, value)) {
+      // The acknowledgement marker may exist only in this tab when the
+      // tombstone write previously hit quota. A clear must still remove the
+      // matching raw value; otherwise dropping the memory marker below would
+      // resurrect the acknowledged event after reload.
+      persisted = removeOutboxEntryStorageIfUnchanged(storage, owner, type, mutationId, value) && persisted;
+      continue;
+    }
+    persisted = removeOutboxEntryIfUnchanged(owner, type, mutationId, value) && persisted;
+  }
+  for (const type of OUTBOX_TYPES) {
+    persisted = pruneOutboxTombstones(owner, type, { clearAll: true }) && persisted;
   }
   // The aggregate key is legacy-only, but clear its owner namespace as well
   // so a later storage fallback cannot resurrect pre-migration data.
   removeScopedValueForOwner(outboxStoreBase, owner);
+  lastPendingWritePersisted = persisted;
 }
 
 function readOutboxForOwner(owner) {
@@ -1083,24 +1923,79 @@ function readOutboxForOwner(owner) {
     }
     const memoryValue = memoryOutboxEntries.get(key);
     if (memoryValue !== undefined) {
-      const value = createJsonStore(key, null).read();
-      if (!memoryOutboxTombstones.has(key) && value !== null) raw[type][mutationId] = value;
-      // Keep the in-memory copy authoritative until a later queue write or
-      // acknowledgement removes it. A persistent stale value may still be
-      // readable while quota writes are failing.
+      // Do not let browserStore's quota fallback blindly re-publish a stale
+      // memory value. Compare the durable value directly first; another tab
+      // may have acknowledged or replaced this mutation while this tab was
+      // unable to write.
+      const persistentValue = parseStorageJson(storage, key);
+      const persistentFingerprint = persistentValue === null
+        ? null
+        : outboxValueFingerprint(persistentValue);
+      const memoryFingerprint = outboxValueFingerprint(memoryValue);
+      const baselineKnown = memoryOutboxEntryBaselines.has(key);
+      const baselineFingerprint = memoryOutboxEntryBaselines.get(key);
+      const persistentChanged = baselineKnown && persistentFingerprint !== baselineFingerprint;
+      const untrackedConflict = !baselineKnown
+        && persistentValue !== null
+        && persistentFingerprint !== memoryFingerprint;
+
+      if (persistentChanged || untrackedConflict) {
+        memoryOutboxEntries.delete(key);
+        memoryOutboxEntryBaselines.delete(key);
+        if (persistentValue === null) createJsonStore(key, null).remove();
+        else createJsonStore(key, null).write(persistentValue);
+        if (!memoryOutboxTombstones.has(key)
+          && persistentValue !== null
+          && !isOutboxEntrySuppressed(storage, normalizedOwner, type, mutationId, persistentValue)) {
+          raw[type][mutationId] = persistentValue;
+        }
+        continue;
+      }
+
+      // The durable read above can itself be the interleaving point. Re-read
+      // once before exposing the fallback so a tab that committed immediately
+      // after the first read wins without requiring a write from this tab.
+      const latestPersistentValue = parseStorageJson(storage, key);
+      if (latestPersistentValue !== null
+        && outboxValueFingerprint(latestPersistentValue) !== memoryFingerprint) {
+        memoryOutboxEntries.delete(key);
+        memoryOutboxEntryBaselines.delete(key);
+        if (!memoryOutboxTombstones.has(key)
+          && !isOutboxEntrySuppressed(storage, normalizedOwner, type, mutationId, latestPersistentValue)) {
+          raw[type][mutationId] = latestPersistentValue;
+        }
+        continue;
+      }
+
+      if (!memoryOutboxTombstones.has(key)
+        && !isOutboxEntrySuppressed(storage, normalizedOwner, type, mutationId, memoryValue)) {
+        raw[type][mutationId] = memoryValue;
+      }
+      // Do not publish the memory fallback from a read. localStorage has no
+      // compare-and-swap primitive, so another tab could commit a newer value
+      // between the durable read above and a setItem() here. If the durable
+      // value already equals the fallback, it is safe to drop the redundant
+      // in-memory copy without writing anything.
+      if (persistentValue !== null && persistentFingerprint === memoryFingerprint) {
+        memoryOutboxEntries.delete(key);
+        memoryOutboxEntryBaselines.delete(key);
+      }
+      // Keep the in-memory copy authoritative while the retry is still
+      // blocked; a durable conflict above is the only case that supersedes
+      // it without a new queue write.
       continue;
     }
     if (memoryOutboxTombstones.has(key)) {
-      try {
-        storage.removeItem(key);
-        memoryOutboxTombstones.delete(key);
-      } catch {
-        // Ignore a stale persistent value for this page lifetime.
+      const value = parseStorageJson(storage, key);
+      if (value !== null && !isOutboxEntrySuppressed(storage, normalizedOwner, type, mutationId, value)) {
+        raw[type][mutationId] = value;
       }
       continue;
     }
     const value = parseStorageJson(storage, key);
-    if (value !== null) raw[type][mutationId] = value;
+    if (value !== null && !isOutboxEntrySuppressed(storage, normalizedOwner, type, mutationId, value)) {
+      raw[type][mutationId] = value;
+    }
   }
 
   const migrationKey = outboxMigrationKey(normalizedOwner);
@@ -1108,13 +2003,17 @@ function readOutboxForOwner(owner) {
     // Merge any partially migrated per-entry data with the legacy aggregate
     // before marking migration complete. This keeps a quota failure or a
     // second tab from making the remaining legacy entries unreachable.
-    const legacy = normalizeOutbox(ownerScopedValue(outboxStoreBase, normalizedOwner, {}));
+    const legacy = filterLegacyOutboxByTombstones(
+      normalizedOwner,
+      normalizeOutbox(ownerScopedValue(outboxStoreBase, normalizedOwner, {})),
+      storage,
+    );
     const combined = normalizeOutbox({
       signals: { ...legacy.signals, ...raw.signals },
       searches: { ...legacy.searches, ...raw.searches }
     });
     const hasLegacyOrEntries = Object.keys(combined.signals).length > 0 || Object.keys(combined.searches).length > 0;
-    writeOutboxEntriesForOwner(normalizedOwner, combined);
+    writeOutboxEntriesForOwner(normalizedOwner, combined, { preserveWriteNonce: true });
     if (lastPendingWritePersisted) {
       for (const type of OUTBOX_TYPES) {
         for (const mutationId of Object.keys(raw[type])) {
@@ -1150,7 +2049,7 @@ function readOutboxForOwner(owner) {
 }
 
 function ownerSessionData(owner) {
-  const pair = ownerScopedValue(sessionPairStoreBase, owner, null);
+  const pair = readSessionPairForOwner(owner);
   const session = ownerScopedValue(sessionStoreBase, owner, null);
   const token = ownerScopedValue(sessionTokenStoreBase, owner, null);
   return {
@@ -1161,9 +2060,298 @@ function ownerSessionData(owner) {
   };
 }
 
+function ownerNamespaceHasRecoverableData(owner) {
+  const session = ownerSessionData(owner);
+  if (isValidSessionPair(session.pair) || isUuid(session.sessionId) || isValidSessionToken(session.token)) return true;
+
+  if (Object.keys(readSignalSnapshotForOwner(owner)).length > 0) return true;
+
+  const outbox = readOutboxForOwner(owner);
+  return [...OUTBOX_TYPES].some((type) => Object.keys(outbox[type] || {}).length > 0);
+}
+
+function resolvePendingWriteOwner(owner, sourceSessionId = null) {
+  const normalizedOwner = String(owner || "anonymous");
+  if (normalizedOwner !== "anonymous") return normalizedOwner;
+
+  const activeOwner = getInteractionOwner();
+  if (activeOwner === "anonymous") return normalizedOwner;
+
+  const pending = readPendingOwnerTransfer();
+  const bridge = readOwnerTransferBridge();
+  const transferTarget = pending?.targetOwner || bridge?.targetOwner;
+  const acceptedSessionId = pending?.acceptedAnonymousSessionId || bridge?.acceptedAnonymousSessionId;
+  const normalizedSourceSessionId = isUuid(sourceSessionId)
+    ? String(sourceSessionId).toLowerCase()
+    : null;
+  // A stale tab may still hold an anonymous interaction context after the
+  // shared owner boundary moved to the account. Re-home only when the durable
+  // transfer record names this exact account and the captured session is the
+  // exact session accepted by the server; never move a different anonymous
+  // session into an account that happens to log in later.
+  return transferTarget === activeOwner
+    && normalizedSourceSessionId
+    && acceptedSessionId === normalizedSourceSessionId
+    ? activeOwner
+    : normalizedOwner;
+}
+
+function rawStorageValue(storage, key) {
+  if (!storage) return null;
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function clearOwnerScopedAggregateIfUnchanged(key, owner, expectedRaw) {
+  const storage = usableBrowserStorage();
+  if (!storage) return false;
+  const expected = expectedRaw === null || expectedRaw === undefined ? null : expectedRaw;
+  const currentRaw = rawStorageValue(storage, key);
+  if (currentRaw !== expected) return false;
+  // A missing key is still a value that must remain missing. Re-read it before
+  // declaring the source clean so a legacy tab cannot publish an aggregate
+  // between the snapshot read and this compare. The next promotion retry can
+  // then copy that late write instead of losing it behind a cleared journal.
+  if (rawStorageValue(storage, key) !== expected) return false;
+  if (expected === null) return true;
+
+  let current;
+  try {
+    current = JSON.parse(currentRaw);
+  } catch {
+    return false;
+  }
+  if (!current || typeof current !== "object" || Array.isArray(current) || !current.owners) return false;
+  if (!Object.prototype.hasOwnProperty.call(current.owners, owner)) return true;
+
+  const owners = { ...current.owners };
+  delete owners[owner];
+  const replacement = Object.keys(owners).length
+    ? JSON.stringify({ version: 2, owners })
+    : null;
+  // localStorage has no CAS primitive. Re-read immediately before the
+  // replacement so a newer owner write is never removed from this aggregate.
+  if (rawStorageValue(storage, key) !== expectedRaw) return false;
+  try {
+    if (replacement === null) storage.removeItem(key);
+    else storage.setItem(key, replacement);
+  } catch {
+    return false;
+  }
+  return rawStorageValue(storage, key) === replacement;
+}
+
+function clearSessionPairEntryIfUnchanged(owner, expectedRaw) {
+  if (expectedRaw === null || expectedRaw === undefined) return true;
+  const storage = usableBrowserStorage();
+  if (!storage) return false;
+  const key = sessionPairEntryKey(owner);
+  const currentRaw = rawStorageValue(storage, key);
+  if (currentRaw === null) return true;
+  if (currentRaw !== expectedRaw) return false;
+  let current;
+  try {
+    current = JSON.parse(currentRaw);
+  } catch {
+    return false;
+  }
+  if (current?.deleted === true) return true;
+  const replacement = JSON.stringify({ version: SESSION_PAIR_ENTRY_VERSION, deleted: true });
+  if (rawStorageValue(storage, key) !== expectedRaw) return false;
+  try {
+    storage.setItem(key, replacement);
+  } catch {
+    return false;
+  }
+  return rawStorageValue(storage, key) === replacement;
+}
+
+function clearSignalEntryIfUnchanged(owner, showId, expectedRaw) {
+  if (expectedRaw === null || expectedRaw === undefined) return true;
+  const storage = usableBrowserStorage();
+  if (!storage) return false;
+  const key = signalEntryKey(owner, showId);
+  const currentRaw = rawStorageValue(storage, key);
+  if (currentRaw === null) return true;
+  if (currentRaw !== expectedRaw) return false;
+  const current = parseStorageJson(storage, key);
+  if (!current) return true;
+  // A marker hides exactly the copied value. If another tab replaces the
+  // entry, readSignalEntry() will keep that newer value visible.
+  if (!writeSignalClearMarker(owner, showId, current)) return false;
+  return rawStorageValue(storage, key) === expectedRaw;
+}
+
+function pendingEntryIntentFingerprint(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const intent = { ...value };
+  // Retry bookkeeping is allowed to change while a promotion is in flight;
+  // the mutation id and user intent remain immutable for this cleanup.
+  delete intent.lastAttemptAt;
+  delete intent.outboxWriteNonce;
+  return outboxValueFingerprint(intent);
+}
+
+function clearOutboxEntryFromTransferSnapshot(owner, type, mutationId, snapshot) {
+  const storage = usableBrowserStorage();
+  if (!storage) return false;
+  const key = outboxEntryKey(owner, type, mutationId);
+  const currentRaw = rawStorageValue(storage, key);
+  const memoryValue = memoryOutboxEntries.get(key);
+  if (currentRaw === null) {
+    if (memoryValue === undefined) return true;
+    if (pendingEntryIntentFingerprint(memoryValue) !== pendingEntryIntentFingerprint(snapshot?.value)) {
+      return false;
+    }
+    memoryOutboxEntries.delete(key);
+    memoryOutboxEntryBaselines.delete(key);
+    return true;
+  }
+  const expectedValue = snapshot?.value;
+  const currentValue = parseStorageJson(storage, key);
+  if (!currentValue || !expectedValue) return false;
+  if (pendingEntryIntentFingerprint(currentValue) !== pendingEntryIntentFingerprint(expectedValue)) {
+    return false;
+  }
+  // removeOutboxEntryIfUnchanged writes a durable tombstone and performs its
+  // own compare-before-physical-delete. Passing the current value lets a
+  // retry-only timestamp update be cleaned without losing a new mutation.
+  return removeOutboxEntryIfUnchanged(owner, type, mutationId, currentValue);
+}
+
+function captureOwnerTransferSnapshot(owner) {
+  const storage = usableBrowserStorage();
+  const source = ownerSessionData(owner);
+  const sourceSignals = readSignalSnapshotForOwner(owner);
+  const sourceOutbox = readOutboxForOwner(owner);
+  const snapshot = {
+    source,
+    sourceSignals,
+    sourceOutbox,
+    sessionRaw: null,
+    sessionTokenRaw: null,
+    sessionPairRaw: null,
+    sessionPairAggregateRaw: null,
+    signalAggregateRaw: null,
+    outboxAggregateRaw: null,
+    signalEntries: {},
+    outboxEntries: { signals: {}, searches: {} },
+  };
+  if (!storage) return snapshot;
+
+  snapshot.sessionRaw = rawStorageValue(storage, interactionConfig.sessionStorageKey);
+  snapshot.sessionTokenRaw = rawStorageValue(storage, `${interactionConfig.sessionStorageKey}:token`);
+  snapshot.sessionPairRaw = rawStorageValue(storage, sessionPairEntryKey(owner));
+  snapshot.sessionPairAggregateRaw = rawStorageValue(storage, `${interactionConfig.sessionStorageKey}:pair`);
+  snapshot.signalAggregateRaw = rawStorageValue(storage, appConfig.signals.storageKey);
+  snapshot.outboxAggregateRaw = rawStorageValue(storage, interactionConfig.outboxStorageKey);
+
+  for (const key of signalEntryKeys(owner)) {
+    const showId = decodeSignalEntryShowId(owner, key);
+    if (!showId) continue;
+    const raw = rawStorageValue(storage, key);
+    if (raw !== null) snapshot.signalEntries[showId] = { raw, value: parseStorageJson(storage, key) };
+  }
+  for (const key of outboxEntryKeys(owner)) {
+    const suffix = key.slice(outboxOwnerPrefix(owner).length);
+    const separator = suffix.indexOf(":");
+    if (separator <= 0) continue;
+    const type = suffix.slice(0, separator);
+    if (!OUTBOX_TYPES.has(type)) continue;
+    let mutationId;
+    try {
+      mutationId = decodeURIComponent(suffix.slice(separator + 1));
+    } catch {
+      continue;
+    }
+    const raw = rawStorageValue(storage, key);
+    const memoryValue = memoryOutboxEntries.get(key);
+    if (raw !== null || memoryValue !== undefined) snapshot.outboxEntries[type][mutationId] = {
+      raw,
+      value: raw === null ? memoryValue : parseStorageJson(storage, key),
+    };
+  }
+  return snapshot;
+}
+
+function clearOwnerTransferSnapshot(owner, snapshot) {
+  const storage = usableBrowserStorage();
+  if (!storage) return false;
+  let cleaned = true;
+  const source = snapshot.source;
+
+  if (source.pair && snapshot.sessionPairRaw) {
+    cleaned = clearSessionPairEntryIfUnchanged(owner, snapshot.sessionPairRaw) && cleaned;
+  }
+  cleaned = clearOwnerScopedAggregateIfUnchanged(
+    `${interactionConfig.sessionStorageKey}:pair`,
+    owner,
+    snapshot.sessionPairAggregateRaw,
+  ) && cleaned;
+  cleaned = clearOwnerScopedAggregateIfUnchanged(
+    interactionConfig.sessionStorageKey,
+    owner,
+    snapshot.sessionRaw,
+  ) && cleaned;
+  cleaned = clearOwnerScopedAggregateIfUnchanged(
+    `${interactionConfig.sessionStorageKey}:token`,
+    owner,
+    snapshot.sessionTokenRaw,
+  ) && cleaned;
+
+  for (const [showId, entry] of Object.entries(snapshot.signalEntries)) {
+    cleaned = clearSignalEntryIfUnchanged(owner, showId, entry.raw) && cleaned;
+  }
+  cleaned = clearOwnerScopedAggregateIfUnchanged(
+    appConfig.signals.storageKey,
+    owner,
+    snapshot.signalAggregateRaw,
+  ) && cleaned;
+
+  for (const type of OUTBOX_TYPES) {
+    for (const [mutationId, entry] of Object.entries(snapshot.outboxEntries[type])) {
+      cleaned = clearOutboxEntryFromTransferSnapshot(owner, type, mutationId, entry) && cleaned;
+    }
+  }
+  cleaned = clearOwnerScopedAggregateIfUnchanged(
+    interactionConfig.outboxStorageKey,
+    owner,
+    snapshot.outboxAggregateRaw,
+  ) && cleaned;
+
+  // Any key not present in the snapshot was written after the copy began.
+  // Keep it in the source namespace and leave the journal for a later retry.
+  for (const key of signalEntryKeys(owner)) {
+    const showId = decodeSignalEntryShowId(owner, key);
+    if (showId && !Object.prototype.hasOwnProperty.call(snapshot.signalEntries, showId)) cleaned = false;
+  }
+  for (const key of outboxEntryKeys(owner)) {
+    const suffix = key.slice(outboxOwnerPrefix(owner).length);
+    const separator = suffix.indexOf(":");
+    if (separator <= 0) continue;
+    const type = suffix.slice(0, separator);
+    if (!OUTBOX_TYPES.has(type)) continue;
+    let mutationId;
+    try {
+      mutationId = decodeURIComponent(suffix.slice(separator + 1));
+    } catch {
+      continue;
+    }
+    const value = parseStorageJson(storage, key);
+    if (value !== null && !isOutboxEntrySuppressed(storage, owner, type, mutationId, value)) {
+      if (!Object.prototype.hasOwnProperty.call(snapshot.outboxEntries[type], mutationId)) cleaned = false;
+    }
+  }
+  return cleaned;
+}
+
 function transferOwnerData(sourceOwner, targetOwner, expectedSourceSessionId = null) {
   const storageAvailable = Boolean(usableBrowserStorage());
-  const source = ownerSessionData(sourceOwner);
+  const sourceSnapshot = captureOwnerTransferSnapshot(sourceOwner);
+  const source = sourceSnapshot.source;
   const target = ownerSessionData(targetOwner);
   if (expectedSourceSessionId && source.sessionId
     && String(expectedSourceSessionId).toLowerCase() !== String(source.sessionId).toLowerCase()) {
@@ -1173,49 +2361,127 @@ function transferOwnerData(sourceOwner, targetOwner, expectedSourceSessionId = n
   const targetPairIsValid = isValidSessionPair(target.pair);
   let pairPersisted = false;
   if (sourcePairIsValid) {
-    pairPersisted = writeScopedValueForOwner(sessionPairStoreBase, targetOwner, source.pair);
+    pairPersisted = writeSessionPairForOwner(targetOwner, source.pair);
   } else if (targetPairIsValid) {
-    pairPersisted = writeScopedValueForOwner(sessionPairStoreBase, targetOwner, target.pair);
+    pairPersisted = writeSessionPairForOwner(targetOwner, target.pair);
   } else {
     const mergedSession = isUuid(source.sessionId) ? String(source.sessionId).toLowerCase() : target.session;
     const mergedToken = isValidSessionToken(source.token) ? source.token.trim() : target.token;
-    pairPersisted = writeScopedValueForOwner(
-      sessionPairStoreBase,
+    pairPersisted = writeSessionPairForOwner(
       targetOwner,
       isUuid(mergedSession) && isValidSessionToken(mergedToken)
         ? { sessionId: String(mergedSession).toLowerCase(), sessionToken: mergedToken.trim() }
-        : null
+        : null,
     );
   }
   // Remove legacy copies after the atomic pair has been promoted. They
   // remain readable only as a migration fallback for older deployments.
   if (pairPersisted) clearLegacySessionValues(targetOwner);
 
-  const sourceSignals = readSignalSnapshotForOwner(sourceOwner);
+  const sourceSignals = sourceSnapshot.sourceSignals;
   const targetSignals = readSignalSnapshotForOwner(targetOwner);
   const signalsPersisted = writeSignalSnapshotForOwner(
     targetOwner,
     mergeSignalSnapshots(targetSignals, sourceSignals),
   );
-  const sourceOutbox = readOutboxForOwner(sourceOwner);
+  const sourceOutbox = sourceSnapshot.sourceOutbox;
   const targetOutbox = readOutboxForOwner(targetOwner);
-  writeOutboxEntriesForOwner(targetOwner, {
-    signals: { ...targetOutbox.signals, ...sourceOutbox.signals },
-    searches: { ...targetOutbox.searches, ...sourceOutbox.searches }
-  });
-  const outboxPersisted = lastPendingWritePersisted;
-  return Boolean(storageAvailable && pairPersisted && signalsPersisted && outboxPersisted);
+  // A previous failed promotion can leave target entries in this tab's
+  // memory-only fallback. Retry those entries as well, but do not rewrite
+  // every durable target entry from the stale snapshot.
+  const targetMemoryOutbox = memoryOutboxEntriesForOwner(targetOwner);
+  const entriesToWrite = {
+    signals: { ...targetMemoryOutbox.signals },
+    searches: { ...targetMemoryOutbox.searches }
+  };
+  for (const type of OUTBOX_TYPES) {
+    for (const [mutationId, sourceEntry] of Object.entries(sourceOutbox[type])) {
+      const targetEntry = targetOutbox[type][mutationId];
+      if (!targetEntry || comparePendingEntries([mutationId, sourceEntry], [mutationId, targetEntry]) > 0) {
+        entriesToWrite[type][mutationId] = sourceEntry;
+      }
+    }
+  }
+  const hasOutboxEntriesToWrite = [...OUTBOX_TYPES]
+    .some((type) => Object.keys(entriesToWrite[type]).length > 0);
+  const outboxPersisted = hasOutboxEntriesToWrite
+    ? Boolean(writeOutboxEntriesForOwner(targetOwner, entriesToWrite) && lastPendingWritePersisted)
+    : true;
+  lastPendingWritePersisted = outboxPersisted;
+  const sourceClean = storageAvailable && pairPersisted && signalsPersisted && outboxPersisted
+    ? clearOwnerTransferSnapshot(sourceOwner, sourceSnapshot)
+    : false;
+  return Boolean(storageAvailable && pairPersisted && signalsPersisted && outboxPersisted && sourceClean);
+}
+
+function finalizeOwnerTransfer(targetOwner, acceptedAnonymousSessionId) {
+  // Keep a short-lived durable bridge after the source snapshot is copied.
+  // A stale tab can still enqueue with owner=anonymous after the pending
+  // journal is gone; the bridge lets that write be re-homed only to the exact
+  // account that completed this promotion.
+  if (!writeOwnerTransferBridge(targetOwner, acceptedAnonymousSessionId)) return false;
+  return clearPendingOwnerTransfer();
 }
 
 function clearOwnerData(owner) {
   removeScopedValueForOwner(sessionStoreBase, owner);
   removeScopedValueForOwner(sessionTokenStoreBase, owner);
-  removeScopedValueForOwner(sessionPairStoreBase, owner);
+  writeSessionPairForOwner(owner, null);
   removeSignalSnapshotForOwner(owner);
   clearOutboxForOwner(owner);
 }
 
-export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null } = {}) {
+function discardPendingPromotionForOwner(nextOwner, previousOwner, promotion) {
+  const ownerPersisted = ownerStoreBase.write(nextOwner);
+  if (getInteractionOwner() !== nextOwner) {
+    return {
+      previousOwner,
+      nextOwner,
+      changed: false,
+      persisted: false,
+      promotionPending: true,
+      pendingOwnerTransfer: true,
+      revision: interactionRevision
+    };
+  }
+  if (!ownerPersisted) {
+    return {
+      previousOwner,
+      nextOwner,
+      changed: true,
+      persisted: false,
+      promotionPending: true,
+      pendingOwnerTransfer: true,
+      revision: interactionRevision
+    };
+  }
+
+  // The server authenticated the account but did not accept the anonymous
+  // session proof. Do not merge that unverified namespace into the account;
+  // remove it before the next account can observe it.
+  clearOwnerData("anonymous");
+  clearPendingOwnerTransfer();
+  clearOwnerTransferBridge();
+  clearPendingAuthenticatedInteractionPromotion(promotion?.promotionId || null);
+  const markerCleared = readPendingAuthenticatedInteractionPromotion() === null;
+  interactionRevision += 1;
+  return {
+    previousOwner,
+    nextOwner,
+    changed: true,
+    persisted: true,
+    transferPersisted: false,
+    promotionPending: !markerCleared,
+    pendingOwnerTransfer: false,
+    discardedAnonymousPromotion: true,
+    revision: interactionRevision
+  };
+}
+
+export function setInteractionOwner(
+  userId,
+  { acceptedAnonymousSessionId = null, discardUnconfirmedPromotion: discardUnconfirmed = false } = {},
+) {
   const nextOwner = userId ? String(userId) : "anonymous";
   const previousOwner = getInteractionOwner();
   const anonymous = ownerSessionData("anonymous");
@@ -1238,6 +2504,9 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
     && pendingPromotion.sourceSessionId === String(anonymousSessionId).toLowerCase()
   );
   if (promotionProtectsSource && !acceptedSessionMatchesSource) {
+    if (discardUnconfirmed) {
+      return discardPendingPromotionForOwner(nextOwner, previousOwner, pendingPromotion);
+    }
     // Another tab can observe the new auth cookie before the login tab has
     // received the accepted anonymous session id. Keep the owner boundary on
     // anonymous until the login tab writes the transfer journal and completes
@@ -1320,8 +2589,10 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
       nextOwner,
       pendingTransfer.acceptedAnonymousSessionId,
     );
-    const journalCleared = transferPersisted && clearPendingOwnerTransfer();
-    if (transferPersisted && journalCleared) clearOwnerData("anonymous");
+    const journalCleared = transferPersisted && finalizeOwnerTransfer(
+      nextOwner,
+      pendingTransfer.acceptedAnonymousSessionId,
+    );
     return {
       previousOwner,
       nextOwner,
@@ -1397,7 +2668,12 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
       nextOwner,
       pendingTransfer?.acceptedAnonymousSessionId || acceptedAnonymousSessionId,
     );
-    if (transferPersisted) clearPendingOwnerTransfer();
+    if (transferPersisted) {
+      finalizeOwnerTransfer(
+        nextOwner,
+        pendingTransfer?.acceptedAnonymousSessionId || acceptedAnonymousSessionId,
+      );
+    }
   }
 
   // Anonymous data is copied only when the server explicitly confirms the
@@ -1405,8 +2681,11 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
   // different account after a cross-tab logout or a failed attach. A pending
   // journal protects its source namespace until the copy succeeds.
   if (shouldTransfer) {
-    if (transferPersisted) clearOwnerData("anonymous");
+    // transferOwnerData already clears only the exact source snapshot. Do not
+    // call clearOwnerData here: a second tab may have queued a newer mutation
+    // after the snapshot was copied.
   } else if (!readPendingOwnerTransfer()) {
+    if (previousOwner === "anonymous" && nextOwner !== "anonymous") clearOwnerTransferBridge();
     clearOwnerData("anonymous");
   }
 
@@ -1422,8 +2701,12 @@ export function setInteractionOwner(userId, { acceptedAnonymousSessionId = null 
   };
 }
 
-export function promoteAuthenticatedInteraction(userId, acceptedAnonymousSessionId) {
-  return setInteractionOwner(userId, { acceptedAnonymousSessionId });
+export function promoteAuthenticatedInteraction(
+  userId,
+  acceptedAnonymousSessionId,
+  options = {},
+) {
+  return setInteractionOwner(userId, { acceptedAnonymousSessionId, ...options });
 }
 
 export { readPendingOwnerTransfer };
@@ -1437,8 +2720,12 @@ export function writeOwnerScopedSignalState(value) {
   return writeSignalSnapshotForOwner(getInteractionOwner(), value && typeof value === "object" ? value : {});
 }
 
-export function replaceOwnerScopedSignalState(value) {
-  return replaceSignalSnapshotForOwner(getInteractionOwner(), value && typeof value === "object" ? value : {});
+export function replaceOwnerScopedSignalState(value, options = {}) {
+  return replaceSignalSnapshotForOwner(
+    getInteractionOwner(),
+    value && typeof value === "object" ? value : {},
+    options,
+  );
 }
 
 export function deleteOwnerScopedSignal(showId, options = {}) {
@@ -1497,11 +2784,11 @@ export function removeOwnerScopedSignalState() {
 export const interactionSessionStore = {
   read(ownerId = getInteractionOwner()) {
     const owner = String(ownerId || "anonymous");
-    const pair = ownerScopedValue(sessionPairStoreBase, owner, null);
+    const pair = readSessionPairForOwner(owner);
     if (pair !== null && pair !== undefined) {
       if (isValidSessionPair(pair)) return pair.sessionId;
       clearLegacySessionValues(owner);
-      writeScopedValueForOwner(sessionPairStoreBase, owner, null);
+      writeSessionPairForOwner(owner, null);
       return null;
     }
 
@@ -1516,16 +2803,16 @@ export const interactionSessionStore = {
       return null;
     }
     const migratedPair = { sessionId: String(value).toLowerCase(), sessionToken: token.trim() };
-    const migrated = writeScopedValueForOwner(sessionPairStoreBase, owner, migratedPair);
+    const migrated = writeSessionPairForOwner(owner, migratedPair);
     if (migrated) clearLegacySessionValues(owner);
     return migratedPair.sessionId;
   },
   readToken(ownerId = getInteractionOwner()) {
     const owner = String(ownerId || "anonymous");
-    const pair = ownerScopedValue(sessionPairStoreBase, owner, null);
+    const pair = readSessionPairForOwner(owner);
     if (isValidSessionPair(pair)) return pair.sessionToken;
     const sessionId = interactionSessionStore.read(owner);
-    const migratedPair = ownerScopedValue(sessionPairStoreBase, owner, null);
+    const migratedPair = readSessionPairForOwner(owner);
     return sessionId && isValidSessionPair(migratedPair) ? migratedPair.sessionToken : null;
   },
   write(value, token = null, ownerId = getInteractionOwner()) {
@@ -1533,10 +2820,55 @@ export const interactionSessionStore = {
     const pair = isUuid(value) && isValidSessionToken(token)
       ? { sessionId: String(value).toLowerCase(), sessionToken: token.trim() }
       : null;
-    const persisted = writeScopedValueForOwner(sessionPairStoreBase, owner, pair);
+    const persisted = writeSessionPairForOwner(owner, pair);
     if (persisted) clearLegacySessionValues(owner);
   }
 };
+
+export function clearInteractionSessionIfUnchanged(expectedSessionId, ownerId = getInteractionOwner()) {
+  const owner = String(ownerId || "anonymous");
+  const expected = String(expectedSessionId || "").trim().toLowerCase();
+  if (!isUuid(expected)) return false;
+  const storage = usableBrowserStorage();
+  if (!storage) return false;
+
+  const key = sessionPairEntryKey(owner);
+  const currentRaw = rawStorageValue(storage, key);
+  if (currentRaw === null) {
+    // Older bundles stored owner namespaces in one aggregate key. Keep that
+    // migration path recoverable, but only clear an explicitly owned entry;
+    // an unscoped legacy pair is ambiguous and must fail closed.
+    const aggregateKey = `${interactionConfig.sessionStorageKey}:pair`;
+    const aggregateRaw = rawStorageValue(storage, aggregateKey);
+    if (aggregateRaw === null) return false;
+    const aggregate = parseStorageJson(storage, aggregateKey);
+    const legacyPair = aggregate && typeof aggregate === "object" && !Array.isArray(aggregate)
+      && aggregate.owners && Object.prototype.hasOwnProperty.call(aggregate.owners, owner)
+      ? aggregate.owners[owner]
+      : null;
+    if (!isValidSessionPair(legacyPair)
+      || String(legacyPair.sessionId).toLowerCase() !== expected
+      || rawStorageValue(storage, aggregateKey) !== aggregateRaw) {
+      return false;
+    }
+    const cleared = clearOwnerScopedAggregateIfUnchanged(aggregateKey, owner, aggregateRaw);
+    if (cleared) clearLegacySessionValues(owner);
+    return cleared;
+  }
+  const current = parseStorageJson(storage, key);
+  const pair = current?.version === SESSION_PAIR_ENTRY_VERSION && !current.deleted
+    ? current.value
+    : current;
+  if (!isValidSessionPair(pair)
+    || String(pair.sessionId).toLowerCase() !== expected
+    || rawStorageValue(storage, key) !== currentRaw) {
+    return false;
+  }
+
+  const cleared = clearSessionPairEntryIfUnchanged(owner, currentRaw);
+  if (cleared) clearLegacySessionValues(owner);
+  return cleared;
+}
 
 export function createMutationId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -1575,7 +2907,7 @@ export function consumePendingInteractionLossNotice() {
   return count;
 }
 
-export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId = createMutationId(), requestedFirstQueuedAt = null, ownerId = getInteractionOwner()) {
+export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId = createMutationId(), requestedFirstQueuedAt = null, ownerId = getInteractionOwner(), sourceSessionId = null) {
   const normalizedShowId = String(showId || "").trim();
   const normalizedRating = Number(rating);
   const normalizedWatchMinutes = Number(watchMinutes);
@@ -1583,13 +2915,12 @@ export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId 
     throw new Error("Invalid signal payload");
   }
   const normalizedMutationId = String(mutationId).toLowerCase();
-  const owner = String(ownerId || "anonymous");
+  const owner = resolvePendingWriteOwner(ownerId, sourceSessionId);
   const existing = readOutboxForOwner(owner).signals[normalizedMutationId];
   const firstQueuedAt = existing?.firstQueuedAt
     || existing?.queuedAt
     || normalizeTimestamp(requestedFirstQueuedAt, new Date().toISOString());
-  const clientDeviceId = existing?.clientDeviceId || getInteractionDeviceId();
-  const clientEventSequence = existing?.clientEventSequence || nextInteractionEventSequence();
+  const { clientDeviceId, clientEventSequence } = pendingEventMetadata(existing);
   const writePersisted = writeOutboxEntry(owner, "signals", normalizedMutationId, {
     showId: normalizedShowId,
     rating: normalizedRating,
@@ -1605,25 +2936,25 @@ export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId 
   return normalizedMutationId;
 }
 
-export function acknowledgePendingSignal(showId, mutationId, ownerId = getInteractionOwner()) {
+export function acknowledgePendingSignal(showId, mutationId, ownerId = getInteractionOwner(), expectedEntry = null) {
   const normalizedMutationId = String(mutationId || "").toLowerCase();
   const owner = String(ownerId || "anonymous");
   const signal = readOutboxForOwner(owner).signals[normalizedMutationId];
   if (!signal || signal.mutationId !== normalizedMutationId || (showId && signal.showId !== String(showId))) return;
-  removeOutboxEntry(owner, "signals", normalizedMutationId);
+  if (expectedEntry) removeOutboxEntryIfUnchanged(owner, "signals", normalizedMutationId, expectedEntry);
+  else removeOutboxEntry(owner, "signals", normalizedMutationId);
 }
 
-export function queuePendingSearch({ query, resultCount, filters }, mutationId = createMutationId(), requestedFirstQueuedAt = null, ownerId = getInteractionOwner()) {
+export function queuePendingSearch({ query, resultCount, filters }, mutationId = createMutationId(), requestedFirstQueuedAt = null, ownerId = getInteractionOwner(), sourceSessionId = null) {
   const normalizedQuery = String(query ?? "").trim().slice(0, 200);
   if (!normalizedQuery || !isUuid(mutationId)) throw new Error("Invalid search payload");
   const normalizedMutationId = String(mutationId).toLowerCase();
-  const owner = String(ownerId || "anonymous");
+  const owner = resolvePendingWriteOwner(ownerId, sourceSessionId);
   const existing = readOutboxForOwner(owner).searches[normalizedMutationId];
   const firstQueuedAt = existing?.firstQueuedAt
     || existing?.queuedAt
     || normalizeTimestamp(requestedFirstQueuedAt, new Date().toISOString());
-  const clientDeviceId = existing?.clientDeviceId || getInteractionDeviceId();
-  const clientEventSequence = existing?.clientEventSequence || nextInteractionEventSequence();
+  const { clientDeviceId, clientEventSequence } = pendingEventMetadata(existing);
   const writePersisted = writeOutboxEntry(owner, "searches", normalizedMutationId, {
     query: normalizedQuery,
     resultCount: Math.max(0, Number(resultCount) || 0),
@@ -1639,19 +2970,17 @@ export function queuePendingSearch({ query, resultCount, filters }, mutationId =
   return normalizedMutationId;
 }
 
-export function acknowledgePendingSearch(mutationId, ownerId = getInteractionOwner()) {
+export function acknowledgePendingSearch(mutationId, ownerId = getInteractionOwner(), expectedEntry = null) {
   const key = String(mutationId || "").toLowerCase();
   const owner = String(ownerId || "anonymous");
   const search = readOutboxForOwner(owner).searches[key];
   if (!search || search.mutationId !== key) return;
-  removeOutboxEntry(owner, "searches", key);
+  if (expectedEntry) removeOutboxEntryIfUnchanged(owner, "searches", key, expectedEntry);
+  else removeOutboxEntry(owner, "searches", key);
 }
 
 export function mergeInteractionState(remoteState, localState = {}) {
   const pending = readPendingInteractions();
-  // The server is authoritative for acknowledged state. Local data is only
-  // allowed to override it while the corresponding mutation is still pending.
-  void localState;
   const ratings = {};
   for (const item of Array.isArray(remoteState?.ratings) ? remoteState.ratings : []) {
     const remoteRating = Number(item?.rating);
@@ -1668,6 +2997,22 @@ export function mergeInteractionState(remoteState, localState = {}) {
         ? Number(item.client_event_sequence)
         : null
     };
+  }
+  // The server is authoritative for acknowledged state, except when this
+  // response is a stale snapshot. A receipt newer than the snapshot watermark
+  // may have been committed by another tab after this request began.
+  const localRatings = localState?.ratings && typeof localState.ratings === "object"
+    ? localState.ratings
+    : {};
+  const snapshotAt = Date.parse(remoteState?.snapshot_at || "");
+  for (const [showId, localSignal] of Object.entries(localRatings)) {
+    const localServerAt = signalTimestamp(localSignal, "serverSavedAt");
+    if (localServerAt === null) continue;
+    const remoteSignal = ratings[showId];
+    const remoteServerAt = signalTimestamp(remoteSignal, "serverSavedAt");
+    const newerThanRemote = remoteServerAt === null || localServerAt > remoteServerAt;
+    const newerThanSnapshot = Number.isFinite(snapshotAt) && localServerAt > snapshotAt;
+    if (newerThanRemote && newerThanSnapshot) ratings[showId] = localSignal;
   }
   Object.assign(ratings, pendingSignalRatings(pending));
   return { ratings };
@@ -1734,7 +3079,7 @@ export function clearInteractionState({
     if (!preserveSession) {
       removeScopedValueForOwner(sessionStoreBase, owner);
       removeScopedValueForOwner(sessionTokenStoreBase, owner);
-      removeScopedValueForOwner(sessionPairStoreBase, owner);
+      writeSessionPairForOwner(owner, null);
     }
     removeSignalSnapshotForOwner(owner);
     if (clearPending) clearOutboxForOwner(owner);
@@ -1744,7 +3089,7 @@ export function clearInteractionState({
   if (resetOwner && owner !== "anonymous" && !preserveTransferSource) {
     removeScopedValueForOwner(sessionStoreBase, "anonymous");
     removeScopedValueForOwner(sessionTokenStoreBase, "anonymous");
-    removeScopedValueForOwner(sessionPairStoreBase, "anonymous");
+    writeSessionPairForOwner("anonymous", null);
     removeSignalSnapshotForOwner("anonymous");
     if (clearPending) clearOutboxForOwner("anonymous");
   }

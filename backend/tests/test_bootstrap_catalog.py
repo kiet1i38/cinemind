@@ -19,6 +19,10 @@ class _FakeOpsRepository:
     def __init__(self, source_id):
         self.source_id = source_id
         self.checksum = "old-checksum"
+        self.source_metadata = {
+            "source_uri": "catalog.json",
+            "schema_version": "v1",
+        }
         self.marked_checksums = []
         self.finished_statuses = []
         self.checksum_lookups = []
@@ -26,6 +30,9 @@ class _FakeOpsRepository:
     def get_source_checksum(self, source_id):
         self.checksum_lookups.append(source_id)
         return self.checksum
+
+    def get_source_metadata(self, source_id):
+        return dict(self.source_metadata)
 
     def ensure_dataset_source(self, _source):
         return self.source_id
@@ -42,6 +49,13 @@ class _FakeOpsRepository:
     def mark_dataset_source_ingested(self, source_id, checksum, collected_at, **metadata):
         self.marked_checksums.append((source_id, checksum, collected_at, metadata))
         self.checksum = checksum
+        self.source_metadata.update(
+            {
+                key: metadata[key]
+                for key in ("source_uri", "schema_version")
+                if key in metadata
+            }
+        )
 
     def finish_ingestion_run(self, *, status, **_kwargs):
         self.finished_statuses.append(status)
@@ -148,7 +162,7 @@ class BootstrapCatalogTests(unittest.TestCase):
             catalog_seed_path=Path("catalog.json"),
             catalog_source_name="Netflix catalog",
             catalog_source_type="seed",
-            catalog_source_uri="renamed-catalog.json",
+            catalog_source_uri="catalog.json",
             catalog_schema_version="v1",
         )
         load_result = SimpleNamespace(records=[object()], issues=(), rows_read=1)
@@ -172,6 +186,50 @@ class BootstrapCatalogTests(unittest.TestCase):
 
         self.assertEqual(ops.checksum_lookups, [source_id])
         self.assertTrue(result["skipped_unchanged_source"])
+
+    def test_metadata_change_does_not_skip_unchanged_catalog_checksum(self):
+        source_id = uuid4()
+        ops = _FakeOpsRepository(source_id)
+        ops.checksum = "same-checksum"
+        ops.source_metadata = {
+            "source_uri": "old-catalog.json",
+            "schema_version": "v1",
+        }
+        catalog_state = {"replace_calls": 0, "fail_next_replace": False}
+        settings = SimpleNamespace(
+            migrations_path=Path("migrations"),
+            catalog_seed_path=Path("catalog.json"),
+            catalog_source_name="Netflix catalog",
+            catalog_source_type="seed",
+            catalog_source_uri="new-catalog.json",
+            catalog_schema_version="v2",
+            catalog_min_valid_ratio=0.95,
+            catalog_min_valid_records=1,
+            catalog_max_error_issues=0,
+        )
+        load_result = SimpleNamespace(records=[object()], issues=(), rows_read=1)
+
+        with (
+            patch.object(bootstrap_catalog, "wait_for_database"),
+            patch.object(bootstrap_catalog, "connection_scope", return_value=nullcontext(_FakeConnection())),
+            patch.object(bootstrap_catalog, "_advisory_lock", return_value=nullcontext()),
+            patch.object(bootstrap_catalog, "MigrationRunner") as migration_runner,
+            patch.object(bootstrap_catalog, "load_catalog", return_value=load_result),
+            patch.object(bootstrap_catalog, "file_checksum", return_value="same-checksum"),
+            patch.object(bootstrap_catalog, "OpsRepository", return_value=ops),
+            patch.object(
+                bootstrap_catalog,
+                "CatalogRepository",
+                side_effect=lambda connection: _FakeCatalogRepository(connection, catalog_state),
+            ),
+        ):
+            migration_runner.return_value.apply.return_value = SimpleNamespace(applied_versions=())
+            result = bootstrap_catalog.bootstrap_catalog(settings)
+
+        self.assertEqual(catalog_state["replace_calls"], 1)
+        self.assertFalse(result.get("skipped_unchanged_source", False))
+        self.assertEqual(ops.source_metadata["source_uri"], "new-catalog.json")
+        self.assertEqual(ops.source_metadata["schema_version"], "v2")
 
     def test_seed_load_failure_is_recorded_as_failed_ingestion(self):
         source_id = uuid4()

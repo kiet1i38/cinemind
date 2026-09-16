@@ -6,6 +6,7 @@ from uuid import uuid4
 import unittest
 
 from cinemind.auth.crypto import hash_password, verify_password
+from cinemind.auth.repository import AuthRepository
 from cinemind.auth.service import (
     AuthService,
     AuthValidationError,
@@ -96,6 +97,18 @@ class FakeAuthRepository:
         self.sessions = [session for session in self.sessions if session["user_id"] != user_id]
 
 
+class RecordingConnection:
+    def __init__(self, user_id):
+        self.user_id = user_id
+        self.statements = []
+
+    def execute(self, statement, parameters):
+        self.statements.append((statement, parameters))
+        if "SELECT user_id FROM auth.users" in statement:
+            return SimpleNamespace(fetchone=lambda: (self.user_id,))
+        return SimpleNamespace()
+
+
 class AuthServiceTests(unittest.TestCase):
     def setUp(self):
         self.repository = FakeAuthRepository()
@@ -141,6 +154,18 @@ class AuthServiceTests(unittest.TestCase):
         self.service.login("demo@example.com", "a-secure-password", None, None)
 
         self.assertEqual(self.repository.session_limit_arguments, [5, 5])
+
+    def test_revoke_all_sessions_locks_user_before_update(self):
+        user_id = uuid4()
+        connection = RecordingConnection(user_id)
+
+        AuthRepository(connection).revoke_all_sessions(user_id)
+
+        self.assertEqual(len(connection.statements), 2)
+        lock_statement = connection.statements[0][0]
+        update_statement = connection.statements[1][0]
+        self.assertIn("FOR UPDATE", lock_statement)
+        self.assertIn("UPDATE auth.sessions", update_statement)
 
     def test_duplicate_and_weak_account_input_are_rejected(self):
         self.service.register("demo@example.com", "demo_user", "Demo", "a-secure-password", None, None)

@@ -28,7 +28,7 @@ import {
 import { getDiscoverableTitles, getRecentTitles, getRelatedTitles, getTitlesByType } from "./services/recommendationService";
 import { catalogPageSizeStore } from "./services/catalogPreferencesStore";
 import { AUTH_EVENT_STORAGE_KEY, getAuthPageUrl, getCurrentUser } from "./services/authService";
-import { clearInteractionState, consumePendingInteractionLossNotice, deleteOwnerScopedSignal, getInteractionOwner, hasPendingInteractions, mergeInteractionState, replaceOwnerScopedSignalState, setInteractionOwner, signalWithServerReceipt } from "./services/interactionStore";
+import { clearInteractionState, consumePendingInteractionLossNotice, deleteOwnerScopedSignal, getInteractionOwner, hasPendingInteractions, mergeInteractionState, readOwnerScopedSignalState, replaceOwnerScopedSignalState, setInteractionOwner, signalWithServerReceipt } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./authGate.css";
 
@@ -118,7 +118,10 @@ export default function App() {
       authRetryRef.current = null;
     };
     const applyConfirmedIdentity = (user) => {
-      const transition = setInteractionOwner(user?.user_id);
+      const transition = setInteractionOwner(user?.user_id, {
+        acceptedAnonymousSessionId: user?.interaction_session_id,
+        discardUnconfirmedPromotion: Boolean(user?.user_id && !user?.interaction_session_id),
+      });
       if (transition?.promotionPending) {
         // A different tab may observe the auth cookie before the login tab has
         // confirmed and journaled the anonymous-session transfer. Stay in the
@@ -279,8 +282,8 @@ export default function App() {
         const merged = mergeInteractionState(state, {
           ratings: signalStore.read()
         });
-        replaceOwnerScopedSignalState(merged.ratings);
-        setRatings(merged.ratings);
+        replaceOwnerScopedSignalState(merged.ratings, { snapshotAt: state?.snapshot_at });
+        setRatings(readOwnerScopedSignalState());
     };
     const notifyPendingLoss = () => {
       if (!appConfig.interaction.pendingMutationLossWarning) return;
@@ -339,8 +342,8 @@ export default function App() {
                 && requestOwner === getInteractionOwner()
               ) {
                 const merged = mergeInteractionState(state, { ratings: signalStore.read() });
-                replaceOwnerScopedSignalState(merged.ratings);
-                setRatings(merged.ratings);
+                replaceOwnerScopedSignalState(merged.ratings, { snapshotAt: state?.snapshot_at });
+                setRatings(readOwnerScopedSignalState());
               }
             });
           }
@@ -357,8 +360,8 @@ export default function App() {
                 && requestOwner === getInteractionOwner()
             ) {
               const merged = mergeInteractionState(state, { ratings: signalStore.read() });
-              replaceOwnerScopedSignalState(merged.ratings);
-              setRatings(merged.ratings);
+                replaceOwnerScopedSignalState(merged.ratings, { snapshotAt: state?.snapshot_at });
+                setRatings(readOwnerScopedSignalState());
             }
           });
         })
@@ -577,10 +580,11 @@ export default function App() {
         const refreshedState = await getInteractionState(interactionMetadata());
         if (isCurrentRequest()) {
           const refreshedRatings = mergeInteractionState(refreshedState, { ratings: signalStore.read() }).ratings;
-          replaceOwnerScopedSignalState(refreshedRatings);
-          setRatings((current) => refreshedRatings[item.id]
-            ? refreshedRatings
-            : { ...refreshedRatings, [item.id]: current[item.id] || { ...signal, savedAt: new Date().toISOString() } });
+          replaceOwnerScopedSignalState(refreshedRatings, { snapshotAt: refreshedState?.snapshot_at });
+          const reconciledRatings = readOwnerScopedSignalState();
+          setRatings((current) => reconciledRatings[item.id]
+            ? reconciledRatings
+            : { ...reconciledRatings, [item.id]: current[item.id] || { ...signal, savedAt: new Date().toISOString() } });
         }
       } catch {
         setInteractionHydrationVersion((version) => version + 1);

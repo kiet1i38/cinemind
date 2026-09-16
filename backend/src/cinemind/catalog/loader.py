@@ -11,6 +11,13 @@ from cinemind.catalog.models import CatalogIssue, CatalogLoadResult, CatalogReco
 MOVIE = "Movie"
 TV_SHOW = "TV Show"
 CONTENT_TYPES = frozenset({MOVIE, TV_SHOW})
+POSTGRES_INTEGER_MAX = 2_147_483_647
+# Movie duration is persisted in minutes but later projected to the
+# interaction.watch_sessions runtime_seconds INTEGER column.
+MAX_RUNTIME_MINUTES = POSTGRES_INTEGER_MAX // 60
+# catalog.title_cast.cast_order is a PostgreSQL SMALLINT and the repository
+# numbers cast members from one when publishing relation rows.
+MAX_CAST_ITEMS = 32_767
 
 
 class CatalogFormatError(ValueError):
@@ -90,9 +97,15 @@ def _parse_record(raw_record: Any) -> tuple[CatalogRecord, tuple[CatalogIssue, .
     if release_year is not None and not 1888 <= release_year <= 2100:
         raise ValueError("releaseYear must be between 1888 and 2100")
     runtime_minutes = _positive_int_or_none(
-        raw_record.get("runtimeMinutes"), "runtimeMinutes"
+        raw_record.get("runtimeMinutes"),
+        "runtimeMinutes",
+        max_value=MAX_RUNTIME_MINUTES,
     )
-    seasons = _positive_int_or_none(raw_record.get("seasons"), "seasons")
+    seasons = _positive_int_or_none(
+        raw_record.get("seasons"),
+        "seasons",
+        max_value=POSTGRES_INTEGER_MAX,
+    )
     if content_type == MOVIE:
         movie_duration_min = runtime_minutes
         season_count = None
@@ -125,7 +138,11 @@ def _parse_record(raw_record: Any) -> tuple[CatalogRecord, tuple[CatalogIssue, .
             poster_url=poster_url,
             poster_status=poster_status,
             genres=_normalize_list(raw_record.get("listedIn")),
-            cast=_normalize_list(raw_record.get("cast")),
+            cast=_normalize_list(
+                raw_record.get("cast"),
+                max_items=MAX_CAST_ITEMS,
+                field_name="cast",
+            ),
             countries=_normalize_list(raw_record.get("country")),
             directors=_normalize_list(raw_record.get("director")),
         ),
@@ -177,14 +194,25 @@ def _optional_int(value: Any, field_name: str) -> int | None:
         raise ValueError(f"{field_name} must be an integer") from error
 
 
-def _positive_int_or_none(value: Any, field_name: str) -> int | None:
+def _positive_int_or_none(
+    value: Any,
+    field_name: str,
+    max_value: int | None = None,
+) -> int | None:
     parsed = _optional_int(value, field_name)
     if parsed is not None and parsed <= 0:
         raise ValueError(f"{field_name} must be positive")
+    if parsed is not None and max_value is not None and parsed > max_value:
+        raise ValueError(f"{field_name} must be less than or equal to {max_value}")
     return parsed
 
 
-def _normalize_list(value: Any) -> tuple[str, ...]:
+def _normalize_list(
+    value: Any,
+    *,
+    max_items: int | None = None,
+    field_name: str = "list",
+) -> tuple[str, ...]:
     if value is None:
         return ()
     values = value.split(",") if isinstance(value, str) else value
@@ -196,6 +224,8 @@ def _normalize_list(value: Any) -> tuple[str, ...]:
         text = _optional_text(item)
         if text and text not in result:
             result.append(text)
+    if max_items is not None and len(result) > max_items:
+        raise ValueError(f"{field_name} must contain at most {max_items} items")
     return tuple(result)
 
 

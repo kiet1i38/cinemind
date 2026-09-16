@@ -469,12 +469,22 @@ class CatalogRepository:
         clauses = ["t.is_active = TRUE"]
         params = []
         if query:
+            # Keep public catalog search aligned with browser filtering and
+            # interaction telemetry: query one normalized catalog field at a
+            # time instead of matching text across unrelated fields.
             clauses.append(
-                "(t.title ILIKE %s ESCAPE '!' "
-                "OR COALESCE(t.description, '') ILIKE %s ESCAPE '!')"
+                "("
+                "t.title ILIKE %s ESCAPE '!' "
+                "OR EXISTS (SELECT 1 FROM catalog.title_directors d "
+                "WHERE d.title_id = t.title_id AND d.director_name ILIKE %s ESCAPE '!') "
+                "OR EXISTS (SELECT 1 FROM catalog.title_cast c "
+                "WHERE c.title_id = t.title_id AND c.person_name ILIKE %s ESCAPE '!') "
+                "OR EXISTS (SELECT 1 FROM catalog.title_genres g "
+                "WHERE g.title_id = t.title_id AND g.genre_name ILIKE %s ESCAPE '!')"
+                ")"
             )
             pattern = f"%{CatalogRepository._escape_like(query)}%"
-            params.extend((pattern, pattern))
+            params.extend((pattern, pattern, pattern, pattern))
         if content_type:
             clauses.append("t.content_type = %s")
             params.append(content_type)

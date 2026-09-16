@@ -49,6 +49,7 @@ class AuthStateResponse(BaseModel):
 
     authenticated: bool
     user: UserResponse | None = None
+    interaction_session_id: UUID | None = None
 
 
 class LogoutResponse(BaseModel):

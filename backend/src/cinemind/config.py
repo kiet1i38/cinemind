@@ -6,6 +6,8 @@ import ipaddress
 import os
 from pathlib import Path
 
+from cinemind.interaction.limits import MAX_WATCH_MINUTES
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -135,6 +137,10 @@ class Settings:
             raise ValueError("db_pool_min_size must not exceed db_pool_max_size")
         if self.auth_password_iterations < 10_000:
             raise ValueError("auth_password_iterations must be at least 10000")
+        if self.max_watch_minutes > MAX_WATCH_MINUTES:
+            raise ValueError(
+                f"max_watch_minutes must be less than or equal to {MAX_WATCH_MINUTES}"
+            )
         if self.auth_session_ttl_days > 365:
             raise ValueError("auth_session_ttl_days must not exceed 365")
         if not 0 < self.catalog_min_valid_ratio <= 1:

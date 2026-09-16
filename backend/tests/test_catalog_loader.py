@@ -5,7 +5,13 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from cinemind.catalog.loader import _optional_int, load_catalog
+from cinemind.catalog.loader import (
+    MAX_CAST_ITEMS,
+    MAX_RUNTIME_MINUTES,
+    POSTGRES_INTEGER_MAX,
+    _optional_int,
+    load_catalog,
+)
 
 
 class CatalogLoaderTests(unittest.TestCase):
@@ -116,6 +122,45 @@ class CatalogLoaderTests(unittest.TestCase):
             "invalid_record",
             "invalid_record",
         ])
+
+    def test_duration_values_that_overflow_downstream_integer_columns_are_rejected(self) -> None:
+        path = self.write_catalog([
+            {
+                "id": "runtime-overflow",
+                "type": "Movie",
+                "title": "Runtime overflow",
+                "runtimeMinutes": MAX_RUNTIME_MINUTES + 1,
+            },
+            {
+                "id": "season-overflow",
+                "type": "TV Show",
+                "title": "Season overflow",
+                "seasons": POSTGRES_INTEGER_MAX + 1,
+            },
+            {"id": "valid", "type": "Movie", "title": "Valid"},
+        ])
+
+        result = load_catalog(path)
+
+        self.assertEqual([record.show_id for record in result.records], ["valid"])
+        self.assertEqual(len(result.issues), 2)
+        self.assertTrue(all(issue.issue_type == "invalid_record" for issue in result.issues))
+
+    def test_cast_order_values_that_overflow_smallint_are_rejected(self) -> None:
+        path = self.write_catalog([
+            {
+                "id": "cast-overflow",
+                "type": "Movie",
+                "title": "Cast overflow",
+                "cast": [f"Person {index}" for index in range(MAX_CAST_ITEMS + 1)],
+            },
+            {"id": "valid", "type": "Movie", "title": "Valid"},
+        ])
+
+        result = load_catalog(path)
+
+        self.assertEqual([record.show_id for record in result.records], ["valid"])
+        self.assertEqual(result.issues[0].issue_type, "invalid_record")
 
 
 if __name__ == "__main__":

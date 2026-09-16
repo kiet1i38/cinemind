@@ -5,6 +5,16 @@ from collections.abc import Mapping
 
 
 MAX_SEARCH_QUERY_LENGTH = 200
+# Interaction durations are persisted as PostgreSQL INTEGER seconds. Keep the
+# minute input below that storage boundary even when an operator overrides the
+# normal runtime setting through the environment.
+POSTGRES_INTEGER_MAX = 2_147_483_647
+MAX_WATCH_MINUTES = POSTGRES_INTEGER_MAX // 60
+# The browser allocates this value with JavaScript's Number-safe integer
+# ceiling. Keep the API contract below PostgreSQL BIGINT as well, so malformed
+# or hostile input is rejected as validation instead of reaching the driver
+# and becoming a 500 response.
+MAX_CLIENT_EVENT_SEQUENCE = 2**53 - 1
 MAX_FILTER_COUNT = 8
 MAX_FILTER_KEY_LENGTH = 32
 MAX_FILTER_VALUE_LENGTH = 64

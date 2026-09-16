@@ -8,7 +8,7 @@ import { translate } from "./lib/i18n";
 import { AUTH_EVENT_STORAGE_KEY, getCurrentUser, getAuthPageUrl, logout, logoutAll } from "./services/authService";
 import { loadCatalog } from "./services/catalogService";
 import { getInteractionState, hasFulfilledSignal, syncPendingInteractions } from "./services/interactionService";
-import { clearInteractionState, hasPendingInteractions, mergeInteractionState, replaceOwnerScopedSignalState, setInteractionOwner } from "./services/interactionStore";
+import { clearInteractionState, hasPendingInteractions, mergeInteractionState, readOwnerScopedSignalState, replaceOwnerScopedSignalState, setInteractionOwner } from "./services/interactionStore";
 import { signalStore } from "./services/signalStore";
 import "./styles.css";
 import "./profile.css";
@@ -62,7 +62,10 @@ export default function ProfilePage() {
     const localInteractionState = () => ({ ratings: signalStore.read() });
     const mergeProfileState = (remoteState) => {
       const merged = mergeInteractionState(remoteState, localInteractionState());
-      if (remoteState && typeof remoteState === "object") replaceOwnerScopedSignalState(merged.ratings);
+      if (remoteState && typeof remoteState === "object") {
+        replaceOwnerScopedSignalState(merged.ratings, { snapshotAt: remoteState.snapshot_at });
+        return { ratings: readOwnerScopedSignalState() };
+      }
       return merged;
     };
     const isCurrentRequest = (requestId) => !disposed && profileRequestRef.current.id === requestId;
@@ -80,7 +83,12 @@ export default function ProfilePage() {
         window.location.href = getAuthPageUrl("login", `${window.location.pathname}${window.location.search}`);
         return;
       }
-      const transition = setInteractionOwner(currentUser.user_id);
+      const transition = setInteractionOwner(currentUser.user_id, {
+        acceptedAnonymousSessionId: currentUser.interaction_session_id,
+        discardUnconfirmedPromotion: Boolean(
+          currentUser.user_id && !currentUser.interaction_session_id
+        ),
+      });
       if (transition?.promotionPending) {
         // Wait for the login tab to finish its durable anonymous-session
         // transfer before exposing account-owned activity in this tab.

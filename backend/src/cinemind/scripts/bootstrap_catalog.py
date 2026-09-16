@@ -48,6 +48,7 @@ def bootstrap_catalog(settings: Settings) -> dict:
         with connection.transaction():
             source_id = ops.ensure_dataset_source(source)
             previous_checksum = ops.get_source_checksum(source_id)
+            previous_metadata = ops.get_source_metadata(source_id)
 
         catalog_is_current = _catalog_matches_source(
             catalog_repository,
@@ -55,7 +56,13 @@ def bootstrap_catalog(settings: Settings) -> dict:
             source_id,
             checksum,
         )
-        if load_error is None and previous_checksum == checksum and catalog_is_current:
+        source_metadata_is_current = _source_metadata_matches(previous_metadata, source)
+        if (
+            load_error is None
+            and previous_checksum == checksum
+            and source_metadata_is_current
+            and catalog_is_current
+        ):
             with connection.transaction():
                 reconciled_runs = ops.reconcile_running_ingestion_runs(source_id)
             summary = CatalogRepository(connection).summary()
@@ -158,6 +165,15 @@ def ensure_safe_catalog_load(load_result: CatalogLoadResult, settings: Settings)
             f"{minimum_records} records, {minimum_ratio:.2%} valid, and "
             f"at most {maximum_errors} error issues"
         )
+
+
+def _source_metadata_matches(previous_metadata: dict, source: DatasetSource) -> bool:
+    """Require published provenance to match before skipping ingestion."""
+
+    return (
+        previous_metadata.get("source_uri") == source.source_uri
+        and previous_metadata.get("schema_version") == source.schema_version
+    )
 
 
 def build_source(settings: Settings, checksum: str) -> DatasetSource:

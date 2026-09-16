@@ -100,6 +100,24 @@ class OpsRepository:
         ).fetchone()
         return str(row["checksum_sha256"]).strip() if row and row["checksum_sha256"] else None
 
+    def get_source_metadata(self, source_id: UUID) -> dict[str, str | None]:
+        """Read the published provenance metadata before a refresh."""
+
+        row = self.connection.execute(
+            """
+            SELECT source_uri, schema_version
+            FROM ops.dataset_sources
+            WHERE source_id = %s
+            """,
+            (source_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"Dataset source not found: {source_id}")
+        return {
+            "source_uri": row["source_uri"],
+            "schema_version": row["schema_version"],
+        }
+
     def reconcile_running_ingestion_runs(self, source_id: UUID) -> int:
         """Close interrupted runs so a crashed bootstrap cannot stay running forever."""
 

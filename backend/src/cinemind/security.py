@@ -141,6 +141,39 @@ def consume_many(
         return decisions
 
 
+def consume_many_with_checks(
+    requests: tuple[tuple[SlidingWindowRateLimiter, str], ...],
+    *,
+    checks: tuple[tuple[SlidingWindowRateLimiter, str], ...] = (),
+    now: float | None = None,
+) -> tuple[RateLimitDecision, ...]:
+    """Reserve request buckets only when non-consuming guard checks pass.
+
+    A guard is useful when one dimension is failure-only: a rejected request
+    must not consume a separate throughput bucket while that failure guard is
+    already exhausted. Both the checks and reservations run under the same
+    process-local lock, so a concurrent request cannot pass the guard between
+    the check and the reservation.
+    """
+
+    timestamp = time.monotonic() if now is None else now
+    with _RATE_LIMITER_LOCK:
+        check_decisions = tuple(
+            limiter._check_locked(key, timestamp)
+            for limiter, key in checks
+        )
+        request_decisions = tuple(
+            limiter._check_locked(key, timestamp)
+            for limiter, key in requests
+        )
+        decisions = check_decisions + request_decisions
+        if any(not decision.allowed for decision in decisions):
+            return decisions
+        for limiter, key in requests:
+            limiter._record_attempt_locked(key, timestamp)
+        return decisions
+
+
 def client_address_from_headers(
     direct_address: str | None,
     headers: dict[str, str],

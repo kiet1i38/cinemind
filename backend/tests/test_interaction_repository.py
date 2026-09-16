@@ -175,6 +175,16 @@ class InteractionRepositoryTests(unittest.TestCase):
         self.assertIn("OR watch_session_id = %s", connection.statement)
         self.assertEqual(connection.parameters[-1], watch_session_id)
 
+    def test_mutation_lock_uses_a_stable_exclusive_advisory_key(self):
+        mutation_id = uuid4()
+        connection = _AttachConnection(None)
+
+        InteractionRepository(connection).acquire_mutation_lock(mutation_id)
+
+        self.assertIn("pg_advisory_xact_lock", connection.statement)
+        self.assertIn("hashtextextended", connection.statement)
+        self.assertEqual(connection.parameters[0], str(mutation_id))
+
 
 if __name__ == "__main__":
     unittest.main()

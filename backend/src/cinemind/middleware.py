@@ -79,9 +79,10 @@ class RequestBodyLimitMiddleware:
 class InteractionRateLimitMiddleware:
     """Keep interaction quotas isolated by client, principal, and endpoint.
 
-    Failure buckets protect error paths, while write buckets consume every
-    successful or failed mutation. A separate client bucket prevents callers
-    from bypassing the principal key, and session creation has its own quota.
+    Failure buckets protect error paths, while read and write buckets consume
+    every successful or failed interaction request. Separate client buckets
+    prevent callers from bypassing the principal key, and session creation has
+    its own quota.
     """
 
     def __init__(
@@ -104,6 +105,9 @@ class InteractionRateLimitMiddleware:
         self.session_creation_limiter = SlidingWindowRateLimiter(
             max_attempts, window_seconds
         )
+        self.read_client_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
+        self.read_principal_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
+        self.read_endpoint_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
         self.write_client_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
         self.write_principal_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
         self.write_endpoint_limiter = SlidingWindowRateLimiter(max_attempts, window_seconds)
@@ -131,10 +135,12 @@ class InteractionRateLimitMiddleware:
         client_key = f"interaction-client:{client}"
         principal_key = f"interaction-principal:{principal}"
         method = scope.get("method", "GET").upper()
+        is_read = method in {"GET", "HEAD"}
         is_write = method in {"POST", "PUT", "PATCH", "DELETE"}
         # Keep the endpoint dimension isolated per real client. A global
         # endpoint bucket would let one caller exhaust the quota for everyone.
-        endpoint_key = f"interaction-write-endpoint:{method}:{path}:{client}"
+        endpoint_scope = "read" if is_read else "write"
+        endpoint_key = f"interaction-{endpoint_scope}-endpoint:{method}:{path}:{client}"
         is_session_creation = (
             scope.get("method", "GET") == "POST"
             and path == "/api/interaction/sessions"
@@ -146,6 +152,15 @@ class InteractionRateLimitMiddleware:
         if is_session_creation:
             reservations.append((self.session_creation_limiter, client_key))
             reservation_names.append("creation")
+        if is_read:
+            reservations.extend(
+                (
+                    (self.read_client_limiter, client_key),
+                    (self.read_principal_limiter, principal_key),
+                    (self.read_endpoint_limiter, endpoint_key),
+                )
+            )
+            reservation_names.extend(("read_client", "read_principal", "read_endpoint"))
         if is_write:
             reservations.extend(
                 (
@@ -162,6 +177,9 @@ class InteractionRateLimitMiddleware:
         reserved = consume_many(tuple(reservations)) if decision.allowed and principal_decision.allowed else ()
         reservation_decisions = dict(zip(reservation_names, reserved))
         creation_decision = reservation_decisions.get("creation")
+        read_client_decision = reservation_decisions.get("read_client")
+        read_principal_decision = reservation_decisions.get("read_principal")
+        read_endpoint_decision = reservation_decisions.get("read_endpoint")
         write_client_decision = reservation_decisions.get("write_client")
         write_principal_decision = reservation_decisions.get("write_principal")
         write_endpoint_decision = reservation_decisions.get("write_endpoint")
@@ -169,6 +187,9 @@ class InteractionRateLimitMiddleware:
             not decision.allowed
             or not principal_decision.allowed
             or (creation_decision is not None and not creation_decision.allowed)
+            or (read_client_decision is not None and not read_client_decision.allowed)
+            or (read_principal_decision is not None and not read_principal_decision.allowed)
+            or (read_endpoint_decision is not None and not read_endpoint_decision.allowed)
             or (write_client_decision is not None and not write_client_decision.allowed)
             or (write_principal_decision is not None and not write_principal_decision.allowed)
             or (write_endpoint_decision is not None and not write_endpoint_decision.allowed)
@@ -177,6 +198,9 @@ class InteractionRateLimitMiddleware:
                 decision.retry_after_seconds,
                 principal_decision.retry_after_seconds,
                 creation_decision.retry_after_seconds if creation_decision else 0,
+                read_client_decision.retry_after_seconds if read_client_decision else 0,
+                read_principal_decision.retry_after_seconds if read_principal_decision else 0,
+                read_endpoint_decision.retry_after_seconds if read_endpoint_decision else 0,
                 write_client_decision.retry_after_seconds if write_client_decision else 0,
                 write_principal_decision.retry_after_seconds if write_principal_decision else 0,
                 write_endpoint_decision.retry_after_seconds if write_endpoint_decision else 0,
