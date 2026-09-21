@@ -17,6 +17,13 @@ CineMind is a Netflix-inspired catalog and Data Mining prototype for the midterm
 - Backend `ops`, `catalog`, `interaction`, and `auth` schemas with PostgreSQL migrations, catalog ingestion, data-quality audit, and API endpoints
 - Protected three-scope database reset console for local and demo maintenance
 
+## Interactive architecture flow
+
+Open docs/cinemind-system-flow.html in a browser to explore the current
+frontend, browser-recovery, API, PostgreSQL, migration and security boundaries.
+The standalone flow includes guided chapters, node search, route tracing,
+semantic lens, radar, deep-linkable moments, theme/style presets and SVG export.
+
 ## Frontend configuration boundary
 
 Runtime, filter, display-limit, navigation, poster-fallback, validation, deployment-path, and browser-storage settings live in `frontend/config/cinemind.config.json`. The UI reads these settings through `frontend/src/config/appConfig.js`; catalog loading, recommendation preview, account access, and browser signal persistence are separate services so a later API/model layer can replace them without moving constants back into components.
