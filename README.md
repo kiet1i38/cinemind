@@ -25,7 +25,8 @@ migration and security boundaries. The viewer reads the focused architecture
 model from docs/cinemind-system-flow.architecture.json when served over HTTP
 and includes an embedded fallback for direct file opening. It provides four
 guided views, node search, deep-linkable moments, theme/style presets and SVG
-export without forcing the full module graph onto one canvas.
+export. The canvas shows only the selected step and its nearest neighbors;
+the complete story remains available in the step list and node passport.
 
 ## Frontend configuration boundary
 
