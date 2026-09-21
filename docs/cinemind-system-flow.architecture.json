@@ -1,0 +1,543 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "CineMind — User-to-data system flow",
+    "output": "cinemind-system-flow.html",
+    "quality_profile": "focused-review",
+    "repository": {
+      "url": "https://github.com/kiet1i38/cinemind",
+      "revision": "4529fa5d334bb1f788d09382b1df81d3f18b6104"
+    },
+    "default_view": "signal-write",
+    "note": "Views are authored paths through the current product boundaries. They are intentionally focused rather than an exhaustive runtime trace."
+  },
+  "lanes": [
+    { "id": "intent", "label": "User intent", "subtitle": "action / outcome" },
+    { "id": "client", "label": "Browser client", "subtitle": "React / local recovery" },
+    { "id": "edge", "label": "API boundary", "subtitle": "middleware / route" },
+    { "id": "backend", "label": "Backend", "subtitle": "service / repository" },
+    { "id": "storage", "label": "Database", "subtitle": "schema / record" }
+  ],
+  "nodes": [
+    {
+      "id": "user",
+      "kind": "actor",
+      "lane": "intent",
+      "label": "User action",
+      "sublabel": "browse · rate · login",
+      "tag": "Intent",
+      "detail": "The user starts one focused product action. The diagram follows what that action becomes after it crosses each boundary.",
+      "record": "No database write yet",
+      "sources": [
+        { "path": "frontend/src/App.jsx" },
+        { "path": "frontend/src/components/RatingModal.jsx" }
+      ]
+    },
+    {
+      "id": "catalog-ui",
+      "kind": "frontend",
+      "lane": "client",
+      "label": "Catalog shell",
+      "sublabel": "search + title detail",
+      "tag": "React UI",
+      "detail": "App.jsx owns catalog loading, filters, title selection and the transition into a title interaction.",
+      "record": "Keeps view state and catalog response in memory",
+      "sources": [
+        { "path": "frontend/src/App.jsx" },
+        { "path": "frontend/src/components/CatalogGrid.jsx" }
+      ]
+    },
+    {
+      "id": "detail-ui",
+      "kind": "frontend",
+      "lane": "client",
+      "label": "Title detail",
+      "sublabel": "rating + watch capture",
+      "tag": "React UI",
+      "detail": "RatingModal captures the half-point rating and watch duration that become one signal mutation.",
+      "record": "Optimistic title state before server receipt",
+      "sources": [
+        { "path": "frontend/src/components/RatingModal.jsx" },
+        { "path": "frontend/src/App.jsx" }
+      ]
+    },
+    {
+      "id": "auth-ui",
+      "kind": "frontend",
+      "lane": "client",
+      "label": "Auth / profile",
+      "sublabel": "login + session state",
+      "tag": "React UI",
+      "detail": "Auth surfaces submit credentials and recover the authenticated interaction owner after /me succeeds.",
+      "record": "Account state is reflected in the browser owner namespace",
+      "sources": [
+        { "path": "frontend/src/auth.jsx" },
+        { "path": "frontend/src/App.jsx" }
+      ]
+    },
+    {
+      "id": "catalog-client",
+      "kind": "client",
+      "lane": "client",
+      "label": "catalogService",
+      "sublabel": "fetch + normalize",
+      "tag": "Client service",
+      "detail": "Calls the catalog API through the configured base URL, applies timeout handling and returns normalized title records.",
+      "record": "No direct write; returns catalog rows to React",
+      "sources": [
+        { "path": "frontend/src/services/catalogService.js" }
+      ]
+    },
+    {
+      "id": "auth-client",
+      "kind": "client",
+      "lane": "client",
+      "label": "authService",
+      "sublabel": "cookie auth + promotion",
+      "tag": "Client service",
+      "detail": "Calls login and /me with cookie credentials, then coordinates owner promotion and pending interaction recovery.",
+      "record": "Reads auth state and moves pending browser entries between owner namespaces",
+      "sources": [
+        { "path": "frontend/src/services/authService.js" }
+      ]
+    },
+    {
+      "id": "interaction-client",
+      "kind": "client",
+      "lane": "client",
+      "label": "interactionService",
+      "sublabel": "queue · sync · hydrate",
+      "tag": "Client service",
+      "detail": "Creates mutation metadata, sends paced batches, retries recoverable failures and hydrates the server receipt into the UI.",
+      "record": "Reads and acknowledges owner-scoped outbox entries",
+      "sources": [
+        { "path": "frontend/src/services/interactionService.js" }
+      ]
+    },
+    {
+      "id": "browser-store",
+      "kind": "client",
+      "lane": "client",
+      "label": "interactionStore",
+      "sublabel": "outbox + owner journal",
+      "tag": "Browser persistence",
+      "detail": "Stores per-owner pending entries, signal snapshots, session proof and the durable anonymous-to-account transfer intent.",
+      "record": "localStorage/sessionStorage namespaces; not PostgreSQL",
+      "sources": [
+        { "path": "frontend/src/services/interactionStore.js" }
+      ]
+    },
+    {
+      "id": "recommendation",
+      "kind": "client",
+      "lane": "client",
+      "label": "recommendationService",
+      "sublabel": "local discovery ranking",
+      "tag": "Client read model",
+      "detail": "Builds Preview Picks and related rails from catalog records plus the latest acknowledged interaction timestamps.",
+      "record": "Derived local view; no separate recommendation table",
+      "sources": [
+        { "path": "frontend/src/services/recommendationService.js" }
+      ]
+    },
+    {
+      "id": "middleware",
+      "kind": "security",
+      "lane": "edge",
+      "label": "API middleware",
+      "sublabel": "CSRF · CORS · limits",
+      "tag": "Guard rail",
+      "detail": "Applies transport, request-size, trusted-proxy, CSRF and IP/principal rate-limit policy before route logic.",
+      "record": "Rejects invalid requests before a repository transaction",
+      "sources": [
+        { "path": "backend/src/cinemind/main.py" },
+        { "path": "backend/src/cinemind/middleware.py" },
+        { "path": "backend/src/cinemind/security.py" }
+      ]
+    },
+    {
+      "id": "catalog-route",
+      "kind": "server",
+      "lane": "edge",
+      "label": "Catalog routes",
+      "sublabel": "GET /api/catalog",
+      "tag": "FastAPI route",
+      "detail": "Validates filters and response shape, then delegates catalog reads to CatalogService.",
+      "record": "Read-only request boundary",
+      "sources": [
+        { "path": "backend/src/cinemind/catalog/routes.py" },
+        { "path": "backend/src/cinemind/catalog/schemas.py" }
+      ]
+    },
+    {
+      "id": "interaction-route",
+      "kind": "server",
+      "lane": "edge",
+      "label": "Interaction routes",
+      "sublabel": "/signals · /state",
+      "tag": "FastAPI route",
+      "detail": "Requires account auth for signals, accepts optional auth for search/state and maps service errors to stable HTTP responses.",
+      "record": "Binds session_id, proof token and mutation metadata",
+      "sources": [
+        { "path": "backend/src/cinemind/interaction/routes.py" },
+        { "path": "backend/src/cinemind/interaction/schemas.py" }
+      ]
+    },
+    {
+      "id": "auth-route",
+      "kind": "server",
+      "lane": "edge",
+      "label": "Auth routes",
+      "sublabel": "/login · /me · /logout",
+      "tag": "FastAPI route",
+      "detail": "Runs secure-transport and rate-limit preflight, then returns an HttpOnly cookie-backed auth state.",
+      "record": "Response exposes user and interaction_session_id, not raw session tokens",
+      "sources": [
+        { "path": "backend/src/cinemind/auth/routes.py" },
+        { "path": "backend/src/cinemind/auth/dependencies.py" }
+      ]
+    },
+    {
+      "id": "admin-route",
+      "kind": "security",
+      "lane": "edge",
+      "label": "Admin route",
+      "sublabel": "POST /api/admin/reset",
+      "tag": "Protected maintenance",
+      "detail": "Keeps reset outside the public product path and requires admin credentials plus an atomic limiter decision.",
+      "record": "Maintenance command, not user interaction telemetry",
+      "sources": [
+        { "path": "backend/src/cinemind/admin/routes.py" }
+      ]
+    },
+    {
+      "id": "catalog-service",
+      "kind": "server",
+      "lane": "backend",
+      "label": "CatalogService",
+      "sublabel": "filter + page use case",
+      "tag": "Backend service",
+      "detail": "Uses one normalized filter set for count and page rows so the catalog response is internally consistent.",
+      "record": "No write; shapes a stable read model",
+      "sources": [
+        { "path": "backend/src/cinemind/catalog/service.py" }
+      ]
+    },
+    {
+      "id": "interaction-service",
+      "kind": "server",
+      "lane": "backend",
+      "label": "InteractionService",
+      "sublabel": "transaction + ownership",
+      "tag": "Backend service",
+      "detail": "Checks session ownership, mutation scope, device ordering and repair provenance before committing a signal.",
+      "record": "One signal owns one watch row and one rating row",
+      "sources": [
+        { "path": "backend/src/cinemind/interaction/service.py" },
+        { "path": "backend/src/cinemind/db/locks.py" }
+      ]
+    },
+    {
+      "id": "auth-service",
+      "kind": "server",
+      "lane": "backend",
+      "label": "AuthService",
+      "sublabel": "session + promotion",
+      "tag": "Backend service",
+      "detail": "Normalizes login identifiers, verifies credentials, creates opaque sessions and attaches an accepted anonymous interaction session.",
+      "record": "Creates auth session and may set interaction.sessions.user_id",
+      "sources": [
+        { "path": "backend/src/cinemind/auth/service.py" }
+      ]
+    },
+    {
+      "id": "admin-service",
+      "kind": "security",
+      "lane": "backend",
+      "label": "ResetService",
+      "sublabel": "scope + deletion",
+      "tag": "Backend service",
+      "detail": "Chooses current-session or full-account reset and delegates ordered cleanup to the admin repository.",
+      "record": "Preserves catalog and ops data while clearing selected interaction/auth rows",
+      "sources": [
+        { "path": "backend/src/cinemind/admin/service.py" }
+      ]
+    },
+    {
+      "id": "catalog-repository",
+      "kind": "repository",
+      "lane": "backend",
+      "label": "CatalogRepository",
+      "sublabel": "parameterized reads",
+      "tag": "Repository",
+      "detail": "Executes parameterized count and list queries and joins normalized catalog relations.",
+      "record": "Reads catalog.titles and relation tables",
+      "sources": [
+        { "path": "backend/src/cinemind/catalog/repository.py" }
+      ]
+    },
+    {
+      "id": "interaction-repository",
+      "kind": "repository",
+      "lane": "backend",
+      "label": "InteractionRepository",
+      "sublabel": "event writes + state reads",
+      "tag": "Repository",
+      "detail": "Locks mutation IDs, performs idempotent inserts, resolves latest state and links repair provenance in PostgreSQL.",
+      "record": "Writes search_events, watch_sessions and ratings",
+      "sources": [
+        { "path": "backend/src/cinemind/interaction/repository.py" }
+      ]
+    },
+    {
+      "id": "auth-repository",
+      "kind": "repository",
+      "lane": "backend",
+      "label": "AuthRepository",
+      "sublabel": "users + sessions",
+      "tag": "Repository",
+      "detail": "Resolves email/username aliases, stores password/session hashes and attaches or ends interaction sessions.",
+      "record": "Writes auth.users, auth.sessions and interaction.sessions ownership",
+      "sources": [
+        { "path": "backend/src/cinemind/auth/repository.py" }
+      ]
+    },
+    {
+      "id": "admin-repository",
+      "kind": "repository",
+      "lane": "backend",
+      "label": "AdminRepository",
+      "sublabel": "ordered reset SQL",
+      "tag": "Repository",
+      "detail": "Neutralizes rating links and repair rows before deleting source session data, preserving foreign-key integrity.",
+      "record": "Deletes or neutralizes scoped interaction/auth rows",
+      "sources": [
+        { "path": "backend/src/cinemind/admin/repository.py" }
+      ]
+    },
+    {
+      "id": "catalog-db",
+      "kind": "data",
+      "lane": "storage",
+      "label": "catalog schema",
+      "sublabel": "titles + relations",
+      "tag": "PostgreSQL",
+      "detail": "Normalized title metadata is the source for catalog pages, filters and local recommendation rails.",
+      "record": "catalog.titles · title_genres · title_cast · title_countries · title_directors",
+      "sources": [
+        { "path": "backend/migrations/002_create_catalog_schema.sql" }
+      ]
+    },
+    {
+      "id": "interaction-db",
+      "kind": "data",
+      "lane": "storage",
+      "label": "interaction schema",
+      "sublabel": "sessions + event rows",
+      "tag": "PostgreSQL",
+      "detail": "Durable interaction telemetry is stored with session scope, mutation identity, client time, device stream and repair provenance.",
+      "record": "interaction.sessions · search_events · watch_sessions · ratings",
+      "sources": [
+        { "path": "backend/migrations/003_create_interaction_schema.sql" },
+        { "path": "backend/migrations/011_global_interaction_idempotency.sql" },
+        { "path": "backend/migrations/014_mark_rating_watch_repairs.sql" }
+      ]
+    },
+    {
+      "id": "auth-db",
+      "kind": "data",
+      "lane": "storage",
+      "label": "auth schema",
+      "sublabel": "users + cookie sessions",
+      "tag": "PostgreSQL",
+      "detail": "Account identity and opaque cookie-session hashes are kept separate from browser JavaScript and interaction payloads.",
+      "record": "auth.users · auth.sessions · interaction.sessions.user_id",
+      "sources": [
+        { "path": "backend/migrations/005_create_auth_schema.sql" }
+      ]
+    },
+    {
+      "id": "ops-db",
+      "kind": "data",
+      "lane": "storage",
+      "label": "ops schema",
+      "sublabel": "migration + ingestion audit",
+      "tag": "PostgreSQL",
+      "detail": "Operational provenance records schema migrations, dataset sources, ingestion runs and quality issues.",
+      "record": "ops.schema_migrations · dataset_sources · ingestion_runs · data_quality_issues",
+      "sources": [
+        { "path": "backend/migrations/000_bootstrap.sql" },
+        { "path": "backend/migrations/001_create_ops_schema.sql" }
+      ]
+    },
+    {
+      "id": "catalog-source",
+      "kind": "external",
+      "lane": "intent",
+      "label": "Catalog preparation",
+      "sublabel": "Kaggle + poster sources",
+      "tag": "Preparation time",
+      "detail": "Preparation code normalizes source rows, resolves poster assets and records ingestion outcomes before the app serves catalog data.",
+      "record": "Feeds catalog schema and ops audit; not a user request",
+      "sources": [
+        { "path": "frontend/scripts/prepare-catalog.mjs" },
+        { "path": "backend/src/cinemind/scripts/bootstrap_catalog.py" }
+      ]
+    }
+  ],
+  "views": [
+    {
+      "id": "catalog-read",
+      "label": "Catalog discovery",
+      "short_label": "Browse",
+      "note": "A search stays read-only: the user action becomes a parameterized catalog query, then a local recommendation view.",
+      "focus": ["user", "catalog-ui", "catalog-client", "middleware", "catalog-route", "catalog-service", "catalog-repository", "catalog-db", "recommendation"],
+      "layout": {
+        "user": [20, 214],
+        "catalog-ui": [242, 214],
+        "catalog-client": [464, 214],
+        "middleware": [686, 120],
+        "catalog-route": [686, 310],
+        "catalog-service": [908, 120],
+        "catalog-repository": [908, 310],
+        "catalog-db": [908, 500],
+        "recommendation": [464, 390]
+      },
+      "mobile_order": ["user", "catalog-ui", "catalog-client", "middleware", "catalog-route", "catalog-service", "catalog-repository", "catalog-db", "recommendation"],
+      "steps": [
+        { "from": "user", "to": "catalog-ui", "label": "search / filter", "detail": "The user enters a query or selects a catalog filter." },
+        { "from": "catalog-ui", "to": "catalog-client", "label": "load page", "detail": "App.jsx delegates loading and normalization to catalogService." },
+        { "from": "catalog-client", "to": "middleware", "label": "GET /api/catalog", "detail": "The client sends the request through the configured API boundary." },
+        { "from": "middleware", "to": "catalog-route", "label": "validated request", "detail": "Transport, CORS, request-size and proxy rules run before the route." },
+        { "from": "catalog-route", "to": "catalog-service", "label": "page use case", "detail": "The route validates filters and calls CatalogService." },
+        { "from": "catalog-service", "to": "catalog-repository", "label": "count + list", "detail": "CatalogService keeps count and page queries on the same normalized filters." },
+        { "from": "catalog-repository", "to": "catalog-db", "label": "parameterized SELECT", "detail": "PostgreSQL reads catalog.titles and normalized relation tables. No interaction row is written." },
+        { "from": "catalog-db", "to": "catalog-client", "label": "catalog rows", "detail": "The normalized response returns to the browser and becomes the catalog read model." },
+        { "from": "catalog-client", "to": "recommendation", "label": "derive rails", "detail": "recommendationService ranks local discovery rails from catalog records and acknowledged timestamps." }
+      ]
+    },
+    {
+      "id": "signal-write",
+      "label": "Rating becomes telemetry",
+      "short_label": "Signal write",
+      "note": "Follow one rating + watch action from optimistic UI to the exact PostgreSQL rows that receive it.",
+      "focus": ["user", "detail-ui", "interaction-client", "browser-store", "middleware", "interaction-route", "interaction-service", "interaction-repository", "interaction-db", "recommendation"],
+      "layout": {
+        "user": [20, 214],
+        "detail-ui": [242, 120],
+        "interaction-client": [242, 310],
+        "browser-store": [464, 440],
+        "middleware": [464, 120],
+        "interaction-route": [686, 120],
+        "interaction-service": [908, 120],
+        "interaction-repository": [908, 310],
+        "interaction-db": [908, 500],
+        "recommendation": [242, 500]
+      },
+      "mobile_order": ["user", "detail-ui", "interaction-client", "browser-store", "middleware", "interaction-route", "interaction-service", "interaction-repository", "interaction-db", "recommendation"],
+      "steps": [
+        { "from": "user", "to": "detail-ui", "label": "rate + watch", "detail": "The user chooses a rating and records watch duration in the title detail modal." },
+        { "from": "detail-ui", "to": "interaction-client", "label": "queue signal", "detail": "The UI creates an optimistic signal and sends it to interactionService." },
+        { "from": "interaction-client", "to": "browser-store", "label": "persist outbox", "detail": "The owner-scoped entry keeps mutation ID, session, device stream and client sequence across reloads." },
+        { "from": "browser-store", "to": "interaction-client", "label": "retry / hydrate", "detail": "Online state and the sync loop read pending entries, then overlay or replace them with server receipts." },
+        { "from": "interaction-client", "to": "middleware", "label": "POST /signals", "detail": "A signal batch crosses the secure transport, CSRF, body-size and rate-limit boundary." },
+        { "from": "middleware", "to": "interaction-route", "label": "auth + proof", "detail": "The route requires account auth and verifies the interaction session proof." },
+        { "from": "interaction-route", "to": "interaction-service", "label": "record_signal", "detail": "The route delegates the composite watch-plus-rating mutation." },
+        { "from": "interaction-service", "to": "interaction-repository", "label": "transaction + locks", "detail": "The service checks ownership, idempotency scope, device ordering and repair provenance before writing." },
+        { "from": "interaction-repository", "to": "interaction-db", "label": "insert / reconcile", "detail": "The transaction writes interaction.watch_sessions and interaction.ratings, retaining mutation and receipt metadata." },
+        { "from": "interaction-db", "to": "recommendation", "label": "server receipt", "detail": "After a fulfilled signal batch, the client hydrates serverSavedAt so recommendation recency uses committed time." }
+      ]
+    },
+    {
+      "id": "account-promotion",
+      "label": "Anonymous to account",
+      "short_label": "Login",
+      "note": "The account boundary creates the cookie session, attaches the accepted interaction session and preserves pending browser data.",
+      "focus": ["user", "auth-ui", "auth-client", "browser-store", "middleware", "auth-route", "auth-service", "auth-repository", "auth-db", "interaction-db"],
+      "layout": {
+        "user": [20, 214],
+        "auth-ui": [242, 120],
+        "auth-client": [242, 310],
+        "browser-store": [464, 440],
+        "middleware": [464, 120],
+        "auth-route": [686, 120],
+        "auth-service": [908, 120],
+        "auth-repository": [908, 310],
+        "auth-db": [908, 500],
+        "interaction-db": [686, 500]
+      },
+      "mobile_order": ["user", "auth-ui", "auth-client", "browser-store", "middleware", "auth-route", "auth-service", "auth-repository", "auth-db", "interaction-db"],
+      "steps": [
+        { "from": "user", "to": "auth-ui", "label": "login / register", "detail": "The user submits credentials while an anonymous interaction session may still contain pending signals." },
+        { "from": "auth-ui", "to": "auth-client", "label": "credential request", "detail": "The auth surface delegates cookie authentication and promotion to authService." },
+        { "from": "auth-client", "to": "browser-store", "label": "journal first", "detail": "The browser persists the anonymous-to-account transfer intent before changing the owner namespace." },
+        { "from": "auth-client", "to": "middleware", "label": "POST /login", "detail": "Credentials and the anonymous session proof cross the secure auth boundary." },
+        { "from": "middleware", "to": "auth-route", "label": "rate-limited request", "detail": "Auth route dependencies enforce secure transport and atomic login-attempt capacity." },
+        { "from": "auth-route", "to": "auth-service", "label": "resolve principal", "detail": "AuthService normalizes the identifier, verifies the password and creates the authenticated session." },
+        { "from": "auth-service", "to": "auth-repository", "label": "create + attach", "detail": "The service asks AuthRepository to create the cookie session and attach an accepted anonymous interaction session." },
+        { "from": "auth-repository", "to": "auth-db", "label": "auth.users + sessions", "detail": "PostgreSQL stores the account and hashed auth session; the raw cookie token is not stored." },
+        { "from": "auth-repository", "to": "interaction-db", "label": "set owner", "detail": "The accepted interaction.sessions row receives user_id so existing telemetry belongs to the account." },
+        { "from": "auth-client", "to": "browser-store", "label": "copy pending data", "detail": "After the response, the client copies anonymous outbox entries into the account namespace and retries durable recovery when needed." }
+      ]
+    },
+    {
+      "id": "reset-scope",
+      "label": "Reset and provenance",
+      "short_label": "Reset",
+      "note": "Maintenance cleanup is scoped and ordered: repair provenance is handled before source rows disappear, while catalog and ops remain intact.",
+      "focus": ["user", "middleware", "admin-route", "admin-service", "admin-repository", "interaction-db", "auth-db", "catalog-db", "ops-db"],
+      "layout": {
+        "user": [20, 214],
+        "middleware": [242, 120],
+        "admin-route": [464, 120],
+        "admin-service": [686, 120],
+        "admin-repository": [908, 120],
+        "interaction-db": [908, 310],
+        "auth-db": [908, 500],
+        "catalog-db": [686, 390],
+        "ops-db": [464, 390]
+      },
+      "mobile_order": ["user", "middleware", "admin-route", "admin-service", "admin-repository", "interaction-db", "auth-db", "catalog-db", "ops-db"],
+      "steps": [
+        { "from": "user", "to": "middleware", "label": "request reset", "detail": "An operator invokes the protected maintenance path rather than a public interaction endpoint." },
+        { "from": "middleware", "to": "admin-route", "label": "Basic Auth + limit", "detail": "The admin route is protected by credentials and an atomic rate-limit decision." },
+        { "from": "admin-route", "to": "admin-service", "label": "choose scope", "detail": "ResetService selects current-session cleanup or full-account cleanup." },
+        { "from": "admin-service", "to": "admin-repository", "label": "ordered cleanup", "detail": "AdminRepository executes the dependency-aware SQL sequence." },
+        { "from": "admin-repository", "to": "interaction-db", "label": "clear telemetry", "detail": "Repair rating links and repair watch rows are neutralized before source interaction rows are deleted." },
+        { "from": "admin-repository", "to": "auth-db", "label": "clear account scope", "detail": "Full reset removes users and auth sessions; current-session reset leaves other account sessions alone." },
+        { "from": "admin-repository", "to": "catalog-db", "label": "preserve catalog", "detail": "Reset does not delete catalog titles or normalized relations." },
+        { "from": "admin-repository", "to": "ops-db", "label": "preserve provenance", "detail": "Migrations and ingestion audit remain available for reproducibility and readiness checks." }
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Read path",
+      "items": [
+        "UI delegates to a client service",
+        "FastAPI route delegates to a backend service",
+        "Repository owns parameterized PostgreSQL reads"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Write path",
+      "items": [
+        "Outbox keeps pending intent durable in the browser",
+        "InteractionService validates owner and mutation scope",
+        "One signal commits watch and rating rows together"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Stored evidence",
+      "items": [
+        "Session and account ownership stay explicit",
+        "Client mutation and device ordering metadata are retained",
+        "Repair rows carry provenance for mining and reset"
+      ]
+    }
+  ]
+}

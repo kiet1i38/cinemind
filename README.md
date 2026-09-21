@@ -20,9 +20,12 @@ CineMind is a Netflix-inspired catalog and Data Mining prototype for the midterm
 ## Interactive architecture flow
 
 Open docs/cinemind-system-flow.html in a browser to explore the current
-frontend, browser-recovery, API, PostgreSQL, migration and security boundaries.
-The standalone flow includes guided chapters, node search, route tracing,
-semantic lens, radar, deep-linkable moments, theme/style presets and SVG export.
+frontend, browser-recovery, API, backend service/repository, PostgreSQL,
+migration and security boundaries. The viewer reads the focused architecture
+model from docs/cinemind-system-flow.architecture.json when served over HTTP
+and includes an embedded fallback for direct file opening. It provides four
+guided views, node search, deep-linkable moments, theme/style presets and SVG
+export without forcing the full module graph onto one canvas.
 
 ## Frontend configuration boundary
 

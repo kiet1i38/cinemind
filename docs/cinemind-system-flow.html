@@ -1,1341 +1,428 @@
 <!doctype html>
-<html lang="en" data-theme="dark" data-preset="classic" data-motion="live">
+<html lang="en" data-theme="dark" data-preset="signal-flow" data-motion="live">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark light">
-  <title>CineMind — System Flow</title>
+  <meta name="description" content="Focused, interactive CineMind architecture flows from user intent to backend records.">
+  <title>CineMind — User-to-data system flow</title>
   <style>
-    :root {
-      --bg: #091019;
-      --surface: #101a27;
-      --surface-2: #152335;
-      --surface-3: #1b2d42;
-      --text: #e7eef7;
-      --muted: #9cafc4;
-      --faint: #6d8299;
-      --border: #294056;
-      --border-strong: #416078;
-      --accent: #65d7b1;
-      --accent-2: #78a9ff;
-      --frontend: #62b6ff;
-      --client: #c28cff;
-      --server: #ffbb67;
-      --data: #69d4ae;
-      --security: #ff7e96;
-      --external: #9ba9ba;
-      --shadow: 0 18px 60px rgba(0, 0, 0, .28);
-      --grid: rgba(116, 160, 190, .12);
-      --edge: #658198;
-      --edge-active: #65d7b1;
-      --focus: #f6d77c;
-      --radius: 14px;
-      --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    :root,
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #08111f;
+      --bg-deep: #050b14;
+      --surface: #0d1a2b;
+      --surface-2: #11243a;
+      --surface-3: #172d47;
+      --border: #28415f;
+      --border-strong: #416789;
+      --text: #f2f7ff;
+      --muted: #9fb3c9;
+      --faint: #6f88a3;
+      --frontend: #5bd7e8;
+      --client: #9ca9ff;
+      --server: #62ddb8;
+      --repository: #80e0c4;
+      --data: #d6adff;
+      --security: #ff9f9f;
+      --external: #f5c66e;
+      --actor: #ffbd8a;
+      --focus: #f6e7a7;
+      --arrow: #6884a2;
+      --arrow-hot: #f6e7a7;
+      --shadow: rgba(0, 0, 0, .32);
+      --grid: rgba(126, 164, 201, .1);
+      --panel: rgba(13, 26, 43, .88);
     }
 
     html[data-theme="light"] {
-      --bg: #f2f6f8;
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --bg-deep: #e8eef6;
       --surface: #ffffff;
-      --surface-2: #edf3f6;
-      --surface-3: #e1ebef;
-      --text: #162332;
-      --muted: #566b7d;
-      --faint: #6f8290;
-      --border: #c7d6df;
-      --border-strong: #9bb4c1;
-      --grid: rgba(49, 92, 117, .11);
-      --edge: #7b94a3;
-      --shadow: 0 18px 52px rgba(35, 62, 79, .15);
-    }
-
-    html[data-preset="signal-flow"] {
-      --accent: #72e7ca;
-      --accent-2: #8cb5ff;
-      --radius: 9px;
-      --grid: rgba(114, 231, 202, .14);
+      --surface-2: #f4f7fb;
+      --surface-3: #eaf1f8;
+      --border: #cfdae7;
+      --border-strong: #9eb4ca;
+      --text: #142235;
+      --muted: #5f738a;
+      --faint: #8092a6;
+      --frontend: #0a8fa6;
+      --client: #5562c8;
+      --server: #087c61;
+      --repository: #2b8f73;
+      --data: #7e48b1;
+      --security: #c54756;
+      --external: #a8680b;
+      --actor: #be6c35;
+      --focus: #aa7911;
+      --arrow: #87a0b8;
+      --arrow-hot: #aa7911;
+      --shadow: rgba(39, 64, 91, .15);
+      --grid: rgba(75, 112, 145, .12);
+      --panel: rgba(255, 255, 255, .91);
     }
 
     html[data-preset="blueprint"] {
-      --accent: #7bd6ff;
-      --accent-2: #b5c8ff;
-      --radius: 3px;
-      --grid: rgba(123, 214, 255, .16);
+      --bg: #061d2b;
+      --bg-deep: #04141f;
+      --surface: #092a3e;
+      --surface-2: #0c334a;
+      --surface-3: #12425c;
+      --border: #2a6680;
+      --border-strong: #4e91aa;
+      --text: #e7f8ff;
+      --muted: #a2c3d1;
+      --faint: #719bae;
+      --grid: rgba(117, 207, 231, .13);
+      --panel: rgba(9, 42, 62, .9);
     }
 
     html[data-preset="editorial"] {
-      --accent: #ffcf72;
-      --accent-2: #e6a8ff;
-      --radius: 18px;
-      --grid: rgba(255, 207, 114, .1);
+      --bg: #f1ede4;
+      --bg-deep: #e3ddd1;
+      --surface: #fbf8f1;
+      --surface-2: #f4eee4;
+      --surface-3: #ebe2d4;
+      --border: #cdbfae;
+      --border-strong: #aa9680;
+      --text: #2d271f;
+      --muted: #716757;
+      --faint: #9c8e7b;
+      --frontend: #2d7e82;
+      --client: #6b5c91;
+      --server: #39764e;
+      --repository: #4f8764;
+      --data: #795889;
+      --security: #a44943;
+      --external: #a26923;
+      --actor: #b56231;
+      --focus: #b64b26;
+      --arrow: #9a8c79;
+      --arrow-hot: #b64b26;
+      --shadow: rgba(83, 57, 31, .14);
+      --grid: rgba(137, 116, 91, .14);
+      --panel: rgba(251, 248, 241, .94);
     }
 
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; }
-    body {
-      background:
-        radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 32rem),
-        var(--bg);
-      color: var(--text);
-      font-family: var(--font);
-      line-height: 1.45;
-    }
-
-    button, input { font: inherit; }
-    button {
-      color: var(--text);
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 9px;
-      cursor: pointer;
-      min-height: 36px;
-      padding: .45rem .72rem;
-      transition: border-color .18s ease, background .18s ease, transform .18s ease;
-    }
-    button:hover, button:focus-visible {
-      border-color: var(--accent);
-      outline: none;
-    }
+    html { min-width: 320px; background: var(--bg); }
+    body { min-width: 320px; margin: 0; color: var(--text); background: radial-gradient(circle at 8% -10%, color-mix(in srgb, var(--frontend) 12%, transparent), transparent 32rem), radial-gradient(circle at 96% 18%, color-mix(in srgb, var(--data) 10%, transparent), transparent 30rem), var(--bg); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.45; }
+    html[data-preset="blueprint"] body { background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px), linear-gradient(180deg, color-mix(in srgb, var(--frontend) 8%, transparent), transparent 34rem); background-size: 32px 32px, 32px 32px, auto; }
+    html[data-preset="editorial"] body { background-image: linear-gradient(90deg, transparent 0, transparent 5.2rem, color-mix(in srgb, var(--security) 18%, transparent) 5.2rem, color-mix(in srgb, var(--security) 18%, transparent) calc(5.2rem + 1px), transparent calc(5.2rem + 1px)), repeating-linear-gradient(0deg, transparent 0, transparent 31px, var(--grid) 31px, var(--grid) 32px); }
+    html[data-present="true"] body { overflow: hidden; }
+    button, input, select { font: inherit; }
+    button, a, select, input { -webkit-tap-highlight-color: transparent; }
+    button { min-height: 36px; padding: 0 .75rem; border: 1px solid var(--border); border-radius: .45rem; color: var(--text); background: color-mix(in srgb, var(--surface) 88%, transparent); cursor: pointer; transition: border-color .16s ease, background .16s ease, color .16s ease, transform .16s ease; }
+    button:hover { border-color: var(--border-strong); background: var(--surface-3); }
     button:active { transform: translateY(1px); }
-    button[aria-pressed="true"], button.is-active {
-      background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
-      border-color: var(--accent);
-    }
-    button.primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #07120f;
-      font-weight: 700;
-    }
-    button.ghost { background: transparent; }
-    button:disabled { cursor: not-allowed; opacity: .48; }
-    a { color: var(--accent); }
-    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-
-    .app-shell { margin: 0 auto; max-width: 1540px; padding: 1rem 1.2rem 2.4rem; }
-    .topbar, .title-row, .storybar, .workspace, .lower-grid {
-      max-width: 1420px;
-      margin-inline: auto;
-    }
-    .topbar {
-      align-items: center;
-      display: flex;
-      gap: 1rem;
-      justify-content: space-between;
-      padding: .55rem 0 1.2rem;
-    }
-    .brand { align-items: center; display: flex; gap: .65rem; min-width: 0; }
-    .brand-mark {
-      align-items: center;
-      background: color-mix(in srgb, var(--accent) 17%, var(--surface));
-      border: 1px solid var(--accent);
-      border-radius: 10px;
-      color: var(--accent);
-      display: grid;
-      font-weight: 800;
-      height: 34px;
-      place-items: center;
-      width: 34px;
-    }
-    .brand strong { letter-spacing: .04em; }
-    .brand span { color: var(--muted); font-size: .79rem; }
-    .top-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .45rem; justify-content: flex-end; }
-    .top-actions button { font-size: .78rem; }
-    .menu-wrap { position: relative; }
-    .menu {
-      background: var(--surface);
-      border: 1px solid var(--border-strong);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      display: none;
-      min-width: 180px;
-      padding: .4rem;
-      position: absolute;
-      right: 0;
-      top: calc(100% + .4rem);
-      z-index: 30;
-    }
-    .menu.is-open, .menu[aria-hidden="false"] { display: grid; gap: .2rem; }
-    .menu button { background: transparent; border-color: transparent; text-align: left; width: 100%; }
-    .menu button:hover, .menu button.is-active { background: var(--surface-2); }
-
-    .title-row { padding: 1rem 0 .9rem; }
-    .eyebrow { color: var(--accent); font-size: .7rem; font-weight: 800; letter-spacing: .14em; margin: 0 0 .35rem; text-transform: uppercase; }
-    h1, h2, h3, p { margin-top: 0; }
-    h1 { font-size: clamp(1.6rem, 3vw, 2.65rem); letter-spacing: -.035em; line-height: 1.05; margin-bottom: .7rem; }
-    h2 { font-size: 1rem; margin-bottom: .45rem; }
-    h3 { font-size: .84rem; margin-bottom: .35rem; }
-    .subtitle { color: var(--muted); margin: 0; max-width: 760px; }
-    .revision { color: var(--faint); font-size: .74rem; margin: .7rem 0 0; }
-
-    .storybar {
-      align-items: center;
-      background: color-mix(in srgb, var(--surface) 86%, transparent);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      display: flex;
-      flex-wrap: wrap;
-      gap: .65rem;
-      justify-content: space-between;
-      margin-bottom: 1rem;
-      padding: .7rem;
-    }
-    .story-controls { align-items: center; display: flex; flex-wrap: wrap; gap: .35rem; }
-    .story-controls button { min-height: 32px; padding: .3rem .55rem; }
-    .chapter-tabs { display: flex; flex: 1 1 360px; flex-wrap: wrap; gap: .25rem; justify-content: flex-end; }
-    .chapter-tabs button { background: transparent; border-color: transparent; color: var(--muted); font-size: .76rem; }
-    .chapter-tabs button.is-active { color: var(--text); background: var(--surface-2); border-color: var(--border); }
-    .story-state { color: var(--muted); font-size: .75rem; min-width: 140px; }
-
-    .workspace {
-      align-items: stretch;
-      display: grid;
-      gap: 1rem;
-      grid-template-columns: minmax(0, 1fr) minmax(275px, 330px);
-    }
-    .map-column { min-width: 0; }
-    .diagram-shell {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      min-height: 590px;
-      overflow: hidden;
-      position: relative;
-    }
-    .diagram-shell::before {
-      background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-      background-size: 28px 28px;
-      content: "";
-      inset: 0;
-      opacity: .42;
-      pointer-events: none;
-      position: absolute;
-    }
-    #diagram {
-      display: block;
-      height: 590px;
-      position: relative;
-      width: 100%;
-    }
-    .diagram-caption {
-      background: color-mix(in srgb, var(--surface) 88%, transparent);
-      border: 1px solid var(--border);
-      border-radius: 9px;
-      bottom: .7rem;
-      color: var(--muted);
-      font-size: .72rem;
-      left: .7rem;
-      max-width: min(440px, calc(100% - 8rem));
-      padding: .45rem .65rem;
-      position: absolute;
-    }
-    .map-controls {
-      align-items: center;
-      background: color-mix(in srgb, var(--surface) 92%, transparent);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      display: flex;
-      gap: .25rem;
-      justify-content: flex-end;
-      margin-top: .55rem;
-      padding: .25rem;
-      position: static;
-      width: 100%;
-    }
-    .map-controls button { background: transparent; border-color: transparent; min-height: 30px; padding: .25rem .42rem; }
-    .map-controls button:hover, .map-controls button.is-active { background: var(--surface-2); border-color: var(--border); }
-    .map-status {
-      color: var(--muted);
-      font-size: .7rem;
-      left: .75rem;
-      position: absolute;
-      top: .7rem;
-    }
-
-    .panel {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      display: flex;
-      flex-direction: column;
-      min-height: 590px;
-      overflow: hidden;
-    }
-    .panel-head { border-bottom: 1px solid var(--border); padding: 1rem; }
-    .panel-head p:last-child { color: var(--muted); font-size: .81rem; margin: 0; }
-    .progress {
-      background: var(--surface-3);
-      border-radius: 999px;
-      height: 5px;
-      margin: .8rem 0 0;
-      overflow: hidden;
-    }
-    .progress span { background: var(--accent); display: block; height: 100%; transition: width .25s ease; }
-    .step-list { display: grid; gap: .2rem; overflow: auto; padding: .7rem; }
-    .step {
-      align-items: flex-start;
-      background: transparent;
-      border: 1px solid transparent;
-      border-radius: 9px;
-      display: grid;
-      gap: .45rem;
-      grid-template-columns: 24px 1fr;
-      padding: .55rem;
-      text-align: left;
-      width: 100%;
-    }
-    .step:hover { background: var(--surface-2); border-color: var(--border); }
-    .step.is-active { background: color-mix(in srgb, var(--accent) 12%, var(--surface-2)); border-color: var(--accent); }
-    .step-number {
-      align-items: center;
-      border: 1px solid var(--border-strong);
-      border-radius: 50%;
-      color: var(--muted);
-      display: grid;
-      font-size: .7rem;
-      height: 22px;
-      place-items: center;
-      width: 22px;
-    }
-    .step.is-active .step-number { background: var(--accent); border-color: var(--accent); color: #07120f; }
-    .step strong { display: block; font-size: .78rem; }
-    .step small { color: var(--muted); display: block; font-size: .7rem; margin-top: .15rem; }
-    .detail {
-      border-top: 1px solid var(--border);
-      margin-top: auto;
-      padding: .85rem 1rem;
-    }
-    .detail p { color: var(--muted); font-size: .78rem; margin-bottom: .65rem; }
-    .detail-meta { color: var(--faint); font-size: .7rem; }
-    .detail-meta a { word-break: break-word; }
-
-    .lower-grid {
-      display: grid;
-      gap: 1rem;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      margin-top: 1rem;
-    }
-    .info-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: .9rem;
-    }
-    .info-card p { color: var(--muted); font-size: .78rem; margin-bottom: 0; }
-    .legend { display: flex; flex-wrap: wrap; gap: .45rem .7rem; }
-    .legend-item { align-items: center; color: var(--muted); display: inline-flex; font-size: .72rem; gap: .3rem; }
-    .legend-dot { border-radius: 4px; height: 9px; width: 9px; }
-    .legend-dot.frontend { background: var(--frontend); }
-    .legend-dot.client { background: var(--client); }
-    .legend-dot.server { background: var(--server); }
-    .legend-dot.data { background: var(--data); }
-    .legend-dot.security { background: var(--security); }
-    .boundary-list { display: grid; gap: .36rem; margin: 0; padding: 0; }
-    .boundary-list li { color: var(--muted); font-size: .74rem; list-style: none; }
-    .boundary-list code { color: var(--text); font-size: .7rem; }
-
-    dialog {
-      background: var(--surface);
-      border: 1px solid var(--border-strong);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      color: var(--text);
-      max-width: min(680px, calc(100% - 2rem));
-      padding: 0;
-      width: 100%;
-    }
-    dialog::backdrop { background: rgba(0, 0, 0, .58); }
-    .dialog-head { align-items: center; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; padding: .85rem 1rem; }
-    .dialog-head h2 { margin: 0; }
-    .dialog-body { padding: 1rem; }
-    .dialog-close { min-height: 30px; padding: .2rem .5rem; }
-    .guide-grid { display: grid; gap: .65rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .guide-item { background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; padding: .7rem; }
-    .guide-item strong { display: block; font-size: .78rem; }
-    .guide-item span { color: var(--muted); font-size: .72rem; }
-    .finder-input {
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 9px;
-      color: var(--text);
-      padding: .65rem .7rem;
-      width: 100%;
-    }
-    .finder-results { display: grid; gap: .35rem; margin-top: .7rem; max-height: 340px; overflow: auto; }
-    .finder-result { align-items: center; display: flex; justify-content: space-between; text-align: left; width: 100%; }
-    .finder-result small { color: var(--muted); }
-    .choice-row { display: flex; flex-wrap: wrap; gap: .45rem; }
-    .choice-row button { flex: 1 1 150px; text-align: left; }
-    .route-note, .lens-note { color: var(--muted); font-size: .78rem; margin-bottom: .8rem; }
-    .radar-wrap { overflow: auto; }
-    #radar { display: block; height: auto; min-width: 560px; width: 100%; }
-    .toast {
-      background: var(--surface-3);
-      border: 1px solid var(--border-strong);
-      border-radius: 9px;
-      bottom: 1rem;
-      box-shadow: var(--shadow);
-      color: var(--text);
-      opacity: 0;
-      padding: .65rem .8rem;
-      pointer-events: none;
-      position: fixed;
-      right: 1rem;
-      transform: translateY(8px);
-      transition: opacity .2s ease, transform .2s ease;
-      z-index: 50;
-    }
-    .toast.is-visible { opacity: 1; transform: translateY(0); }
-
-    .region { fill: color-mix(in srgb, var(--surface-2) 62%, transparent); stroke: var(--border); stroke-width: 1.2; }
-    .region.security { stroke: color-mix(in srgb, var(--security) 55%, var(--border)); stroke-dasharray: 7 5; }
-    .region-title { fill: var(--muted); font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-    .region-subtitle { fill: var(--faint); font-size: 10px; }
-    .edge { fill: none; marker-end: url(#arrow); stroke: var(--edge); stroke-width: 1.45; }
-    .edge.is-active { marker-end: url(#arrow-active); stroke: var(--edge-active); stroke-width: 2.6; }
-    .edge.is-route { marker-end: url(#arrow-route); stroke: var(--focus); stroke-width: 3; }
-    .edge-label { fill: var(--faint); font-size: 10px; opacity: 0; pointer-events: none; }
-    .edge-label.is-active { fill: var(--text); font-weight: 700; opacity: 1; }
-    .node { cursor: pointer; }
-    .node rect { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.3; transition: fill .18s ease, stroke .18s ease, opacity .18s ease; }
-    .node:hover rect, .node:focus rect { stroke: var(--accent); }
-    .node.is-active rect { fill: color-mix(in srgb, var(--accent) 15%, var(--surface)); stroke: var(--accent); stroke-width: 2; }
-    .node.is-route rect { fill: color-mix(in srgb, var(--focus) 17%, var(--surface)); stroke: var(--focus); stroke-width: 2; }
-    .node.is-dimmed, .edge.is-dimmed { opacity: .13; }
-    .node-label { fill: var(--text); font-size: 12px; font-weight: 700; pointer-events: none; }
-    .node-detail { fill: var(--muted); font-size: 9.5px; pointer-events: none; }
-    .node-kind { fill: var(--faint); font-size: 8.5px; letter-spacing: .08em; pointer-events: none; text-transform: uppercase; }
-    .node-accent { opacity: .92; }
+    button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid color-mix(in srgb, var(--focus) 70%, transparent); outline-offset: 2px; }
+    button[disabled] { cursor: not-allowed; opacity: .45; }
+    .app-shell { width: min(1540px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 48px; }
+    .topbar, .hero, .flow-toolbar, .workspace, .notes, .footer { border: 1px solid var(--border); background: var(--panel); box-shadow: 0 18px 46px var(--shadow); }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 64px; padding: 12px 16px; border-radius: .75rem; }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .brand-mark { width: 29px; height: 29px; border: 1px solid var(--frontend); border-radius: 8px; background: linear-gradient(135deg, color-mix(in srgb, var(--frontend) 40%, transparent), color-mix(in srgb, var(--data) 30%, transparent)); box-shadow: inset 0 0 18px color-mix(in srgb, var(--frontend) 24%, transparent); }
+    .brand strong { display: block; letter-spacing: .02em; }
+    .brand small, .eyebrow, .mono, code { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .69rem; letter-spacing: .08em; text-transform: uppercase; }
+    .top-actions, .view-tabs, .story-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+    .top-actions { justify-content: flex-end; }
+    .top-actions button, .top-actions select { min-height: 34px; font-size: .75rem; }
+    .top-actions select { max-width: 150px; padding: 0 .55rem; border: 1px solid var(--border); border-radius: .45rem; color: var(--text); background: var(--surface); }
+    .hero { margin-top: 14px; padding: 27px 29px 24px; border-radius: .75rem; }
+    .hero .eyebrow { color: var(--frontend); }
+    h1, h2, h3, p { margin: 0; }
+    h1 { max-width: 860px; margin-top: 8px; font-size: clamp(1.7rem, 3.4vw, 3.35rem); line-height: 1.03; letter-spacing: -.045em; }
+    .hero p { max-width: 840px; margin-top: 14px; color: var(--muted); font-size: 1rem; }
+    .hero-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin-top: 18px; color: var(--faint); font-size: .78rem; }
+    .hero-meta a, .detail a { color: var(--frontend); text-decoration: none; }
+    .hero-meta a:hover, .detail a:hover { text-decoration: underline; }
+    .flow-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; margin-top: 14px; padding: 12px 14px; border-radius: .75rem; }
+    .view-tabs { min-width: 0; }
+    .view-tabs button { min-height: 35px; padding-inline: .75rem; border-color: transparent; color: var(--muted); background: transparent; font-size: .76rem; }
+    .view-tabs button:hover { color: var(--text); background: var(--surface-2); }
+    .view-tabs button.is-active { border-color: var(--border-strong); color: var(--text); background: color-mix(in srgb, var(--frontend) 12%, var(--surface-2)); }
+    .story-actions button { min-width: 37px; padding-inline: .55rem; }
+    .story-actions .primary { color: var(--bg-deep); border-color: var(--focus); background: var(--focus); }
+    .workspace { display: grid; grid-template-columns: 270px minmax(0, 1fr) 270px; gap: 0; min-height: 690px; margin-top: 14px; overflow: hidden; border-radius: .75rem; }
+    .story-panel, .detail-panel { min-width: 0; padding: 22px 18px; background: color-mix(in srgb, var(--surface) 48%, transparent); }
+    .story-panel { border-right: 1px solid var(--border); }
+    .detail-panel { border-left: 1px solid var(--border); }
+    .panel-kicker { color: var(--frontend); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .67rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    .story-panel h2, .detail-panel h2 { margin-top: 7px; font-size: 1.12rem; line-height: 1.16; }
+    .story-note { margin-top: 10px; color: var(--muted); font-size: .82rem; }
+    .progress { height: 5px; margin-top: 18px; overflow: hidden; border-radius: 999px; background: var(--surface-3); }
+    .progress-bar { width: 0; height: 100%; background: linear-gradient(90deg, var(--frontend), var(--data)); transition: width .28s ease; }
+    .step-count { margin-top: 8px; color: var(--faint); font-size: .7rem; }
+    .steps { display: grid; gap: 7px; margin-top: 16px; }
+    .step { display: grid; grid-template-columns: 27px minmax(0, 1fr); gap: 9px; width: 100%; min-height: 48px; padding: 8px 7px; border-color: transparent; border-radius: .48rem; text-align: left; background: transparent; }
+    .step:hover { background: var(--surface-2); }
+    .step.is-active { border-color: color-mix(in srgb, var(--focus) 55%, var(--border)); background: color-mix(in srgb, var(--focus) 10%, var(--surface-2)); }
+    .step-number { display: grid; place-items: center; width: 25px; height: 25px; border: 1px solid var(--border); border-radius: 50%; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .68rem; }
+    .step.is-active .step-number { border-color: var(--focus); color: var(--focus); }
+    .step strong, .step small { display: block; }
+    .step strong { color: var(--text); font-size: .76rem; line-height: 1.25; }
+    .step small { margin-top: 3px; overflow: hidden; color: var(--muted); font-size: .68rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+    .diagram-panel { min-width: 0; padding: 17px; background: color-mix(in srgb, var(--bg-deep) 28%, transparent); }
+    .diagram-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .diagram-head strong { font-size: .8rem; }
+    .diagram-head span { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .67rem; }
+    .diagram-shell { position: relative; min-height: 510px; overflow: hidden; border: 1px solid var(--border); border-radius: .58rem; background-color: var(--bg-deep); background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size: 28px 28px; }
+    svg#diagram { display: block; width: 100%; height: auto; min-height: 510px; touch-action: none; }
+    .lane-frame { fill: color-mix(in srgb, var(--surface) 46%, transparent); stroke: var(--border); stroke-width: 1; }
+    .lane-frame.edge { stroke: color-mix(in srgb, var(--security) 52%, var(--border)); stroke-dasharray: 6 5; }
+    .lane-title { fill: var(--text); font-size: 12px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+    .lane-subtitle { fill: var(--faint); font-size: 10px; }
+    .edge { fill: none; stroke: var(--arrow); stroke-width: 1.65; opacity: .56; transition: opacity .2s ease, stroke .2s ease, stroke-width .2s ease; marker-end: url(#arrow); }
+    .edge.is-past { opacity: .78; stroke: color-mix(in srgb, var(--frontend) 60%, var(--arrow)); }
+    .edge.is-active { opacity: 1; stroke: var(--arrow-hot); stroke-width: 2.7; marker-end: url(#arrowHot); }
+    .edge.is-dim { opacity: .14; }
+    .edge-label { fill: var(--muted); font-size: 10px; opacity: 0; pointer-events: none; }
+    .edge-label.is-active { fill: var(--focus); font-weight: 700; opacity: 1; }
+    .node { cursor: pointer; outline: none; transition: opacity .18s ease; }
+    .node-card { fill: color-mix(in srgb, var(--surface-2) 92%, transparent); stroke: var(--border-strong); stroke-width: 1.2; transition: fill .18s ease, stroke .18s ease, stroke-width .18s ease; }
+    .node:hover .node-card, .node:focus .node-card { fill: var(--surface-3); stroke: var(--focus); }
+    .node.is-active .node-card { fill: color-mix(in srgb, var(--focus) 13%, var(--surface-2)); stroke: var(--focus); stroke-width: 2; }
+    .node.is-past .node-card { stroke: color-mix(in srgb, var(--frontend) 65%, var(--border)); }
+    .node.is-dim { opacity: .68; }
+    .node-accent { fill: var(--muted); }
+    .node[data-kind="actor"] .node-accent { fill: var(--actor); }
     .node[data-kind="frontend"] .node-accent { fill: var(--frontend); }
     .node[data-kind="client"] .node-accent { fill: var(--client); }
     .node[data-kind="server"] .node-accent { fill: var(--server); }
+    .node[data-kind="repository"] .node-accent { fill: var(--repository); }
     .node[data-kind="data"] .node-accent { fill: var(--data); }
     .node[data-kind="security"] .node-accent { fill: var(--security); }
     .node[data-kind="external"] .node-accent { fill: var(--external); }
-    .pulse { fill: var(--accent); opacity: 0; }
-    html[data-motion="live"] .pulse.is-visible { animation: pulse 1.5s ease-in-out infinite; opacity: .9; }
-    html[data-motion="still"] .pulse { opacity: .8; }
-    @keyframes pulse { 0%, 100% { r: 3; opacity: .3; } 50% { r: 7; opacity: 1; } }
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+    .node-label { fill: var(--text); font-size: 13px; font-weight: 800; }
+    .node-detail { fill: var(--muted); font-size: 10px; }
+    .node-kind { fill: var(--faint); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
+    .node-tag { fill: var(--focus); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 8px; letter-spacing: .05em; text-transform: uppercase; }
+    .pulse { fill: var(--focus); filter: drop-shadow(0 0 8px color-mix(in srgb, var(--focus) 78%, transparent)); }
+    html[data-motion="live"] .pulse { animation: pulse 1.25s ease-in-out infinite; }
+    html[data-motion="still"] .pulse { opacity: .9; }
+    @keyframes pulse { 0%, 100% { opacity: .35; transform: scale(.72); transform-origin: center; } 50% { opacity: 1; transform: scale(1.18); transform-origin: center; } }
+    .diagram-caption { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; color: var(--muted); font-size: .71rem; }
+    .diagram-caption strong { color: var(--focus); }
+    .detail-search { display: flex; gap: 6px; margin-top: 15px; }
+    .detail-search input { width: 100%; min-width: 0; min-height: 34px; padding: 0 .6rem; border: 1px solid var(--border); border-radius: .4rem; color: var(--text); background: var(--surface-2); font-size: .75rem; }
+    .search-results { display: grid; gap: 4px; max-height: 170px; margin-top: 6px; overflow: auto; }
+    .search-results button { min-height: 31px; padding: 5px 7px; border-color: transparent; color: var(--muted); background: transparent; text-align: left; font-size: .7rem; }
+    .search-results button:hover { color: var(--text); background: var(--surface-2); }
+    .detail-rule { height: 1px; margin: 18px 0; border: 0; background: var(--border); }
+    .detail h3 { margin-top: 7px; font-size: 1rem; line-height: 1.22; }
+    .detail p { margin-top: 9px; color: var(--muted); font-size: .78rem; }
+    .detail-label { margin-top: 16px; color: var(--faint); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .65rem; letter-spacing: .1em; text-transform: uppercase; }
+    .record { padding: 9px 10px; border-left: 2px solid var(--data); color: var(--text); background: color-mix(in srgb, var(--data) 8%, var(--surface-2)); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .71rem; line-height: 1.42; }
+    .source-list { display: grid; gap: 5px; margin-top: 7px; }
+    .source-list a { display: block; overflow: hidden; color: var(--frontend); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
+    .active-step { padding: 10px; border: 1px solid color-mix(in srgb, var(--focus) 50%, var(--border)); border-radius: .45rem; background: color-mix(in srgb, var(--focus) 8%, var(--surface-2)); }
+    .active-step strong { display: block; color: var(--focus); font-size: .78rem; }
+    .active-step p { margin-top: 6px; font-size: .73rem; }
+    .notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin-top: 14px; border-radius: .75rem; overflow: hidden; }
+    .note-card { min-height: 145px; padding: 18px 20px; border-right: 1px solid var(--border); }
+    .note-card:last-child { border-right: 0; }
+    .note-card h3 { display: flex; align-items: center; gap: 8px; font-size: .85rem; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--frontend); box-shadow: 0 0 12px color-mix(in srgb, var(--frontend) 65%, transparent); }
+    .dot.emerald { background: var(--server); box-shadow: 0 0 12px color-mix(in srgb, var(--server) 65%, transparent); }
+    .dot.violet { background: var(--data); box-shadow: 0 0 12px color-mix(in srgb, var(--data) 65%, transparent); }
+    .note-card ul { display: grid; gap: 5px; margin: 12px 0 0; padding-left: 17px; color: var(--muted); font-size: .75rem; }
+    .footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 14px; padding: 14px 16px; border-radius: .75rem; color: var(--faint); font-size: .7rem; }
+    .footer code { color: var(--muted); font-size: .66rem; }
+    .toast { position: fixed; right: 20px; bottom: 20px; z-index: 20; max-width: min(360px, calc(100% - 40px)); padding: 10px 13px; border: 1px solid var(--border-strong); border-radius: .45rem; color: var(--text); background: var(--surface); box-shadow: 0 14px 38px var(--shadow); font-size: .76rem; opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity .18s ease, transform .18s ease; }
+    .toast.is-visible { opacity: 1; transform: translateY(0); }
+    dialog { width: min(620px, calc(100% - 32px)); padding: 0; border: 1px solid var(--border-strong); border-radius: .75rem; color: var(--text); background: var(--surface); box-shadow: 0 26px 80px var(--shadow); }
+    dialog::backdrop { background: rgba(2, 8, 17, .66); backdrop-filter: blur(5px); }
+    .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+    .dialog-head h2 { font-size: 1rem; }
+    .dialog-body { padding: 18px; color: var(--muted); font-size: .82rem; }
+    .dialog-body ul { display: grid; gap: 8px; margin: 12px 0 0; padding-left: 20px; }
+    .dialog-close { min-width: 34px; min-height: 32px; padding: 0; }
+    html[data-present="true"] .topbar, html[data-present="true"] .hero, html[data-present="true"] .flow-toolbar, html[data-present="true"] .story-panel, html[data-present="true"] .detail-panel, html[data-present="true"] .notes, html[data-present="true"] .footer { display: none; }
+    html[data-present="true"] .app-shell { width: 100%; padding: 8px; }
+    html[data-present="true"] .workspace { display: block; min-height: calc(100vh - 16px); margin: 0; }
+    html[data-present="true"] .diagram-panel { min-height: calc(100vh - 16px); padding: 8px; }
+    html[data-present="true"] .diagram-shell, html[data-present="true"] svg#diagram { min-height: calc(100vh - 70px); }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
+    @media (max-width: 1180px) {
+      .workspace { grid-template-columns: 235px minmax(0, 1fr); }
+      .detail-panel { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 22px; border-top: 1px solid var(--border); border-left: 0; }
+      .detail-panel > .detail-search, .detail-panel > .search-results { grid-column: 1; }
+      .detail-panel > .detail { grid-column: 2; grid-row: 1 / span 5; }
+      .detail-panel > .detail-rule { display: none; }
     }
-    html[data-present="true"] .topbar,
-    html[data-present="true"] .title-row,
-    html[data-present="true"] .lower-grid,
-    html[data-present="true"] .panel,
-    html[data-present="true"] .diagram-caption { display: none; }
-    html[data-present="true"] .app-shell { max-width: none; padding: .4rem; }
-    html[data-present="true"] .workspace { display: block; max-width: none; }
-    html[data-present="true"] .diagram-shell, html[data-present="true"] #diagram { height: calc(100vh - .8rem); min-height: 500px; }
-    @media (max-width: 980px) {
-      .workspace { grid-template-columns: 1fr; }
-      .panel { min-height: auto; }
-      .step-list { max-height: 280px; }
-    }
-    @media (max-width: 650px) {
-      .app-shell { padding-inline: .65rem; }
+    @media (max-width: 760px) {
+      .app-shell { width: min(100% - 20px, 680px); padding-top: 10px; }
       .topbar { align-items: flex-start; flex-direction: column; }
       .top-actions { justify-content: flex-start; }
-      .chapter-tabs { justify-content: flex-start; }
-      .diagram-shell, #diagram { min-height: 520px; height: 520px; }
-      .lower-grid { grid-template-columns: 1fr; }
-      .guide-grid { grid-template-columns: 1fr; }
-      .diagram-caption { display: none; }
+      .hero { padding: 22px 19px; }
+      h1 { font-size: clamp(1.65rem, 9vw, 2.45rem); }
+      .flow-toolbar { grid-template-columns: 1fr; }
+      .view-tabs { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; }
+      .view-tabs button { flex: 0 0 auto; }
+      .story-actions { justify-content: flex-start; }
+      .workspace { display: block; min-height: 0; }
+      .story-panel { border-right: 0; border-bottom: 1px solid var(--border); }
+      .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .diagram-panel { padding: 10px; }
+      .diagram-shell { min-height: 480px; }
+      svg#diagram { min-height: 480px; }
+      .detail-panel { display: block; border-top: 1px solid var(--border); }
+      .detail-panel > .detail > .detail-rule { display: block; }
+      .notes { grid-template-columns: 1fr; }
+      .note-card { min-height: 0; border-right: 0; border-bottom: 1px solid var(--border); }
+      .note-card:last-child { border-bottom: 0; }
+      .footer { align-items: flex-start; flex-direction: column; }
+    }
+    @media (max-width: 440px) {
+      .steps { grid-template-columns: 1fr; }
+      .top-actions select { max-width: 132px; }
+      .hero-meta { display: grid; gap: 7px; }
     }
   </style>
 </head>
 <body>
-  <div class="app-shell">
+  <main class="app-shell">
     <header class="topbar">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">CM</div>
-        <div><strong>CineMind</strong><br><span>system flow · data-mining prototype</span></div>
-      </div>
-      <div class="top-actions" aria-label="Presentation controls">
-        <button id="themeButton" type="button" aria-label="Toggle color theme">Theme</button>
-        <div class="menu-wrap">
-          <button id="presetButton" type="button" aria-haspopup="menu" aria-expanded="false">Style</button>
-          <div id="presetMenu" class="menu" role="menu" aria-label="Visual style" aria-hidden="true">
-            <button type="button" data-preset="classic" role="menuitem">Classic <small>stable technical default</small></button>
-            <button type="button" data-preset="signal-flow" role="menuitem">Signal Flow <small>motion-forward</small></button>
-            <button type="button" data-preset="blueprint" role="menuitem">Blueprint <small>engineering review</small></button>
-            <button type="button" data-preset="editorial" role="menuitem">Editorial <small>field note</small></button>
-          </div>
-        </div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><div><strong>CineMind</strong><small>system flow · focused architecture review</small></div></div>
+      <div class="top-actions" aria-label="Viewer controls">
+        <select id="presetSelect" aria-label="Visual style"><option value="signal-flow">Signal Flow</option><option value="blueprint">Blueprint</option><option value="editorial">Editorial</option></select>
+        <button id="themeButton" type="button" aria-label="Toggle light and dark theme">Light</button>
         <button id="motionButton" type="button" aria-pressed="true">Live</button>
         <button id="presentButton" type="button">Present</button>
-        <div class="menu-wrap">
-          <button id="exportButton" type="button" aria-haspopup="menu" aria-expanded="false">Export</button>
-          <div id="exportMenu" class="menu" role="menu" aria-label="Export flow" aria-hidden="true">
-            <button type="button" data-export="copy-link" role="menuitem">Copy current link</button>
-            <button type="button" data-export="share" role="menuitem">Share current moment</button>
-            <button type="button" data-export="svg" role="menuitem">Download SVG</button>
-          </div>
-        </div>
+        <button id="guideButton" type="button">Guide</button>
       </div>
     </header>
 
-    <main>
-      <section class="title-row" aria-labelledby="pageTitle">
-        <p class="eyebrow">Architecture / revision acc83af</p>
-        <h1 id="pageTitle">How CineMind turns a catalog click into durable interaction data.</h1>
-        <p class="subtitle">Follow the real React, service, FastAPI, PostgreSQL and browser-recovery boundaries in the current repository. Choose a chapter or inspect any node.</p>
-        <p class="revision">Sources are pinned to <a href="https://github.com/kiet1i38/cinemind/tree/acc83af" target="_blank" rel="noreferrer">kiet1i38/cinemind@acc83af</a>.</p>
-      </section>
+    <section class="hero" aria-labelledby="pageTitle">
+      <p class="eyebrow">Architecture / revision 4529fa5</p>
+      <h1 id="pageTitle">From a user action to a durable CineMind record.</h1>
+      <p>Choose one focused story. Follow the real React, browser-recovery, FastAPI, service, repository and PostgreSQL boundaries without opening the entire codebase in one diagram.</p>
+      <div class="hero-meta"><span id="sourceStatus">Loading architecture data…</span><a href="cinemind-system-flow.architecture.json" target="_blank" rel="noreferrer">Open architecture JSON</a><a href="https://github.com/kiet1i38/cinemind/tree/main" target="_blank" rel="noreferrer">Open repository</a></div>
+    </section>
 
-      <section class="storybar" aria-label="Guided system flow">
-        <div class="story-controls">
-          <button id="previousButton" type="button" aria-label="Previous guided step">←</button>
-          <button id="playButton" class="primary" type="button" aria-pressed="false">Play story</button>
-          <button id="nextButton" type="button" aria-label="Next guided step">→</button>
-          <button id="momentButton" type="button">Copy moment</button>
-          <button id="showAllButton" class="ghost" type="button">Show all</button>
-        </div>
-        <div id="storyState" class="story-state" aria-live="polite">Ready</div>
-        <nav id="chapterTabs" class="chapter-tabs" aria-label="Story chapters"></nav>
-      </section>
+    <section class="flow-toolbar" aria-label="Flow navigation">
+      <nav id="viewTabs" class="view-tabs" aria-label="Focused architecture views"></nav>
+      <div class="story-actions"><button id="previousButton" type="button" aria-label="Previous step">←</button><button id="playButton" class="primary" type="button" aria-pressed="false">Play story</button><button id="nextButton" type="button" aria-label="Next step">→</button><button id="resetButton" type="button">Reset</button><button id="copyButton" type="button">Copy link</button><button id="exportButton" type="button">SVG</button></div>
+    </section>
 
-      <section class="workspace">
-        <div class="map-column">
-          <div class="diagram-shell">
-            <div id="mapStatus" class="map-status" aria-live="polite">MAP · all boundaries visible</div>
-            <svg id="diagram" viewBox="0 0 1120 640" role="img" aria-labelledby="diagramTitle diagramDescription">
-              <title id="diagramTitle">CineMind system architecture diagram</title>
-              <desc id="diagramDescription">Interactive architecture map showing the React frontend, browser persistence services, FastAPI routes, PostgreSQL schemas and operational boundaries.</desc>
-              <defs>
-                <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><path d="M0,0 L8,3.5 L0,7 z" fill="var(--edge)"></path></marker>
-                <marker id="arrow-active" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><path d="M0,0 L8,3.5 L0,7 z" fill="var(--edge-active)"></path></marker>
-                <marker id="arrow-route" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><path d="M0,0 L8,3.5 L0,7 z" fill="var(--focus)"></path></marker>
-                <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"></feGaussianBlur><feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge></filter>
-              </defs>
-              <g id="diagramLayer">
-                <g id="regions"></g>
-                <g id="edges"></g>
-                <g id="nodes"></g>
-                <g id="pulseLayer"></g>
-              </g>
-            </svg>
-            <div id="diagramCaption" class="diagram-caption">Select a chapter to reveal its authored path, or use Find / PATH / LENS to inspect the map.</div>
-          </div>
-          <div id="mapControls" class="map-controls" aria-label="Diagram view controls">
-            <button id="routeButton" type="button" title="Trace route (R)" aria-pressed="false">PATH</button>
-            <button id="radarButton" type="button" title="Open semantic radar (M)">MAP</button>
-            <button id="lensButton" type="button" title="Compare semantic kinds (L)">LENS</button>
-            <button id="finderButton" type="button" title="Find a node (/)">FIND</button>
-            <button id="zoomOutButton" type="button" title="Zoom out (-)">−</button>
-            <button id="resetButton" type="button" title="Reset view (0)">100%</button>
-            <button id="zoomInButton" type="button" title="Zoom in (+)">+</button>
-            <button id="guideButton" type="button" title="Open diagram guide (?)">?</button>
-          </div>
-        </div>
+    <section class="workspace" aria-label="Interactive system flow">
+      <aside class="story-panel" aria-labelledby="storyTitle"><p id="viewEyebrow" class="panel-kicker">View 01 / 04</p><h2 id="storyTitle">Loading…</h2><p id="storyNote" class="story-note"></p><div class="progress" role="progressbar" aria-label="View progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressBar" class="progress-bar"></div></div><p id="stepCount" class="step-count"></p><div id="stepList" class="steps" aria-label="Story steps"></div></aside>
+      <section class="diagram-panel" aria-labelledby="diagramHeading"><div class="diagram-head"><strong id="diagramHeading">Focused path</strong><span id="mapStatus">MAP</span></div><div class="diagram-shell"><svg id="diagram" viewBox="0 0 1120 610" role="img" aria-labelledby="diagramTitle diagramDescription"><title id="diagramTitle">CineMind focused architecture flow</title><desc id="diagramDescription">A selected path from user intent through browser client, API boundary, backend service and database.</desc><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--arrow)"></path></marker><marker id="arrowHot" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="var(--arrow-hot)"></path></marker><filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="blur"></feGaussianBlur><feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge></filter></defs><g id="laneLayer"></g><g id="edgeLayer"></g><g id="nodeLayer"></g><g id="pulseLayer"></g></svg></div><div class="diagram-caption"><span><strong id="captionStep">Step 1</strong> · click a node to inspect its code and stored record.</span><span>yellow = active step · colored = authored path</span></div></section>
+      <aside class="detail-panel" aria-labelledby="detailTitle"><div class="detail-search"><input id="nodeSearch" type="search" placeholder="Find a node…" aria-label="Find a node"></div><div id="searchResults" class="search-results" aria-live="polite"></div><div class="detail"><hr class="detail-rule"><p class="panel-kicker">Selected step</p><div id="activeStep" class="active-step"><strong>Step 1</strong><p>Select a focused view.</p></div><hr class="detail-rule"><p class="panel-kicker">Node passport</p><h2 id="detailTitle">User action</h2><p id="detailDescription">The selected node's role in the current flow appears here.</p><p class="detail-label">Stored / produced</p><p id="detailRecord" class="record">—</p><p class="detail-label">Source evidence</p><div id="sourceList" class="source-list"></div></div></aside>
+    </section>
 
-        <aside class="panel" aria-label="Guided flow details">
-          <div class="panel-head">
-            <p class="eyebrow" id="chapterEyebrow">Chapter 01</p>
-            <h2 id="chapterTitle">Browse the catalog</h2>
-            <p id="chapterNote">Catalog filters move through a dedicated service boundary before the normalized data store responds.</p>
-            <div class="progress" role="progressbar" aria-label="Story progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progressBar" style="width:0%"></span></div>
-          </div>
-          <div id="stepList" class="step-list" aria-label="Chapter steps"></div>
-          <div class="detail">
-            <p class="eyebrow">Selected node</p>
-            <h3 id="nodeTitle">CineMind Web UI</h3>
-            <p id="nodeDescription">The React shell hosts catalog browsing, title detail, rating/watch capture and auth/profile pages.</p>
-            <div class="detail-meta" id="nodeMeta"></div>
-          </div>
-        </aside>
-      </section>
+    <section id="notes" class="notes" aria-label="How to read the flow"></section>
+    <footer class="footer"><span>Keyboard: <code>← →</code> steps · <code>P</code> play · <code>/</code> find · <code>T</code> theme · <code>0</code> reset · <code>?</code> guide</span><span>Product docs only · <code>ci/browser-smoke</code> remains isolated</span></footer>
+  </main>
 
-      <section class="lower-grid" aria-label="Architecture notes">
-        <article class="info-card">
-          <p class="eyebrow">Semantic legend</p>
-          <div class="legend" aria-label="Node type legend">
-            <span class="legend-item"><i class="legend-dot frontend"></i>Frontend</span>
-            <span class="legend-item"><i class="legend-dot client"></i>Client service</span>
-            <span class="legend-item"><i class="legend-dot server"></i>API / service</span>
-            <span class="legend-item"><i class="legend-dot data"></i>Database</span>
-            <span class="legend-item"><i class="legend-dot security"></i>Security boundary</span>
-          </div>
-        </article>
-        <article class="info-card">
-          <p class="eyebrow">Trust boundaries</p>
-          <ul class="boundary-list">
-            <li><code>browser → API</code> cookie session, CSRF, CORS, body/request limits</li>
-            <li><code>anonymous → account</code> durable promotion journal and session proof</li>
-            <li><code>event → database</code> mutation idempotency, owner checks, locks, rate limits</li>
-          </ul>
-        </article>
-        <article class="info-card">
-          <p class="eyebrow">Keyboard</p>
-          <p><code>P</code> play/pause · <code>[ ]</code> chapter steps · <code>R</code> route · <code>M</code> radar · <code>L</code> lens · <code>/</code> find · <code>0</code> reset · <code>?</code> guide</p>
-        </article>
-      </section>
-    </main>
-  </div>
-
-  <dialog id="guideDialog" aria-labelledby="guideTitle">
-    <div class="dialog-head"><h2 id="guideTitle">Diagram guide</h2><button class="dialog-close" type="button" data-close="guideDialog" aria-label="Close guide">×</button></div>
-    <div class="dialog-body">
-      <div class="guide-grid">
-        <div class="guide-item"><strong>Find</strong><span>Search labels, IDs and implementation paths.</span></div>
-        <div class="guide-item"><strong>PATH</strong><span>Choose two nodes and trace a directed route.</span></div>
-        <div class="guide-item"><strong>MAP</strong><span>Open the whole-system radar and focus a node.</span></div>
-        <div class="guide-item"><strong>LENS</strong><span>Compare one or two semantic kinds.</span></div>
-        <div class="guide-item"><strong>Story</strong><span>Step through authored system behavior without changing the map data.</span></div>
-        <div class="guide-item"><strong>Present</strong><span>Hide chrome and keep the architecture map on stage.</span></div>
-      </div>
-    </div>
-  </dialog>
-
-  <dialog id="finderDialog" aria-labelledby="finderTitle">
-    <div class="dialog-head"><h2 id="finderTitle">Find a node</h2><button class="dialog-close" type="button" data-close="finderDialog" aria-label="Close finder">×</button></div>
-    <div class="dialog-body">
-      <label class="eyebrow" for="finderInput">Search labels or IDs</label>
-      <input id="finderInput" class="finder-input" type="search" autocomplete="off" placeholder="Try interactionStore or PostgreSQL">
-      <div id="finderResults" class="finder-results" aria-live="polite"></div>
-    </div>
-  </dialog>
-
-  <dialog id="lensDialog" aria-labelledby="lensTitle">
-    <div class="dialog-head"><h2 id="lensTitle">Semantic lens</h2><button class="dialog-close" type="button" data-close="lensDialog" aria-label="Close lens">×</button></div>
-    <div class="dialog-body">
-      <p class="lens-note">Choose up to two kinds. One reveals its nodes; two keep direct authored relationships between those kinds.</p>
-      <div id="lensChoices" class="choice-row"></div>
-      <p id="lensStatus" class="revision" aria-live="polite">No semantic lens active.</p>
-      <button id="clearLensButton" class="ghost" type="button">Clear lens</button>
-    </div>
-  </dialog>
-
-  <dialog id="radarDialog" aria-labelledby="radarTitle">
-    <div class="dialog-head"><h2 id="radarTitle">Semantic radar</h2><button class="dialog-close" type="button" data-close="radarDialog" aria-label="Close radar">×</button></div>
-    <div class="dialog-body radar-wrap"><svg id="radar" viewBox="0 0 1040 440" role="img" aria-label="Overview map of CineMind nodes"></svg></div>
-  </dialog>
-
+  <dialog id="guideDialog" aria-labelledby="guideTitle"><div class="dialog-head"><h2 id="guideTitle">How to read this flow</h2><button class="dialog-close" type="button" data-close="guideDialog" aria-label="Close guide">×</button></div><div class="dialog-body"><p>Each focused view follows one authored path. The diagram is intentionally not an exhaustive dependency graph.</p><ul><li>Use the view tabs to switch between catalog reads, signal writes, login promotion and reset scope.</li><li>Use the step list or arrows to reveal one request boundary at a time.</li><li>Click a node to see its real repository path and the database record it reads or writes.</li><li>Use <strong>Copy link</strong> after selecting a view, step or node to share the same moment.</li></ul></div></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script>
     (function () {
       "use strict";
-
-      var REVISION = "acc83af";
+      var REVISION = "4529fa5d334bb1f788d09382b1df81d3f18b6104";
       var REPOSITORY = "https://github.com/kiet1i38/cinemind/blob/" + REVISION + "/";
       var NS = "http://www.w3.org/2000/svg";
+      var nodeWidth = 194;
+      var nodeHeight = 82;
+      var mobileWidth = 420;
+      var mobileHeight = 76;
+      var data = null;
+      var state = { viewId: "signal-write", step: 0, nodeId: null, playing: false, mobile: false };
+      var playTimer = null;
+      var laneLayer = document.getElementById("laneLayer");
+      var edgeLayer = document.getElementById("edgeLayer");
+      var nodeLayer = document.getElementById("nodeLayer");
+      var pulseLayer = document.getElementById("pulseLayer");
       var diagram = document.getElementById("diagram");
-      var layer = document.getElementById("diagramLayer");
-      var regionsEl = document.getElementById("regions");
-      var edgesEl = document.getElementById("edges");
-      var nodesEl = document.getElementById("nodes");
-      var pulseEl = document.getElementById("pulseLayer");
       var toast = document.getElementById("toast");
-      var timers = [];
 
-      var nodes = [
-        { id: "catalog-ui", label: "Catalog shell", kind: "frontend", group: "presentation", x: 45, y: 102, detail: "React catalog, filters and rails", path: "frontend/src/App.jsx" },
-        { id: "detail-modal", label: "Title detail", kind: "frontend", group: "presentation", x: 45, y: 190, detail: "Rating + watch capture", path: "frontend/src/components/RatingModal.jsx" },
-        { id: "auth-profile", label: "Auth / profile", kind: "frontend", group: "presentation", x: 45, y: 278, detail: "Cookie account surfaces", path: "frontend/src/auth.jsx" },
-        { id: "optimistic-ui", label: "Optimistic UI", kind: "frontend", group: "presentation", x: 45, y: 366, detail: "Pending signal overlay", path: "frontend/src/App.jsx" },
-        { id: "browser-events", label: "Browser context", kind: "frontend", group: "presentation", x: 45, y: 454, detail: "Tabs, focus, online state", path: "frontend/src/App.jsx" },
-
-        { id: "catalog-service", label: "catalogService", kind: "client", group: "client", x: 315, y: 102, detail: "Catalog fetch + normalization", path: "frontend/src/services/catalogService.js" },
-        { id: "auth-service", label: "authService", kind: "client", group: "client", x: 315, y: 190, detail: "Cookie auth + promotion", path: "frontend/src/services/authService.js" },
-        { id: "interaction-service", label: "interactionService", kind: "client", group: "client", x: 315, y: 278, detail: "Queue, retry, hydrate, sync", path: "frontend/src/services/interactionService.js" },
-        { id: "browser-store", label: "interactionStore", kind: "client", group: "client", x: 315, y: 366, detail: "Owner cache, outbox, locks", path: "frontend/src/services/interactionStore.js" },
-        { id: "recommendation", label: "recommendationService", kind: "client", group: "client", x: 315, y: 454, detail: "Local discovery ranking", path: "frontend/src/services/recommendationService.js" },
-
-        { id: "middleware", label: "API guard rail", kind: "security", group: "server", x: 595, y: 102, detail: "CSRF, CORS, limits, proxy", path: "backend/src/cinemind/main.py" },
-        { id: "catalog-api", label: "Catalog API", kind: "server", group: "server", x: 595, y: 190, detail: "GET /api/catalog", path: "backend/src/cinemind/catalog/routes.py" },
-        { id: "auth-api", label: "Auth API", kind: "server", group: "server", x: 595, y: 278, detail: "login / me / logout", path: "backend/src/cinemind/auth/routes.py" },
-        { id: "interaction-api", label: "Interaction API", kind: "server", group: "server", x: 595, y: 366, detail: "sessions / events / state", path: "backend/src/cinemind/interaction/routes.py" },
-        { id: "admin-api", label: "Reset API", kind: "security", group: "server", x: 595, y: 454, detail: "Protected maintenance scope", path: "backend/src/cinemind/admin/routes.py" },
-
-        { id: "catalog-db", label: "catalog schema", kind: "data", group: "data", x: 895, y: 102, detail: "titles + normalized relations", path: "backend/migrations/002_create_catalog_schema.sql" },
-        { id: "interaction-db", label: "interaction schema", kind: "data", group: "data", x: 895, y: 235, detail: "sessions, events, ratings", path: "backend/migrations/003_create_interaction_schema.sql" },
-        { id: "auth-db", label: "auth schema", kind: "data", group: "data", x: 895, y: 368, detail: "users + cookie sessions", path: "backend/migrations/005_create_auth_schema.sql" },
-        { id: "ops-db", label: "ops schema", kind: "data", group: "data", x: 895, y: 501, detail: "migrations + ingestion audit", path: "backend/migrations/001_create_ops_schema.sql" },
-
-        { id: "catalog-source", label: "Kaggle / poster APIs", kind: "external", group: "external", x: 895, y: 580, detail: "Preparation-time sources", path: "frontend/scripts/prepare-catalog.mjs" }
-      ];
-
-      var edges = [
-        { from: "catalog-ui", to: "catalog-service", label: "browse / filter" },
-        { from: "detail-modal", to: "interaction-service", label: "save signal" },
-        { from: "auth-profile", to: "auth-service", label: "cookie auth" },
-        { from: "optimistic-ui", to: "browser-store", label: "overlay" },
-        { from: "browser-events", to: "interaction-service", label: "online / retry" },
-        { from: "catalog-service", to: "recommendation", label: "catalog records" },
-        { from: "browser-store", to: "interaction-service", label: "outbox sync" },
-        { from: "interaction-service", to: "optimistic-ui", label: "state hydrate" },
-        { from: "catalog-service", to: "middleware", label: "HTTP" },
-        { from: "auth-service", to: "middleware", label: "HTTP + cookie" },
-        { from: "interaction-service", to: "middleware", label: "HTTP + proof" },
-        { from: "middleware", to: "catalog-api", label: "validated request" },
-        { from: "middleware", to: "auth-api", label: "validated request" },
-        { from: "middleware", to: "interaction-api", label: "validated request" },
-        { from: "middleware", to: "admin-api", label: "Basic Auth" },
-        { from: "catalog-api", to: "catalog-db", label: "parameterized query" },
-        { from: "auth-api", to: "auth-db", label: "users / sessions" },
-        { from: "auth-api", to: "interaction-db", label: "attach session" },
-        { from: "interaction-api", to: "interaction-db", label: "idempotent event" },
-        { from: "admin-api", to: "interaction-db", label: "reset scope" },
-        { from: "admin-api", to: "auth-db", label: "full reset" },
-        { from: "interaction-api", to: "auth-db", label: "account ownership" },
-        { from: "catalog-source", to: "catalog-db", label: "bootstrap" },
-        { from: "catalog-source", to: "ops-db", label: "ingestion audit" }
-      ];
-
-      var regions = [
-        { x: 20, y: 35, w: 245, h: 535, title: "Presentation", subtitle: "React pages and user intent", className: "" },
-        { x: 285, y: 35, w: 250, h: 535, title: "Client runtime", subtitle: "services, cache and recovery", className: "" },
-        { x: 555, y: 35, w: 280, h: 535, title: "API boundary", subtitle: "FastAPI routes and guard rails", className: "security" },
-        { x: 855, y: 35, w: 245, h: 535, title: "Persistence", subtitle: "PostgreSQL schemas", className: "" },
-        { x: 855, y: 548, w: 245, h: 66, title: "External preparation", subtitle: "Kaggle / poster sources", className: "" }
-      ];
-
-      var chapters = [
-        {
-          id: "browse", label: "Browse catalog", note: "Catalog filters move through a dedicated service boundary before normalized titles and relations respond.",
-          focus: ["catalog-ui", "catalog-service", "middleware", "catalog-api", "catalog-db", "recommendation"],
-          steps: [
-            ["catalog-ui", "catalog-service", "Filter and search", "The React shell debounces search and keeps catalog concerns outside the components."],
-            ["catalog-service", "middleware", "HTTP boundary", "The client service calls the configured API base through a timeout-aware fetch wrapper."],
-            ["middleware", "catalog-api", "Validated catalog request", "CORS, request limits and trusted transport rules guard the public catalog surface."],
-            ["catalog-api", "catalog-db", "Parameterized filters", "CatalogService and CatalogRepository query active titles and normalized relations."],
-            ["catalog-service", "recommendation", "Local discovery", "Recent, discoverable and related rails are deterministic client-side views over catalog data."]
-          ]
-        },
-        {
-          id: "account", label: "Account ownership", note: "Cookie auth and an anonymous interaction proof meet at a guarded promotion boundary.",
-          focus: ["auth-profile", "auth-service", "browser-store", "middleware", "auth-api", "interaction-api", "auth-db", "interaction-db"],
-          steps: [
-            ["auth-profile", "auth-service", "Login or register", "The browser sends credentials with the anonymous session proof; the auth cookie stays out of JavaScript."],
-            ["auth-service", "browser-store", "Durable promotion intent", "A journal records the anonymous-to-account transfer before the account owner changes."],
-            ["auth-service", "middleware", "Cookie request", "The request carries credentials while CSRF and trusted proxy rules remain server-owned."],
-            ["middleware", "auth-api", "Resolve principal", "Login aliases resolve to a stable user bucket for rate limiting without exposing account state."],
-            ["auth-api", "interaction-api", "Attach accepted session", "The confirmed anonymous interaction session can be linked to the authenticated account."],
-            ["auth-api", "auth-db", "Cookie session", "The server stores the session hash and returns only an HttpOnly cookie-backed auth state."]
-          ]
-        },
-        {
-          id: "interaction", label: "Offline interaction", note: "Searches, ratings and watch signals stay useful offline, then reconcile through one mutation-aware sync path.",
-          focus: ["detail-modal", "optimistic-ui", "browser-store", "interaction-service", "middleware", "interaction-api", "interaction-db", "recommendation"],
-          steps: [
-            ["detail-modal", "optimistic-ui", "Capture intent", "A rating and watch duration immediately update the visible title state."],
-            ["optimistic-ui", "browser-store", "Persist pending entry", "Per-owner outbox entries and tombstones preserve pending truth across reloads and tabs."],
-            ["browser-store", "interaction-service", "Queue and retry", "The interaction service allocates a device stream, mutation ID and client event sequence."],
-            ["interaction-service", "middleware", "Reconnect", "On reconnect, pending work is sent in paced batches with retry-after and session recovery handling."],
-            ["middleware", "interaction-api", "Write event", "Optional search auth and required signal auth are enforced at the route boundary."],
-            ["interaction-api", "interaction-db", "Idempotent commit", "Owner checks, global mutation indexes, device ordering and repair provenance protect the write."],
-            ["interaction-service", "recommendation", "Hydrate receipt", "A successful signal batch refreshes server state so recommendation recency uses server timestamps."]
-          ]
-        },
-        {
-          id: "integrity", label: "Integrity boundary", note: "Every event crosses explicit security, authorization and concurrency controls before it can become mining data.",
-          focus: ["browser-events", "interaction-service", "middleware", "auth-api", "interaction-api", "interaction-db", "auth-db"],
-          steps: [
-            ["browser-events", "interaction-service", "Context proof", "The client binds owner, session pair, device stream and mutation metadata to the current tab context."],
-            ["interaction-service", "middleware", "Request guard rails", "Body size, CSRF, secure transport and principal/IP rate limits apply before route logic."],
-            ["middleware", "auth-api", "Auth controls", "Login failures reserve atomic limiter capacity and account aliases share a stable user principal."],
-            ["middleware", "interaction-api", "Interaction controls", "Signals require auth; search may be anonymous but replay cannot cross an account boundary."],
-            ["interaction-api", "interaction-db", "Transactional service", "PostgreSQL locks and idempotency checks prevent duplicate or foreign-session mutations."],
-            ["interaction-api", "auth-db", "Ownership lookup", "The interaction service verifies the original session's user before reusing a historical mutation."]
-          ]
-        },
-        {
-          id: "operations", label: "Operations and recovery", note: "Bootstrap, readiness and reset keep the prototype reproducible without mixing operational data into the catalog.",
-          focus: ["catalog-source", "ops-db", "catalog-db", "admin-api", "interaction-db", "auth-db", "middleware"],
-          steps: [
-            ["catalog-source", "ops-db", "Record ingestion", "Catalog preparation records source, run status and data-quality findings in the ops boundary."],
-            ["catalog-source", "catalog-db", "Load normalized catalog", "The bootstrap script writes titles and relations; generated poster assets cover unmatched records."],
-            ["middleware", "admin-api", "Protected maintenance", "Admin reset is outside public OpenAPI and uses Basic Auth plus an atomic limiter."],
-            ["admin-api", "interaction-db", "Reset interaction scope", "Current-session reset removes source and repair telemetry without deleting the catalog."],
-            ["admin-api", "auth-db", "Reset account scope", "Full reset removes users and auth sessions while preserving migrations and audit history."],
-            ["catalog-api", "catalog-db", "Readiness probe", "The readiness endpoint verifies tables, required columns, migrations and checksums before serving as ready."]
-          ]
-        }
-      ];
-
-      var state = {
-        chapter: 0,
-        step: 0,
-        selectedNode: null,
-        routeMode: false,
-        routeStart: null,
-        routeTarget: null,
-        route: [],
-        lens: [],
-        playing: false,
-        view: { x: 0, y: 0, w: 1120, h: 640 },
-        dragging: false,
-        drag: null
+      var FALLBACK_DATA = {
+        meta: { title: "CineMind — User-to-data system flow", default_view: "signal-write", repository: { url: "https://github.com/kiet1i38/cinemind", revision: REVISION } },
+        lanes: [{ id: "intent", label: "User intent", subtitle: "action / outcome" }, { id: "client", label: "Browser client", subtitle: "React / recovery" }, { id: "edge", label: "API boundary", subtitle: "middleware / route" }, { id: "backend", label: "Backend", subtitle: "service / repository" }, { id: "storage", label: "Database", subtitle: "schema / record" }],
+        nodes: [
+          ["user", "actor", "User action", "browse · rate · login", "Intent", "The user starts one focused product action.", "No database write yet", "frontend/src/App.jsx"],
+          ["catalog-ui", "frontend", "Catalog shell", "search + title detail", "React UI", "App.jsx owns catalog loading, filters and title selection.", "View state and catalog response in memory", "frontend/src/App.jsx"],
+          ["detail-ui", "frontend", "Title detail", "rating + watch capture", "React UI", "RatingModal captures the half-point rating and watch duration.", "Optimistic title state before server receipt", "frontend/src/components/RatingModal.jsx"],
+          ["auth-ui", "frontend", "Auth / profile", "login + session state", "React UI", "Auth surfaces submit credentials and recover the authenticated owner.", "Account namespace in the browser", "frontend/src/auth.jsx"],
+          ["catalog-client", "client", "catalogService", "fetch + normalize", "Client service", "Calls the catalog API and returns normalized title records.", "Catalog rows returned to React", "frontend/src/services/catalogService.js"],
+          ["auth-client", "client", "authService", "cookie auth + promotion", "Client service", "Calls login and /me, then coordinates owner promotion and pending recovery.", "Auth state and owner namespaces", "frontend/src/services/authService.js"],
+          ["interaction-client", "client", "interactionService", "queue · sync · hydrate", "Client service", "Creates mutation metadata, retries batches and hydrates receipts.", "Owner-scoped outbox entries", "frontend/src/services/interactionService.js"],
+          ["browser-store", "client", "interactionStore", "outbox + owner journal", "Browser persistence", "Stores pending entries, signal snapshots and transfer intent.", "localStorage/sessionStorage; not PostgreSQL", "frontend/src/services/interactionStore.js"],
+          ["recommendation", "client", "recommendationService", "local discovery ranking", "Client read model", "Builds Preview Picks from catalog records and receipt time.", "Derived local view; no recommendation table", "frontend/src/services/recommendationService.js"],
+          ["middleware", "security", "API middleware", "CSRF · CORS · limits", "Guard rail", "Applies transport, request-size, CSRF and rate-limit policy.", "Rejects before a repository transaction", "backend/src/cinemind/main.py"],
+          ["catalog-route", "server", "Catalog routes", "GET /api/catalog", "FastAPI route", "Validates filters and delegates catalog reads.", "Read-only request boundary", "backend/src/cinemind/catalog/routes.py"],
+          ["interaction-route", "server", "Interaction routes", "/signals · /state", "FastAPI route", "Maps session proof and mutation metadata to service calls.", "Binds session, proof and mutation metadata", "backend/src/cinemind/interaction/routes.py"],
+          ["auth-route", "server", "Auth routes", "/login · /me · /logout", "FastAPI route", "Runs auth preflight and returns cookie-backed state.", "User + interaction_session_id response", "backend/src/cinemind/auth/routes.py"],
+          ["admin-route", "security", "Admin route", "POST /api/admin/reset", "Protected maintenance", "Keeps reset outside the public product path.", "Maintenance command, not telemetry", "backend/src/cinemind/admin/routes.py"],
+          ["catalog-service", "server", "CatalogService", "filter + page use case", "Backend service", "Keeps count and page filters consistent.", "Stable read model", "backend/src/cinemind/catalog/service.py"],
+          ["interaction-service", "server", "InteractionService", "transaction + ownership", "Backend service", "Checks ownership, mutation scope and ordering.", "One signal owns watch + rating rows", "backend/src/cinemind/interaction/service.py"],
+          ["auth-service", "server", "AuthService", "session + promotion", "Backend service", "Verifies credentials and attaches an accepted session.", "Auth session + interaction owner", "backend/src/cinemind/auth/service.py"],
+          ["admin-service", "security", "ResetService", "scope + deletion", "Backend service", "Chooses session or account cleanup.", "Catalog and ops preserved", "backend/src/cinemind/admin/service.py"],
+          ["catalog-repository", "repository", "CatalogRepository", "parameterized reads", "Repository", "Executes catalog count/list queries and joins relations.", "Reads catalog schema", "backend/src/cinemind/catalog/repository.py"],
+          ["interaction-repository", "repository", "InteractionRepository", "event writes + reads", "Repository", "Performs idempotent inserts and latest-state reads.", "Writes search/watch/rating events", "backend/src/cinemind/interaction/repository.py"],
+          ["auth-repository", "repository", "AuthRepository", "users + sessions", "Repository", "Resolves aliases and stores session hashes.", "Auth and interaction ownership rows", "backend/src/cinemind/auth/repository.py"],
+          ["admin-repository", "security", "AdminRepository", "ordered reset SQL", "Repository", "Neutralizes repair links before deleting source rows.", "Scoped interaction/auth cleanup", "backend/src/cinemind/admin/repository.py"],
+          ["catalog-db", "data", "catalog schema", "titles + relations", "PostgreSQL", "Normalized title metadata powers catalog pages and rails.", "catalog.titles · title_genres · title_cast · title_countries · title_directors", "backend/migrations/002_create_catalog_schema.sql"],
+          ["interaction-db", "data", "interaction schema", "sessions + event rows", "PostgreSQL", "Durable telemetry retains session, mutation, device and repair metadata.", "interaction.sessions · search_events · watch_sessions · ratings", "backend/migrations/003_create_interaction_schema.sql"],
+          ["auth-db", "data", "auth schema", "users + cookie sessions", "PostgreSQL", "Identity and opaque cookie-session hashes stay server-side.", "auth.users · auth.sessions · interaction.sessions.user_id", "backend/migrations/005_create_auth_schema.sql"],
+          ["ops-db", "data", "ops schema", "migration + ingestion audit", "PostgreSQL", "Operational provenance records migrations, sources, runs and quality issues.", "ops.schema_migrations · dataset_sources · ingestion_runs", "backend/migrations/001_create_ops_schema.sql"]
+        ].map(function (item) { return { id: item[0], kind: item[1], label: item[2], sublabel: item[3], tag: item[4], detail: item[5], record: item[6], sources: [{ path: item[7] }] }; }),
+        views: [
+          { id: "catalog-read", label: "Catalog discovery", short_label: "Browse", note: "A search stays read-only: the user action becomes a parameterized catalog query, then a local recommendation view.", focus: ["user", "catalog-ui", "catalog-client", "middleware", "catalog-route", "catalog-service", "catalog-repository", "catalog-db", "recommendation"], layout: { "user": [20, 214], "catalog-ui": [242, 214], "catalog-client": [464, 214], "middleware": [686, 120], "catalog-route": [686, 310], "catalog-service": [908, 120], "catalog-repository": [908, 310], "catalog-db": [908, 500], "recommendation": [464, 390] }, mobile_order: ["user", "catalog-ui", "catalog-client", "middleware", "catalog-route", "catalog-service", "catalog-repository", "catalog-db", "recommendation"], steps: [["user", "catalog-ui", "search / filter", "The user enters a query or selects a catalog filter."], ["catalog-ui", "catalog-client", "load page", "App.jsx delegates loading and normalization to catalogService."], ["catalog-client", "middleware", "GET /api/catalog", "The client sends the request through the configured API boundary."], ["middleware", "catalog-route", "validated request", "Transport, CORS, request-size and proxy rules run before the route."], ["catalog-route", "catalog-service", "page use case", "The route validates filters and calls CatalogService."], ["catalog-service", "catalog-repository", "count + list", "CatalogService keeps count and page queries on the same filters."], ["catalog-repository", "catalog-db", "parameterized SELECT", "PostgreSQL reads catalog.titles and normalized relations. No interaction row is written."], ["catalog-db", "catalog-client", "catalog rows", "The normalized response returns to the browser."], ["catalog-client", "recommendation", "derive rails", "recommendationService ranks local discovery rails."]] },
+          { id: "signal-write", label: "Rating becomes telemetry", short_label: "Signal write", note: "Follow one rating + watch action from optimistic UI to the exact PostgreSQL rows that receive it.", focus: ["user", "detail-ui", "interaction-client", "browser-store", "middleware", "interaction-route", "interaction-service", "interaction-repository", "interaction-db", "recommendation"], layout: { "user": [20, 214], "detail-ui": [242, 120], "interaction-client": [242, 310], "browser-store": [464, 440], "middleware": [464, 120], "interaction-route": [686, 120], "interaction-service": [908, 120], "interaction-repository": [908, 310], "interaction-db": [908, 500], "recommendation": [242, 500] }, mobile_order: ["user", "detail-ui", "interaction-client", "browser-store", "middleware", "interaction-route", "interaction-service", "interaction-repository", "interaction-db", "recommendation"], steps: [["user", "detail-ui", "rate + watch", "The user chooses a rating and records watch duration."], ["detail-ui", "interaction-client", "queue signal", "The UI creates an optimistic signal and sends it to interactionService."], ["interaction-client", "browser-store", "persist outbox", "The owner-scoped entry keeps mutation, session and device metadata."], ["browser-store", "interaction-client", "retry / hydrate", "The sync loop reads pending entries and overlays server receipts."], ["interaction-client", "middleware", "POST /signals", "A signal batch crosses secure transport, CSRF, size and rate-limit checks."], ["middleware", "interaction-route", "auth + proof", "The route requires account auth and verifies the interaction proof."], ["interaction-route", "interaction-service", "record_signal", "The route delegates the composite watch-plus-rating mutation."], ["interaction-service", "interaction-repository", "transaction + locks", "The service checks ownership, idempotency, ordering and repair provenance."], ["interaction-repository", "interaction-db", "insert / reconcile", "The transaction writes watch_sessions and ratings with receipt metadata."], ["interaction-db", "recommendation", "server receipt", "Hydrated serverSavedAt makes recommendation recency use committed time."]] },
+          { id: "account-promotion", label: "Anonymous to account", short_label: "Login", note: "The account boundary creates the cookie session, attaches the accepted interaction session and preserves pending browser data.", focus: ["user", "auth-ui", "auth-client", "browser-store", "middleware", "auth-route", "auth-service", "auth-repository", "auth-db", "interaction-db"], layout: { "user": [20, 214], "auth-ui": [242, 120], "auth-client": [242, 310], "browser-store": [464, 440], "middleware": [464, 120], "auth-route": [686, 120], "auth-service": [908, 120], "auth-repository": [908, 310], "auth-db": [908, 500], "interaction-db": [686, 500] }, mobile_order: ["user", "auth-ui", "auth-client", "browser-store", "middleware", "auth-route", "auth-service", "auth-repository", "auth-db", "interaction-db"], steps: [["user", "auth-ui", "login / register", "The user submits credentials while an anonymous session may contain pending signals."], ["auth-ui", "auth-client", "credential request", "The auth surface delegates cookie authentication and promotion to authService."], ["auth-client", "browser-store", "journal first", "The browser persists transfer intent before changing the owner namespace."], ["auth-client", "middleware", "POST /login", "Credentials and anonymous session proof cross the secure auth boundary."], ["middleware", "auth-route", "rate-limited request", "Auth dependencies enforce secure transport and login-attempt capacity."], ["auth-route", "auth-service", "resolve principal", "AuthService normalizes the identifier and verifies the password."], ["auth-service", "auth-repository", "create + attach", "AuthRepository creates the cookie session and attaches the accepted interaction session."], ["auth-repository", "auth-db", "auth.users + sessions", "PostgreSQL stores the account and hashed auth session."], ["auth-repository", "interaction-db", "set owner", "The interaction.sessions row receives user_id."], ["auth-client", "browser-store", "copy pending data", "The client copies anonymous entries into the account namespace and retries recovery."]] },
+          { id: "reset-scope", label: "Reset and provenance", short_label: "Reset", note: "Maintenance cleanup is scoped and ordered: repair provenance is handled before source rows disappear, while catalog and ops remain intact.", focus: ["user", "middleware", "admin-route", "admin-service", "admin-repository", "interaction-db", "auth-db", "catalog-db", "ops-db"], layout: { "user": [20, 214], "middleware": [242, 120], "admin-route": [464, 120], "admin-service": [686, 120], "admin-repository": [908, 120], "interaction-db": [908, 310], "auth-db": [908, 500], "catalog-db": [686, 390], "ops-db": [464, 390] }, mobile_order: ["user", "middleware", "admin-route", "admin-service", "admin-repository", "interaction-db", "auth-db", "catalog-db", "ops-db"], steps: [["user", "middleware", "request reset", "An operator invokes the protected maintenance path."], ["middleware", "admin-route", "Basic Auth + limit", "The admin route is protected by credentials and an atomic limiter."], ["admin-route", "admin-service", "choose scope", "ResetService selects current-session or full-account cleanup."], ["admin-service", "admin-repository", "ordered cleanup", "AdminRepository executes dependency-aware SQL."], ["admin-repository", "interaction-db", "clear telemetry", "Repair links and repair rows are handled before source rows are deleted."], ["admin-repository", "auth-db", "clear account scope", "Full reset removes users and auth sessions."], ["admin-repository", "catalog-db", "preserve catalog", "Reset does not delete catalog titles or relations."], ["admin-repository", "ops-db", "preserve provenance", "Migrations and ingestion audit remain available."]] }
+        ],
+        cards: [{ dot: "cyan", title: "Read path", items: ["UI delegates to a client service", "FastAPI delegates to a backend service", "Repository owns parameterized PostgreSQL reads"] }, { dot: "emerald", title: "Write path", items: ["Outbox keeps pending intent durable", "InteractionService validates owner and mutation scope", "One signal commits watch and rating rows together"] }, { dot: "violet", title: "Stored evidence", items: ["Session and account ownership stay explicit", "Mutation and device ordering metadata are retained", "Repair rows carry provenance for mining and reset"] }]
       };
 
-      function byId(id) { return nodes.find(function (node) { return node.id === id; }); }
-      function chapter() { return chapters[state.chapter]; }
-      function step() { return chapter().steps[state.step]; }
-      function center(node) { return { x: node.x + 105, y: node.y + 29 }; }
-      function svg(tag, attrs) {
-        var el = document.createElementNS(NS, tag);
-        Object.keys(attrs || {}).forEach(function (key) { el.setAttribute(key, attrs[key]); });
-        return el;
-      }
-      function textEl(value, attrs) {
-        var el = svg("text", attrs);
-        el.textContent = value;
-        return el;
-      }
-      function escapeHtml(value) {
-        return String(value).replace(/[&<>"']/g, function (character) {
-          return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character];
-        });
-      }
-      function showToast(message) {
-        toast.textContent = message;
-        toast.classList.add("is-visible");
-        window.clearTimeout(showToast.timer);
-        showToast.timer = window.setTimeout(function () { toast.classList.remove("is-visible"); }, 2200);
-      }
-      function sourceLink(node) {
-        return REPOSITORY + node.path;
-      }
-
-      function renderRegions() {
-        regionsEl.replaceChildren();
-        regions.forEach(function (region) {
-          var group = svg("g", {});
-          var rect = svg("rect", { x: region.x, y: region.y, width: region.w, height: region.h, rx: 12, class: "region " + region.className });
-          var titleOffset = region.title === "External preparation" ? 14 : 24;
-          var subtitleOffset = region.title === "External preparation" ? 29 : 40;
-          group.appendChild(rect);
-          group.appendChild(textEl(region.title, { x: region.x + 14, y: region.y + titleOffset, class: "region-title" }));
-          group.appendChild(textEl(region.subtitle, { x: region.x + 14, y: region.y + subtitleOffset, class: "region-subtitle" }));
-          regionsEl.appendChild(group);
-        });
-      }
-
-      function edgeClasses(edge) {
-        var active = chapter().focus.indexOf(edge.from) >= 0 && chapter().focus.indexOf(edge.to) >= 0;
-        var current = step();
-        var isCurrent = current && current[0] === edge.from && current[1] === edge.to;
-        var isRoute = state.route.length > 1 && state.route.some(function (id, index) {
-          return index < state.route.length - 1 && state.route[index] === edge.from && state.route[index + 1] === edge.to;
-        });
-        var lensActive = state.lens.length > 0;
-        var lensKinds = state.lens.map(function (kind) { return kind; });
-        var fromKind = byId(edge.from).kind;
-        var toKind = byId(edge.to).kind;
-        var lensMatch = !lensActive || (lensKinds.indexOf(fromKind) >= 0 && lensKinds.indexOf(toKind) >= 0);
-        return {
-          active: active,
-          current: isCurrent,
-          route: isRoute,
-          dimmed: (!lensMatch) || (state.routeMode && state.routeStart && state.routeTarget && !isRoute && edge.from !== state.routeStart && edge.to !== state.routeStart)
-        };
-      }
-
-      function renderEdges() {
-        edgesEl.replaceChildren();
-        edges.forEach(function (edge) {
-          var from = center(byId(edge.from));
-          var to = center(byId(edge.to));
-          var meta = edgeClasses(edge);
-          var group = svg("g", {});
-          var line = svg("line", { x1: from.x, y1: from.y, x2: to.x, y2: to.y, class: "edge" + (meta.active ? " is-active" : "") + (meta.current ? " is-active" : "") + (meta.route ? " is-route" : "") + (meta.dimmed ? " is-dimmed" : "") });
-          var label = textEl(edge.label, { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 - 5, class: "edge-label" + (meta.current || meta.route ? " is-active" : "") });
-          label.setAttribute("text-anchor", "middle");
-          group.appendChild(line);
-          group.appendChild(label);
-          edgesEl.appendChild(group);
-        });
-      }
-
-      function nodeIsDimmed(node) {
-        if (state.lens.length) return state.lens.indexOf(node.kind) < 0;
-        if (state.routeMode && state.routeStart && state.routeTarget) {
-          return state.route.indexOf(node.id) < 0 && node.id !== state.routeStart && node.id !== state.routeTarget;
-        }
-        return false;
-      }
-
-      function renderNodes() {
-        nodesEl.replaceChildren();
-        nodes.forEach(function (node) {
-          var group = svg("g", { class: "node" + (state.selectedNode === node.id ? " is-active" : "") + (state.route.indexOf(node.id) >= 0 ? " is-route" : "") + (nodeIsDimmed(node) ? " is-dimmed" : ""), "data-node-id": node.id, "data-kind": node.kind, tabindex: "0", role: "button", "aria-label": node.label + ", " + node.detail });
-          group.appendChild(svg("rect", { x: node.x, y: node.y, width: 210, height: 58, rx: 9 }));
-          group.appendChild(svg("rect", { x: node.x, y: node.y, width: 5, height: 58, rx: 3, class: "node-accent" }));
-          group.appendChild(textEl(node.label, { x: node.x + 16, y: node.y + 22, class: "node-label" }));
-          group.appendChild(textEl(node.detail, { x: node.x + 16, y: node.y + 39, class: "node-detail" }));
-          group.appendChild(textEl(node.kind, { x: node.x + 16, y: node.y + 52, class: "node-kind" }));
-          group.addEventListener("click", function () { selectNode(node.id); });
-          group.addEventListener("keydown", function (event) {
-            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(node.id); }
-          });
-          nodesEl.appendChild(group);
-        });
-      }
-
-      function renderPulses() {
-        pulseEl.replaceChildren();
-        var current = step();
-        if (!current) return;
-        var from = center(byId(current[0]));
-        var to = center(byId(current[1]));
-        var dot = svg("circle", { cx: (from.x + to.x) / 2, cy: (from.y + to.y) / 2, r: 4, class: "pulse is-visible", filter: "url(#glow)" });
-        pulseEl.appendChild(dot);
-      }
-
-      function renderDiagram() {
-        renderRegions();
-        renderEdges();
-        renderNodes();
-        renderPulses();
-        diagram.setAttribute("viewBox", state.view.x + " " + state.view.y + " " + state.view.w + " " + state.view.h);
-        document.getElementById("resetButton").textContent = Math.round(1120 / state.view.w * 100) + "%";
-        document.getElementById("mapStatus").textContent = state.routeMode ? "PATH · choose " + (state.routeStart ? "a destination" : "a start node") : state.lens.length ? "LENS · " + state.lens.join(" + ") : "MAP · all boundaries visible";
-      }
-
-      function renderStory() {
-        var activeChapter = chapter();
-        var activeStep = step();
-        document.getElementById("chapterEyebrow").textContent = "Chapter " + String(state.chapter + 1).padStart(2, "0") + " / " + String(chapters.length).padStart(2, "0");
-        document.getElementById("chapterTitle").textContent = activeChapter.label;
-        document.getElementById("chapterNote").textContent = activeChapter.note;
-        var progress = activeChapter.steps.length ? ((state.step + 1) / activeChapter.steps.length) * 100 : 0;
-        var progressBar = document.getElementById("progressBar");
-        progressBar.style.width = progress + "%";
-        progressBar.parentElement.setAttribute("aria-valuenow", String(Math.round(progress)));
-        document.getElementById("stepList").replaceChildren();
-        activeChapter.steps.forEach(function (item, index) {
-          var button = document.createElement("button");
-          button.type = "button";
-          button.className = "step" + (index === state.step ? " is-active" : "");
-          button.innerHTML = "<span class=\"step-number\">" + (index + 1) + "</span><span><strong>" + escapeHtml(item[2]) + "</strong><small>" + escapeHtml(item[3]) + "</small></span>";
-          button.addEventListener("click", function () { state.step = index; state.selectedNode = item[0]; stopPlayback(); render(); });
-          document.getElementById("stepList").appendChild(button);
-        });
-        document.getElementById("storyState").textContent = state.playing ? "Playing · " + activeStep[2] : "Step " + (state.step + 1) + " of " + activeChapter.steps.length + " · " + activeStep[2];
-        document.getElementById("playButton").textContent = state.playing ? "Pause story" : "Play story";
-        document.getElementById("playButton").setAttribute("aria-pressed", state.playing ? "true" : "false");
-        renderChapters();
-      }
-
-      function renderChapters() {
-        var tabs = document.getElementById("chapterTabs");
-        tabs.replaceChildren();
-        chapters.forEach(function (item, index) {
-          var button = document.createElement("button");
-          button.type = "button";
-          button.textContent = String(index + 1).padStart(2, "0") + "  " + item.label;
-          button.className = index === state.chapter ? "is-active" : "";
-          button.setAttribute("aria-current", index === state.chapter ? "step" : "false");
-          button.addEventListener("click", function () { state.chapter = index; state.step = 0; state.selectedNode = chapters[index].steps[0][0]; stopPlayback(); render(); updateHash(); });
-          tabs.appendChild(button);
-        });
-      }
-
-      function renderDetail() {
-        var node = byId(state.selectedNode) || nodes[0];
-        document.getElementById("nodeTitle").textContent = node.label;
-        document.getElementById("nodeDescription").textContent = node.detail + ". " + nodeDescription(node.id);
-        document.getElementById("nodeMeta").innerHTML = "<span class=\"mono\">" + escapeHtml(node.kind) + "</span> · <a href=\"" + sourceLink(node) + "\" target=\"_blank\" rel=\"noreferrer\">" + escapeHtml(node.path) + "</a>";
-      }
-
-      function nodeDescription(id) {
-        var descriptions = {
-          "catalog-ui": "The entry surface for search, filters, title rails and detail navigation.",
-          "detail-modal": "Captures half-star ratings and watch duration before submitting a signal.",
-          "auth-profile": "Keeps account access and rating history in separate page flows.",
-          "optimistic-ui": "Shows pending local interaction state while the server is unavailable or syncing.",
-          "browser-events": "Coordinates reload, online state, visibility and multi-tab ownership changes.",
-          "catalog-service": "Normalizes API catalog responses and keeps catalog loading out of view components.",
-          "auth-service": "Uses cookie credentials and carries only the accepted anonymous interaction proof.",
-          "interaction-service": "Creates sessions, queues mutations, retries expired sessions and hydrates server receipts.",
-          "browser-store": "Owns session pairs, per-title signals, tombstones, outbox entries and cross-context locks; browserStore supplies the storage primitives.",
-          "recommendation": "Builds recent, discoverable and related title rails from catalog plus current signals.",
-          "middleware": "Applies request size, CSRF, CORS, trusted proxy, secure transport and rate-limit rules.",
-          "catalog-api": "Exposes summary, paginated filtered catalog and normalized title detail.",
-          "auth-api": "Resolves identifiers, creates cookie sessions and controls logout / promotion.",
-          "interaction-api": "Accepts search, watch, rating and signal events and returns scoped state.",
-          "admin-api": "Provides intentionally hidden destructive reset routes for local/demo maintenance.",
-          "catalog-db": "Stores the normalized title catalog and genre, cast, country and director relations.",
-          "interaction-db": "Stores user events with client metadata, idempotency and repair provenance.",
-          "auth-db": "Stores password-derived users and hashed cookie sessions.",
-          "ops-db": "Tracks migration checksums, dataset sources, ingestion runs and quality findings.",
-          "catalog-source": "Runs before serving: Kaggle data and optional poster providers are prepared locally."
-        };
-        return descriptions[id] || "Repository boundary in the current CineMind architecture.";
-      }
-
-      function render() {
-        var current = step();
-        if (current) state.selectedNode = state.selectedNode || current[0];
-        renderStory();
-        renderDetail();
-        renderDiagram();
-        renderRadar();
-      }
-
-      function selectNode(id) {
-        var node = byId(id);
-        if (!node) return;
-        if (state.routeMode) {
-          if (!state.routeStart) {
-            state.routeStart = id;
-            state.routeTarget = null;
-            state.route = [id];
-            showToast("Route start: " + node.label + ". Choose a reachable destination.");
-          } else if (state.routeStart === id) {
-            state.routeStart = null;
-            state.routeTarget = null;
-            state.route = [];
-          } else {
-            state.routeTarget = id;
-            state.route = shortestPath(state.routeStart, id);
-            showToast(state.route.length ? "Route traced: " + state.route.length + " nodes." : "No directed route to " + node.label + ".");
-          }
-          state.selectedNode = id;
-          render();
-          return;
-        }
-        state.selectedNode = id;
-        var chapterIndex = chapters.findIndex(function (item) { return item.focus.indexOf(id) >= 0; });
-        if (chapterIndex >= 0 && chapterIndex !== state.chapter) {
-          state.chapter = chapterIndex;
-          state.step = 0;
-        }
-        render();
-        updateHash();
-      }
-
-      function shortestPath(start, target) {
-        var queue = [[start]];
-        var seen = new Set([start]);
-        while (queue.length) {
-          var path = queue.shift();
-          var last = path[path.length - 1];
-          if (last === target) return path;
-          edges.filter(function (edge) { return edge.from === last; }).forEach(function (edge) {
-            if (!seen.has(edge.to)) { seen.add(edge.to); queue.push(path.concat(edge.to)); }
-          });
-        }
-        return [];
-      }
-
-      function setLens(kind) {
-        if (state.lens.indexOf(kind) >= 0) state.lens = state.lens.filter(function (item) { return item !== kind; });
-        else if (state.lens.length < 2) state.lens.push(kind);
-        else state.lens = [state.lens[1], kind];
-        renderLens();
-        render();
-      }
-
-      function renderLens() {
-        var choices = document.getElementById("lensChoices");
-        choices.replaceChildren();
-        ["frontend", "client", "server", "data", "security", "external"].forEach(function (kind) {
-          var button = document.createElement("button");
-          button.type = "button";
-          button.textContent = kind;
-          button.className = state.lens.indexOf(kind) >= 0 ? "is-active" : "";
-          button.setAttribute("aria-pressed", state.lens.indexOf(kind) >= 0 ? "true" : "false");
-          button.addEventListener("click", function () { setLens(kind); });
-          choices.appendChild(button);
-        });
-        document.getElementById("lensStatus").textContent = state.lens.length ? "Active: " + state.lens.join(" + ") : "No semantic lens active.";
-      }
-
-      function renderRadar() {
-        var radar = document.getElementById("radar");
-        if (!radar) return;
-        radar.replaceChildren();
-        radar.appendChild(svg("rect", { x: 0, y: 0, width: 1040, height: 440, rx: 12, fill: "var(--surface-2)", stroke: "var(--border)" }));
-        regions.slice(0, 4).forEach(function (region) {
-          var x = region.x * .88 + 15;
-          var y = region.y * .62 + 20;
-          var w = region.w * .88;
-          var h = region.h * .62;
-          radar.appendChild(svg("rect", { x: x, y: y, width: w, height: h, rx: 8, fill: "none", stroke: "var(--border)" }));
-          radar.appendChild(textEl(region.title, { x: x + 10, y: y + 18, fill: "var(--muted)", "font-size": "11" }));
-        });
-        edges.forEach(function (edge) {
-          var from = byId(edge.from), to = byId(edge.to);
-          if (!from || !to || from.group === "external" || to.group === "external") return;
-          radar.appendChild(svg("line", { x1: from.x * .88 + 108, y1: from.y * .62 + 38, x2: to.x * .88 + 108, y2: to.y * .62 + 38, stroke: "var(--edge)", "stroke-width": "1", opacity: ".52" }));
-        });
-        nodes.forEach(function (node) {
-          if (node.group === "external") return;
-          var circle = svg("circle", { cx: node.x * .88 + 108, cy: node.y * .62 + 38, r: state.selectedNode === node.id ? 7 : 4, fill: "var(--" + node.kind + ")", stroke: state.selectedNode === node.id ? "var(--focus)" : "none", "data-node-id": node.id, tabindex: "0", role: "button", "aria-label": "Focus " + node.label });
-          circle.addEventListener("click", function () { selectNode(node.id); document.getElementById("radarDialog").close(); });
-          circle.addEventListener("keydown", function (event) { if (event.key === "Enter") { selectNode(node.id); document.getElementById("radarDialog").close(); } });
-          radar.appendChild(circle);
-        });
-      }
-
-      function updateHash() {
-        var value = "chapter=" + encodeURIComponent(chapter().id) + "&step=" + state.step;
-        if (state.selectedNode) value += "&node=" + encodeURIComponent(state.selectedNode);
-        window.history.replaceState(null, "", "#" + value);
-      }
-
-      function loadHash() {
-        var params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-        var chapterId = params.get("chapter");
-        var chapterIndex = chapters.findIndex(function (item) { return item.id === chapterId; });
-        if (chapterIndex >= 0) state.chapter = chapterIndex;
-        var requestedStep = Number(params.get("step"));
-        if (Number.isInteger(requestedStep) && requestedStep >= 0 && requestedStep < chapter().steps.length) state.step = requestedStep;
-        if (params.get("node") && byId(params.get("node"))) state.selectedNode = params.get("node");
-        else if (!state.selectedNode || chapterId || Number.isInteger(requestedStep)) state.selectedNode = chapter().steps[state.step][0];
-      }
-
-      function moveStep(delta) {
-        var next = state.step + delta;
-        if (next >= 0 && next < chapter().steps.length) state.step = next;
-        else if (next >= chapter().steps.length && state.chapter < chapters.length - 1) { state.chapter += 1; state.step = 0; }
-        else if (next < 0 && state.chapter > 0) { state.chapter -= 1; state.step = chapters[state.chapter].steps.length - 1; }
-        else { stopPlayback(); return; }
-        state.selectedNode = step()[0];
-        render();
-        updateHash();
-      }
-
-      function stopPlayback() {
-        state.playing = false;
-        timers.forEach(window.clearTimeout);
-        timers = [];
-      }
-
-      function playNext() {
-        if (!state.playing) return;
-        var next = state.step + 1;
-        if (next >= chapter().steps.length) {
-          if (state.chapter >= chapters.length - 1) { stopPlayback(); render(); return; }
-          state.chapter += 1;
-          state.step = 0;
-        } else state.step = next;
-        state.selectedNode = step()[0];
-        render();
-        updateHash();
-        timers.push(window.setTimeout(playNext, 1800));
-      }
-
-      function togglePlayback() {
-        state.playing = !state.playing;
-        if (state.playing) timers.push(window.setTimeout(playNext, 1200));
-        else timers.forEach(window.clearTimeout);
-        renderStory();
-        renderDiagram();
-      }
-
-      function setTheme() {
-        var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
-        document.documentElement.setAttribute("data-theme", next);
-        try { localStorage.setItem("cinemind-flow-theme", next); } catch (error) {}
-      }
-
-      function setPreset(value) {
-        document.documentElement.setAttribute("data-preset", value);
-        document.querySelectorAll("[data-preset]").forEach(function (item) {
-          if (item.matches("button")) item.classList.toggle("is-active", item.getAttribute("data-preset") === value);
-        });
-        document.getElementById("presetMenu").classList.remove("is-open");
-        document.getElementById("presetMenu").setAttribute("aria-hidden", "true");
-        document.getElementById("presetMenu").style.display = "";
-        document.getElementById("presetButton").setAttribute("aria-expanded", "false");
-      }
-
-      function toggleMenu(id, buttonId) {
-        var menu = document.getElementById(id);
-        var button = document.getElementById(buttonId);
-        var opening = menu.getAttribute("data-open") !== "true";
-        document.querySelectorAll(".menu").forEach(function (item) {
-          item.classList.remove("is-open");
-          item.setAttribute("data-open", "false");
-          item.setAttribute("aria-hidden", "true");
-          item.style.display = "";
-        });
-        document.querySelectorAll("[aria-expanded]").forEach(function (item) { item.setAttribute("aria-expanded", "false"); });
-        if (opening) {
-          menu.classList.add("is-open");
-          menu.setAttribute("data-open", "true");
-          menu.setAttribute("aria-hidden", "false");
-          menu.style.display = "grid";
-          button.setAttribute("aria-expanded", "true");
-        }
-      }
-
-      function togglePresent() {
-        var active = document.documentElement.getAttribute("data-present") === "true";
-        document.documentElement.setAttribute("data-present", active ? "false" : "true");
-        document.getElementById("presentButton").textContent = active ? "Present" : "Exit";
-        if (!active && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(function () {});
-        if (active && document.exitFullscreen) document.exitFullscreen().catch(function () {});
-      }
-
-      function copyText(value, success) {
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(value).then(function () { showToast(success); }).catch(function () { showToast("Copy unavailable in this browser."); });
-        else showToast("Copy unavailable in this browser.");
-      }
-
-      function copyMoment() {
-        updateHash();
-        copyText(window.location.href, "Moment link copied.");
-      }
-
-      function downloadSvg() {
-        var clone = diagram.cloneNode(true);
-        clone.setAttribute("xmlns", NS);
-        clone.setAttribute("width", "1120");
-        clone.setAttribute("height", "640");
-        var source = new XMLSerializer().serializeToString(clone);
-        var blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
-        var url = URL.createObjectURL(blob);
-        var link = document.createElement("a");
-        link.href = url;
-        link.download = "cinemind-system-flow.svg";
-        link.click();
-        URL.revokeObjectURL(url);
-        showToast("SVG downloaded.");
-      }
-
-      function initFinder() {
-        var input = document.getElementById("finderInput");
-        var results = document.getElementById("finderResults");
-        function draw() {
-          var query = input.value.trim().toLowerCase();
-          var found = nodes.filter(function (node) { return !query || (node.label + " " + node.id + " " + node.path + " " + node.detail).toLowerCase().indexOf(query) >= 0; });
-          results.replaceChildren();
-          found.forEach(function (node) {
-            var button = document.createElement("button");
-            button.type = "button";
-            button.className = "finder-result";
-            button.innerHTML = "<span>" + escapeHtml(node.label) + "<br><small>" + escapeHtml(node.path) + "</small></span><small>" + escapeHtml(node.kind) + "</small>";
-            button.addEventListener("click", function () { selectNode(node.id); document.getElementById("finderDialog").close(); });
-            results.appendChild(button);
-          });
-          if (!found.length) results.innerHTML = "<p class=\"revision\">No matching nodes.</p>";
-        }
-        input.addEventListener("input", draw);
-        return draw;
-      }
-
-      function configureDialogs() {
-        document.querySelectorAll("[data-close]").forEach(function (button) {
-          button.addEventListener("click", function () { document.getElementById(button.getAttribute("data-close")).close(); });
-        });
-        document.querySelectorAll("dialog").forEach(function (dialog) {
-          dialog.addEventListener("click", function (event) { if (event.target === dialog) dialog.close(); });
-        });
-      }
-
-      function configureView() {
-        document.getElementById("zoomInButton").addEventListener("click", function () { zoom(.78); });
-        document.getElementById("zoomOutButton").addEventListener("click", function () { zoom(1.28); });
-        document.getElementById("resetButton").addEventListener("click", function () { state.view = { x: 0, y: 0, w: 1120, h: 640 }; renderDiagram(); });
-        diagram.addEventListener("wheel", function (event) { event.preventDefault(); zoom(event.deltaY > 0 ? 1.12 : .88); }, { passive: false });
-        diagram.addEventListener("pointerdown", function (event) {
-          if (event.target.closest && event.target.closest(".node")) return;
-          state.dragging = true;
-          state.drag = { x: event.clientX, y: event.clientY, viewX: state.view.x, viewY: state.view.y };
-          diagram.setPointerCapture(event.pointerId);
-        });
-        diagram.addEventListener("pointermove", function (event) {
-          if (!state.dragging) return;
-          var rect = diagram.getBoundingClientRect();
-          var dx = (event.clientX - state.drag.x) / rect.width * state.view.w;
-          var dy = (event.clientY - state.drag.y) / rect.height * state.view.h;
-          state.view.x = Math.max(-120, Math.min(1120 - state.view.w + 120, state.drag.viewX - dx));
-          state.view.y = Math.max(-90, Math.min(640 - state.view.h + 90, state.drag.viewY - dy));
-          renderDiagram();
-        });
-        diagram.addEventListener("pointerup", function () { state.dragging = false; });
-      }
-
-      function zoom(factor) {
-        var nextW = Math.max(520, Math.min(1120, state.view.w * factor));
-        var nextH = Math.max(300, Math.min(640, state.view.h * factor));
-        state.view.x += (state.view.w - nextW) / 2;
-        state.view.y += (state.view.h - nextH) / 2;
-        state.view.w = nextW;
-        state.view.h = nextH;
-        renderDiagram();
-      }
-
-      function configureControls(drawFinder) {
-        document.getElementById("themeButton").addEventListener("click", setTheme);
-        document.getElementById("presetButton").addEventListener("click", function () { toggleMenu("presetMenu", "presetButton"); });
-        document.querySelectorAll("#presetMenu button[data-preset]").forEach(function (button) { button.addEventListener("click", function () { setPreset(button.getAttribute("data-preset")); }); });
-        document.getElementById("motionButton").addEventListener("click", function () {
-          var still = document.documentElement.getAttribute("data-motion") === "still";
-          document.documentElement.setAttribute("data-motion", still ? "live" : "still");
-          document.getElementById("motionButton").textContent = still ? "Live" : "Still";
-          document.getElementById("motionButton").setAttribute("aria-pressed", still ? "true" : "false");
-          if (!still) stopPlayback();
-          render();
-        });
-        document.getElementById("presentButton").addEventListener("click", togglePresent);
-        document.getElementById("exportButton").addEventListener("click", function () { toggleMenu("exportMenu", "exportButton"); });
-        document.querySelectorAll("[data-export]").forEach(function (button) {
-          button.addEventListener("click", function () {
-            document.getElementById("exportMenu").classList.remove("is-open");
-            document.getElementById("exportMenu").setAttribute("aria-hidden", "true");
-            document.getElementById("exportMenu").style.display = "";
-            document.getElementById("exportButton").setAttribute("aria-expanded", "false");
-            var action = button.getAttribute("data-export");
-            if (action === "copy-link") copyMoment();
-            if (action === "share") {
-              if (navigator.share) navigator.share({ title: "CineMind system flow", url: window.location.href }).catch(function () {});
-              else copyMoment();
-            }
-            if (action === "svg") downloadSvg();
-          });
-        });
-        document.getElementById("previousButton").addEventListener("click", function () { stopPlayback(); moveStep(-1); });
-        document.getElementById("nextButton").addEventListener("click", function () { stopPlayback(); moveStep(1); });
-        document.getElementById("playButton").addEventListener("click", togglePlayback);
-        document.getElementById("momentButton").addEventListener("click", copyMoment);
-        document.getElementById("showAllButton").addEventListener("click", function () { stopPlayback(); state.route = []; state.routeMode = false; state.routeStart = null; state.routeTarget = null; state.lens = []; state.step = 0; state.selectedNode = "catalog-ui"; renderLens(); render(); updateHash(); });
-        document.getElementById("routeButton").addEventListener("click", function () { state.routeMode = !state.routeMode; state.route = []; state.routeStart = null; state.routeTarget = null; this.setAttribute("aria-pressed", state.routeMode ? "true" : "false"); render(); });
-        document.getElementById("radarButton").addEventListener("click", function () { renderRadar(); document.getElementById("radarDialog").showModal(); });
-        document.getElementById("lensButton").addEventListener("click", function () { renderLens(); document.getElementById("lensDialog").showModal(); });
-        document.getElementById("finderButton").addEventListener("click", function () { document.getElementById("finderDialog").showModal(); drawFinder(); document.getElementById("finderInput").focus(); });
-        document.getElementById("guideButton").addEventListener("click", function () { document.getElementById("guideDialog").showModal(); });
-      }
-
-      function configureKeys() {
-        document.addEventListener("keydown", function (event) {
-          if (event.target.matches("input")) return;
-          var key = event.key.toLowerCase();
-          if (key === "p") { event.preventDefault(); togglePlayback(); }
-          if (key === "[") { event.preventDefault(); stopPlayback(); moveStep(-1); }
-          if (key === "]") { event.preventDefault(); stopPlayback(); moveStep(1); }
-          if (key === "r") { event.preventDefault(); document.getElementById("routeButton").click(); }
-          if (key === "m") { event.preventDefault(); document.getElementById("radarButton").click(); }
-          if (key === "l") { event.preventDefault(); document.getElementById("lensButton").click(); }
-          if (key === "/") { event.preventDefault(); document.getElementById("finderButton").click(); }
-          if (key === "0") { event.preventDefault(); document.getElementById("resetButton").click(); }
-          if (key === "?") { event.preventDefault(); document.getElementById("guideButton").click(); }
-          if (key === "escape") { stopPlayback(); document.querySelectorAll("dialog[open]").forEach(function (dialog) { dialog.close(); }); }
-        });
-      }
-
-      try {
-        var savedTheme = localStorage.getItem("cinemind-flow-theme");
-        if (savedTheme === "light" || savedTheme === "dark") document.documentElement.setAttribute("data-theme", savedTheme);
-      } catch (error) {}
-      loadHash();
-      var drawFinder = initFinder();
-      configureDialogs();
-      configureView();
-      configureControls(drawFinder);
-      configureKeys();
-      window.addEventListener("hashchange", function () {
-        loadHash();
-        render();
-      });
-      renderLens();
-      render();
-      updateHash();
-    }());
+      function normalizeData(source) { var result = JSON.parse(JSON.stringify(source)); result.views = (result.views || []).map(function (view) { view.steps = (view.steps || []).map(function (step) { if (Array.isArray(step)) return { from: step[0], to: step[1], label: step[2], detail: step[3] }; return step; }); return view; }); return result; }
+      function byId(id) { return data.nodes.find(function (node) { return node.id === id; }); }
+      function currentView() { return data.views.find(function (view) { return view.id === state.viewId; }) || data.views[0]; }
+      function currentStep() { return currentView().steps[state.step] || currentView().steps[0]; }
+      function escapeHtml(value) { return String(value == null ? "" : value).replace(/[&<>"']/g, function (character) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[character]; }); }
+      function showToast(message) { toast.textContent = message; toast.classList.add("is-visible"); clearTimeout(showToast.timer); showToast.timer = setTimeout(function () { toast.classList.remove("is-visible"); }, 2200); }
+      function sourceLink(node) { return REPOSITORY + (node.sources && node.sources[0] ? node.sources[0].path : ""); }
+      function svgElement(tag, attrs) { var element = document.createElementNS(NS, tag); Object.keys(attrs || {}).forEach(function (key) { element.setAttribute(key, attrs[key]); }); return element; }
+      function svgText(value, attrs) { var element = svgElement("text", attrs); element.textContent = value; return element; }
+      function edgeId(step, index) { return step.from + "--" + step.to + "--" + index; }
+      function positionFor(id) { var view = currentView(); if (!state.mobile && view.layout && view.layout[id]) return { x: view.layout[id][0], y: view.layout[id][1], w: nodeWidth, h: nodeHeight }; var order = view.mobile_order || view.focus; var index = Math.max(0, order.indexOf(id)); return { x: 100, y: 48 + index * 95, w: mobileWidth, h: mobileHeight }; }
+      function centerFor(id) { var position = positionFor(id); return { x: position.x + position.w / 2, y: position.y + position.h / 2 }; }
+      function updateViewBox() { state.mobile = window.innerWidth < 760; var view = currentView(); if (state.mobile) { var height = Math.max(560, (view.mobile_order || view.focus).length * 95 + 80); diagram.setAttribute("viewBox", "0 0 620 " + height); diagram.style.minHeight = Math.min(920, Math.max(480, height * .64)) + "px"; } else { diagram.setAttribute("viewBox", "0 0 1120 610"); diagram.style.minHeight = "510px"; } }
+      function renderLanes() { laneLayer.replaceChildren(); if (state.mobile) { var mobileHeight = Math.max(560, (currentView().mobile_order || currentView().focus).length * 95 + 80); laneLayer.appendChild(svgElement("rect", { x: 28, y: 22, width: 564, height: mobileHeight - 42, rx: 12, class: "lane-frame" })); laneLayer.appendChild(svgText("FOCUSED PATH", { x: 48, y: 48, class: "lane-title" })); laneLayer.appendChild(svgText("One authored route · click a node for evidence", { x: 48, y: 65, class: "lane-subtitle" })); return; } data.lanes.forEach(function (lane, index) { var x = 20 + index * 222; laneLayer.appendChild(svgElement("rect", { x: x, y: 28, width: 202, height: 554, rx: 11, class: "lane-frame" + (lane.id === "edge" ? " edge" : "") })); laneLayer.appendChild(svgText(lane.label, { x: x + 13, y: 51, class: "lane-title" })); laneLayer.appendChild(svgText(lane.subtitle, { x: x + 13, y: 68, class: "lane-subtitle" })); }); }
+      function pathFor(from, to) { var start = centerFor(from); var end = centerFor(to); if (state.mobile) return "M " + start.x + " " + (start.y + mobileHeight / 2 - 4) + " L " + end.x + " " + (end.y - mobileHeight / 2 + 4); var mid = (start.x + end.x) / 2; var bend = start.y === end.y ? 0 : Math.max(26, Math.abs(end.y - start.y) * .32); return "M " + start.x + " " + start.y + " C " + (mid - bend) + " " + start.y + ", " + (mid + bend) + " " + end.y + ", " + end.x + " " + end.y; }
+      function renderEdges() { edgeLayer.replaceChildren(); currentView().steps.forEach(function (step, index) { var from = byId(step.from); var to = byId(step.to); if (!from || !to) return; var isActive = index === state.step; var isPast = index < state.step; var path = svgElement("path", { d: pathFor(step.from, step.to), class: "edge" + (isActive ? " is-active" : "") + (isPast ? " is-past" : "") + (index < state.step - 2 ? " is-dim" : ""), "data-edge-id": edgeId(step, index) }); var group = svgElement("g", {}); group.appendChild(path); if (isActive) { var start = centerFor(step.from); var end = centerFor(step.to); var label = svgText(step.label, { x: state.mobile ? 310 : (start.x + end.x) / 2, y: state.mobile ? (start.y + end.y) / 2 - 4 : (start.y + end.y) / 2 - 9, class: "edge-label is-active", "text-anchor": "middle" }); group.appendChild(label); } edgeLayer.appendChild(group); }); }
+      function involvedNodes() { var active = new Set(); var past = new Set(); currentView().steps.forEach(function (step, index) { if (index <= state.step) { past.add(step.from); past.add(step.to); } if (index === state.step) { active.add(step.from); active.add(step.to); } }); return { active: active, past: past }; }
+      function renderNodes() { nodeLayer.replaceChildren(); var involved = involvedNodes(); currentView().focus.forEach(function (id) { var node = byId(id); if (!node) return; var position = positionFor(id); var isActive = involved.active.has(id) || state.nodeId === id; var isPast = involved.past.has(id); var isDim = !isActive && !isPast && state.nodeId !== id; var group = svgElement("g", { class: "node" + (isActive ? " is-active" : "") + (isPast ? " is-past" : "") + (isDim ? " is-dim" : ""), "data-node-id": id, "data-kind": node.kind, role: "button", tabindex: "0", "aria-label": node.label + ", " + node.sublabel }); group.appendChild(svgElement("rect", { x: position.x, y: position.y, width: position.w, height: position.h, rx: 9, class: "node-card" })); group.appendChild(svgElement("rect", { x: position.x, y: position.y, width: 5, height: position.h, rx: 3, class: "node-accent" })); group.appendChild(svgText(node.label, { x: position.x + 15, y: position.y + 23, class: "node-label" })); group.appendChild(svgText(node.sublabel, { x: position.x + 15, y: position.y + 42, class: "node-detail" })); group.appendChild(svgText(node.kind, { x: position.x + 15, y: position.y + position.h - 11, class: "node-kind" })); group.appendChild(svgText(node.tag, { x: position.x + position.w - 10, y: position.y + position.h - 11, class: "node-tag", "text-anchor": "end" })); group.addEventListener("click", function () { selectNode(id); }); group.addEventListener("keydown", function (event) { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(id); } }); nodeLayer.appendChild(group); }); }
+      function renderPulse() { pulseLayer.replaceChildren(); var step = currentStep(); if (!step) return; var start = centerFor(step.from); var end = centerFor(step.to); pulseLayer.appendChild(svgElement("circle", { cx: (start.x + end.x) / 2, cy: (start.y + end.y) / 2, r: 5, class: "pulse", filter: "url(#softGlow)" })); }
+      function renderDiagram() { updateViewBox(); renderLanes(); renderEdges(); renderNodes(); renderPulse(); document.getElementById("mapStatus").textContent = (state.mobile ? "MOBILE · " : "MAP · ") + currentView().short_label; }
+      function renderViews() { var tabs = document.getElementById("viewTabs"); tabs.replaceChildren(); data.views.forEach(function (view, index) { var button = document.createElement("button"); button.type = "button"; button.textContent = String(index + 1).padStart(2, "0") + "  " + view.short_label; button.className = view.id === state.viewId ? "is-active" : ""; button.setAttribute("aria-current", view.id === state.viewId ? "page" : "false"); button.addEventListener("click", function () { setView(view.id); }); tabs.appendChild(button); }); }
+      function renderStory() { var view = currentView(); var progress = view.steps.length ? ((state.step + 1) / view.steps.length) * 100 : 0; document.getElementById("viewEyebrow").textContent = "View " + String(data.views.indexOf(view) + 1).padStart(2, "0") + " / " + String(data.views.length).padStart(2, "0"); document.getElementById("storyTitle").textContent = view.label; document.getElementById("storyNote").textContent = view.note; document.getElementById("progressBar").style.width = progress + "%"; document.querySelector(".progress").setAttribute("aria-valuenow", String(Math.round(progress))); document.getElementById("stepCount").textContent = "Step " + (state.step + 1) + " of " + view.steps.length; var stepList = document.getElementById("stepList"); stepList.replaceChildren(); view.steps.forEach(function (step, index) { var button = document.createElement("button"); button.type = "button"; button.className = "step" + (index === state.step ? " is-active" : ""); button.innerHTML = "<span class=\"step-number\">" + (index + 1) + "</span><span><strong>" + escapeHtml(step.label) + "</strong><small>" + escapeHtml(step.detail) + "</small></span>"; button.addEventListener("click", function () { state.step = index; state.nodeId = step.to; stopPlayback(); render(); updateHash(); }); stepList.appendChild(button); }); document.getElementById("playButton").textContent = state.playing ? "Pause story" : "Play story"; document.getElementById("playButton").setAttribute("aria-pressed", state.playing ? "true" : "false"); document.getElementById("captionStep").textContent = "Step " + (state.step + 1) + " · " + view.steps[state.step].label; renderViews(); }
+      function renderActiveStep() { var step = currentStep(); var target = document.getElementById("activeStep"); if (!step) { target.innerHTML = "<strong>No step</strong><p>This view has no authored steps.</p>"; return; } var from = byId(step.from); var to = byId(step.to); target.innerHTML = "<strong>" + escapeHtml(step.label) + "</strong><p>" + escapeHtml(from.label) + " → " + escapeHtml(to.label) + "<br>" + escapeHtml(step.detail) + "</p>"; }
+      function renderDetail() { var node = byId(state.nodeId) || byId(currentStep().to) || byId(currentView().focus[0]); if (!node) return; state.nodeId = node.id; document.getElementById("detailTitle").textContent = node.label; document.getElementById("detailDescription").textContent = node.detail; document.getElementById("detailRecord").textContent = node.record || "—"; var list = document.getElementById("sourceList"); list.replaceChildren(); (node.sources || []).forEach(function (source) { var link = document.createElement("a"); link.href = REPOSITORY + source.path; link.target = "_blank"; link.rel = "noreferrer"; link.textContent = source.path; list.appendChild(link); }); }
+      function renderSearchResults() { var query = document.getElementById("nodeSearch").value.trim().toLowerCase(); var result = document.getElementById("searchResults"); result.replaceChildren(); if (!query) return; var matches = currentView().focus.map(byId).filter(function (node) { return node && (node.label + " " + node.sublabel + " " + node.kind).toLowerCase().indexOf(query) >= 0; }).slice(0, 8); if (!matches.length) { result.textContent = "No matching node"; result.style.color = "var(--faint)"; result.style.fontSize = ".7rem"; return; } matches.forEach(function (node) { var button = document.createElement("button"); button.type = "button"; button.textContent = node.label + " · " + node.kind; button.addEventListener("click", function () { selectNode(node.id); document.getElementById("nodeSearch").value = ""; result.replaceChildren(); }); result.appendChild(button); }); }
+      function renderNotes() { var notes = document.getElementById("notes"); notes.replaceChildren(); (data.cards || []).forEach(function (card) { var article = document.createElement("article"); article.className = "note-card"; article.innerHTML = "<h3><span class=\"dot " + escapeHtml(card.dot === "emerald" ? "emerald" : card.dot === "violet" ? "violet" : "") + "\"></span>" + escapeHtml(card.title) + "</h3><ul>" + card.items.map(function (item) { return "<li>" + escapeHtml(item) + "</li>"; }).join("") + "</ul>"; notes.appendChild(article); }); }
+      function render() { if (!data) return; renderStory(); renderDiagram(); renderActiveStep(); renderDetail(); renderSearchResults(); }
+      function selectNode(id) { if (!byId(id)) return; state.nodeId = id; var index = currentView().steps.findIndex(function (step) { return step.from === id || step.to === id; }); if (index >= 0) state.step = index; render(); updateHash(); }
+      function setView(id) { if (!data.views.some(function (view) { return view.id === id; })) return; state.viewId = id; state.step = 0; state.nodeId = currentView().steps[0] ? currentView().steps[0].from : currentView().focus[0]; stopPlayback(); render(); updateHash(); }
+      function moveStep(delta) { var view = currentView(); var next = state.step + delta; if (next < 0) next = 0; if (next >= view.steps.length) { stopPlayback(); next = view.steps.length - 1; } state.step = next; state.nodeId = view.steps[next].to; render(); updateHash(); }
+      function stopPlayback() { state.playing = false; clearInterval(playTimer); playTimer = null; }
+      function togglePlayback() { if (state.playing) { stopPlayback(); render(); return; } state.playing = true; render(); playTimer = setInterval(function () { if (state.step >= currentView().steps.length - 1) { stopPlayback(); render(); return; } state.step += 1; state.nodeId = currentStep().to; render(); updateHash(); }, 1800); }
+      function updateHash() { if (!data) return; var params = new URLSearchParams(); params.set("view", state.viewId); params.set("step", String(state.step)); if (state.nodeId) params.set("node", state.nodeId); history.replaceState(null, "", "#" + params.toString()); }
+      function readHash() { var params = new URLSearchParams(location.hash.slice(1)); var view = params.get("view"); if (view && data.views.some(function (item) { return item.id === view; })) state.viewId = view; var current = currentView(); var step = Number(params.get("step")); if (Number.isInteger(step) && step >= 0 && step < current.steps.length) state.step = step; var node = params.get("node"); if (node && current.focus.indexOf(node) >= 0) state.nodeId = node; if (!state.nodeId) state.nodeId = current.steps[state.step] ? current.steps[state.step].to : current.focus[0]; }
+      function toggleTheme() { var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark"; document.documentElement.setAttribute("data-theme", next); document.getElementById("themeButton").textContent = next === "dark" ? "Light" : "Dark"; try { localStorage.setItem("cinemind-flow-theme", next); } catch (_) {} }
+      function toggleMotion() { var next = document.documentElement.getAttribute("data-motion") === "live" ? "still" : "live"; document.documentElement.setAttribute("data-motion", next); var button = document.getElementById("motionButton"); button.textContent = next === "live" ? "Live" : "Still"; button.setAttribute("aria-pressed", next === "live" ? "true" : "false"); }
+      function togglePresent() { var active = document.documentElement.getAttribute("data-present") === "true"; document.documentElement.setAttribute("data-present", active ? "false" : "true"); document.getElementById("presentButton").textContent = active ? "Present" : "Exit present"; setTimeout(function () { updateViewBox(); renderDiagram(); }, 60); }
+      function copyLink() { var url = location.href; if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(function () { showToast("Current flow link copied"); }).catch(function () { showToast("Copy failed"); }); else showToast("Copy is not available in this browser"); }
+      function exportSvg() { var clone = diagram.cloneNode(true); clone.setAttribute("xmlns", NS); clone.setAttribute("width", state.mobile ? "620" : "1120"); var style = document.createElementNS(NS, "style"); style.textContent = ".lane-frame{fill:#10243a;stroke:#416789}.lane-title{fill:#f2f7ff;font:800 12px system-ui}.lane-subtitle{fill:#9fb3c9;font:10px system-ui}.edge{fill:none;stroke:#6884a2;stroke-width:1.65}.edge.is-active{stroke:#f6e7a7;stroke-width:2.7}.node-card{fill:#11243a;stroke:#416789}.node.is-active .node-card{fill:#2a3440;stroke:#f6e7a7;stroke-width:2}.node-accent{fill:#9fb3c9}.node-label{fill:#f2f7ff;font:800 13px system-ui}.node-detail{fill:#9fb3c9;font:10px system-ui}.node-kind,.node-tag{fill:#6f88a3;font:9px ui-monospace}.edge-label{fill:#f6e7a7;font:700 10px system-ui}"; clone.insertBefore(style, clone.firstChild); var blob = new Blob(["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + clone.outerHTML], { type: "image/svg+xml" }); var link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "cinemind-system-flow.svg"; link.click(); setTimeout(function () { URL.revokeObjectURL(link.href); }, 600); showToast("SVG exported"); }
+      function bindControls() { document.getElementById("previousButton").addEventListener("click", function () { moveStep(-1); }); document.getElementById("nextButton").addEventListener("click", function () { moveStep(1); }); document.getElementById("playButton").addEventListener("click", togglePlayback); document.getElementById("resetButton").addEventListener("click", function () { state.step = 0; state.nodeId = currentView().steps[0].from; stopPlayback(); render(); updateHash(); }); document.getElementById("themeButton").addEventListener("click", toggleTheme); document.getElementById("motionButton").addEventListener("click", toggleMotion); document.getElementById("presentButton").addEventListener("click", togglePresent); document.getElementById("copyButton").addEventListener("click", copyLink); document.getElementById("exportButton").addEventListener("click", exportSvg); document.getElementById("guideButton").addEventListener("click", function () { document.getElementById("guideDialog").showModal(); }); document.querySelectorAll("[data-close]").forEach(function (button) { button.addEventListener("click", function () { document.getElementById(button.getAttribute("data-close")).close(); }); }); document.getElementById("presetSelect").addEventListener("change", function (event) { document.documentElement.setAttribute("data-preset", event.target.value); }); document.getElementById("nodeSearch").addEventListener("input", renderSearchResults); window.addEventListener("resize", function () { if (!data) return; renderDiagram(); }); window.addEventListener("hashchange", function () { readHash(); render(); }); document.addEventListener("keydown", function (event) { if (event.target && ["INPUT", "SELECT", "TEXTAREA"].indexOf(event.target.tagName) >= 0) return; if (event.key === "ArrowRight" || event.key === "]") { event.preventDefault(); moveStep(1); } else if (event.key === "ArrowLeft" || event.key === "[") { event.preventDefault(); moveStep(-1); } else if (event.key.toLowerCase() === "p") { event.preventDefault(); togglePlayback(); } else if (event.key.toLowerCase() === "t") { event.preventDefault(); toggleTheme(); } else if (event.key === "0") { event.preventDefault(); document.getElementById("resetButton").click(); } else if (event.key === "/") { event.preventDefault(); document.getElementById("nodeSearch").focus(); } else if (event.key === "?") { event.preventDefault(); document.getElementById("guideDialog").showModal(); } }); }
+      function loadArchitecture() { if (location.protocol === "file:") return Promise.resolve({ source: "embedded", value: FALLBACK_DATA }); return fetch("cinemind-system-flow.architecture.json", { cache: "no-store" }).then(function (response) { if (!response.ok) throw new Error("architecture JSON returned " + response.status); return response.json(); }).then(function (value) { return { source: "json", value: value }; }).catch(function () { return { source: "embedded", value: FALLBACK_DATA }; }); }
+      bindControls();
+      loadArchitecture().then(function (loaded) { data = normalizeData(loaded.value); state.viewId = data.meta.default_view || data.views[0].id; var savedTheme = null; try { savedTheme = localStorage.getItem("cinemind-flow-theme"); } catch (_) {} if (savedTheme === "light" || savedTheme === "dark") document.documentElement.setAttribute("data-theme", savedTheme); document.getElementById("themeButton").textContent = document.documentElement.getAttribute("data-theme") === "dark" ? "Light" : "Dark"; document.getElementById("sourceStatus").textContent = loaded.source === "json" ? "Architecture JSON loaded" : "Standalone embedded data"; readHash(); renderNotes(); render(); });
+    })();
   </script>
 </body>
 </html>
