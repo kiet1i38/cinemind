@@ -12,7 +12,7 @@ module.exports = (_, argv = {}) => ({
     path: path.resolve(__dirname, "dist"),
     filename: "assets/[name].[contenthash:8].js",
     clean: true,
-    publicPath: "./"
+    publicPath: argv.mode === "production" ? "./" : "/"
   },
   resolve: {
     extensions: [".js", ".jsx"]
@@ -62,7 +62,10 @@ module.exports = (_, argv = {}) => ({
   ],
   devServer: {
     static: {
-      directory: path.resolve(__dirname, "public")
+      directory: path.resolve(__dirname, "public"),
+      staticOptions: {
+        index: false
+      }
     },
     historyApiFallback: true,
     hot: true,

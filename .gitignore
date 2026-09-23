@@ -31,3 +31,9 @@ output/
 .coverage
 .DS_Store
 Thumbs.db
+/tmp/
+_agent_ops
+.vscode
+AGENTS.md
+/ai-agent-workspace-pack/
+
