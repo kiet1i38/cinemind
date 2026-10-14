@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "3e48cbb1-9634-471a-8b34-964c0782f6b2",
+  "status": "current",
+  "command": "deliver",
+  "type": "dataflow",
+  "input": "/Volumes/Kingsman/Data Mining/cinemind/.archify/dataflow-week5-inheritance-20261013-163618/candidate.json",
+  "output": "/Volumes/Kingsman/Data Mining/cinemind/.archify/dataflow-week5-inheritance-20261013-163618/week5-inheritance.html",
+  "specification": {
+    "sha256": "39949ed6aa4a733a4f67ea5cc486ba52129b86efb135e36752cbb1320b7b0db9",
+    "bytes": 6928
+  },
+  "artifact": {
+    "sha256": "e292067854ca8af6fdce9ff4ef9646dee9c3025c8066014fdc07b672613e76c1",
+    "bytes": 760403
+  }
+}

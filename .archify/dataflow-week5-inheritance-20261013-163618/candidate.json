@@ -1,0 +1,306 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Week 5 — Thừa hưởng và phần mới",
+    "output": ".archify/dataflow-week5-inheritance-20261013-163618/week5-inheritance.html",
+    "quality_profile": "showcase",
+    "legend": {
+      "entries": {
+        "default": {
+          "label": "Tái sử dụng / tạo score"
+        },
+        "emphasis": {
+          "label": "Kết hợp và xuất Top-K"
+        },
+        "security": {
+          "label": "Chỉ dùng sau gate"
+        },
+        "database": {
+          "label": "Output CSV/JSON"
+        }
+      }
+    }
+  },
+  "stages": [
+    {
+      "label": "THUẬT TOÁN / BASELINE"
+    },
+    {
+      "label": "SIGNAL VÀ ĐIỀU KIỆN"
+    },
+    {
+      "label": "KẾT HỢP TRONG WEEK 5"
+    },
+    {
+      "label": "OUTPUT OFFLINE"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "week3_content",
+      "type": "external",
+      "label": "W3 · TF-IDF",
+      "sublabel": "+ Cosine similarity",
+      "tag": "WEEK 3 · KẾ THỪA",
+      "icon": "none",
+      "stage": 0,
+      "row": 0,
+      "width": 144,
+      "height": 82
+    },
+    {
+      "id": "content_score",
+      "type": "backend",
+      "label": "Content score",
+      "sublabel": "Profile → title",
+      "tag": "Similarity",
+      "icon": "none",
+      "stage": 1,
+      "row": 0,
+      "width": 144,
+      "height": 82
+    },
+    {
+      "id": "week4_tree",
+      "type": "external",
+      "label": "W4 · Tree",
+      "sublabel": "Decision Tree",
+      "tag": "WEEK 4 · KẾ THỪA",
+      "icon": "none",
+      "stage": 0,
+      "row": 1,
+      "width": 144,
+      "height": 82
+    },
+    {
+      "id": "pre_rec_gate",
+      "type": "security",
+      "label": "Contract pre-rec",
+      "sublabel": "Đổi features + fit lại",
+      "tag": "Gate trước P_like",
+      "icon": "none",
+      "stage": 1,
+      "row": 1,
+      "width": 144,
+      "height": 82
+    },
+    {
+      "id": "week5_kmeans",
+      "type": "backend",
+      "label": "W5 · K-means",
+      "sublabel": "ML mới · nhóm user",
+      "tag": "WEEK 5 · ML MỚI",
+      "icon": "none",
+      "stage": 0,
+      "row": 2,
+      "width": 144,
+      "height": 82
+    },
+    {
+      "id": "cluster_gate",
+      "type": "security",
+      "label": "Cụm đủ căn cứ",
+      "sublabel": "Ý nghĩa + ổn định",
+      "tag": "Gate cluster signal",
+      "icon": "none",
+      "stage": 1,
+      "row": 2,
+      "width": 144,
+      "height": 82
+    },
+    {
+      "id": "week5_popularity",
+      "type": "backend",
+      "label": "W5 · Popularity",
+      "sublabel": "Baseline mới",
+      "tag": "WEEK 5 · BASELINE MỚI",
+      "icon": "none",
+      "stage": 0,
+      "row": 3,
+      "width": 144,
+      "height": 82
+    },
+    {
+      "id": "popularity_score",
+      "type": "backend",
+      "label": "Popularity score",
+      "sublabel": "Chuẩn hóa count",
+      "tag": "Baseline",
+      "icon": "none",
+      "stage": 1,
+      "row": 3,
+      "width": 144,
+      "height": 82
+    },
+    {
+      "id": "hybrid_ranker",
+      "type": "backend",
+      "label": "Hybrid Ranking",
+      "sublabel": "Logic ghép score mới",
+      "tag": "WEEK 5 · LOGIC MỚI",
+      "icon": "none",
+      "stage": 2,
+      "row": 1,
+      "width": 144,
+      "height": 82
+    },
+    {
+      "id": "topk_output",
+      "type": "database",
+      "label": "Top-5 / Top-10",
+      "sublabel": "Rank · score · reason",
+      "tag": "CSV / JSON",
+      "icon": "none",
+      "stage": 3,
+      "row": 1,
+      "width": 144,
+      "height": 82
+    }
+  ],
+  "flows": [
+    {
+      "id": "reuse_content",
+      "from": "week3_content",
+      "to": "content_score",
+      "label": "Kế thừa",
+      "variant": "default",
+      "route": "straight"
+    },
+    {
+      "id": "content_to_hybrid",
+      "from": "content_score",
+      "to": "hybrid_ranker",
+      "label": "Similarity",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "top",
+      "via": [
+        [
+          530,
+          169
+        ]
+      ],
+      "labelAt": [
+        450,
+        153
+      ]
+    },
+    {
+      "id": "reuse_tree_family",
+      "from": "week4_tree",
+      "to": "pre_rec_gate",
+      "label": "Kiểu cây",
+      "variant": "default",
+      "route": "straight"
+    },
+    {
+      "id": "valid_preference",
+      "from": "pre_rec_gate",
+      "to": "hybrid_ranker",
+      "label": "P_like hợp lệ",
+      "variant": "security",
+      "route": "straight",
+      "labelAt": [
+        422.5,
+        228
+      ]
+    },
+    {
+      "id": "assign_users",
+      "from": "week5_kmeans",
+      "to": "cluster_gate",
+      "label": "Gán cụm",
+      "variant": "default",
+      "route": "straight"
+    },
+    {
+      "id": "valid_clusters",
+      "from": "cluster_gate",
+      "to": "hybrid_ranker",
+      "label": "Cluster nếu đạt gate",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "via": [
+        [
+          530,
+          397
+        ]
+      ],
+      "labelAt": [
+        455,
+        415
+      ]
+    },
+    {
+      "id": "count_popularity",
+      "from": "week5_popularity",
+      "to": "popularity_score",
+      "label": "Tính support",
+      "variant": "default",
+      "route": "straight"
+    },
+    {
+      "id": "popularity_to_hybrid",
+      "from": "popularity_score",
+      "to": "hybrid_ranker",
+      "label": "Popularity",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "via": [
+        [
+          530,
+          511
+        ]
+      ],
+      "labelAt": [
+        455,
+        529
+      ]
+    },
+    {
+      "id": "rank_to_output",
+      "from": "hybrid_ranker",
+      "to": "topk_output",
+      "label": "Xếp hạng",
+      "variant": "emphasis",
+      "route": "straight"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Thừa hưởng từ các tuần trước",
+      "items": [
+        "Week 3: tái sử dụng TF-IDF và cosine để tạo content similarity.",
+        "Week 4: kế thừa Decision Tree; phải fit đúng contract trước recommendation."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Thuật toán ML mới của Week 5",
+      "items": [
+        "K-means: fit centroids và assign user vào cluster.",
+        "StandardScaler hỗ trợ chuẩn hóa features trước clustering."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Logic mới để tạo recommendation",
+      "items": [
+        "Popularity baseline: đếm positive support từ history của cohort.",
+        "Hybrid Ranking: kết hợp score, sắp xếp và chọn Top-K."
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Phạm vi của sơ đồ",
+      "items": [
+        "Đây là luồng dự kiến theo plan Week 5.",
+        "Tree/cluster demo chưa chứng minh chất lượng trên public users."
+      ]
+    }
+  ]
+}
