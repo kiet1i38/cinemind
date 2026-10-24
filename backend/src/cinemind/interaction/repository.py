@@ -573,3 +573,24 @@ class InteractionRepository:
             (session_parameter,),
         ).fetchall()
         return {"ratings": tuple(dict(row) for row in ratings)}
+
+    def seen_show_ids(self, user_id: UUID) -> frozenset[str]:
+        """Return every title rated or watched by sessions owned by this account."""
+
+        rows = self.connection.execute(
+            """
+            SELECT DISTINCT t.show_id
+            FROM (
+                SELECT session_id, title_id
+                FROM interaction.ratings
+                UNION
+                SELECT session_id, title_id
+                FROM interaction.watch_sessions
+            ) AS seen
+            JOIN interaction.sessions s ON s.session_id = seen.session_id
+            JOIN catalog.titles t ON t.title_id = seen.title_id
+            WHERE s.user_id = %s
+            """,
+            (user_id,),
+        ).fetchall()
+        return frozenset(str(row["show_id"]) for row in rows)

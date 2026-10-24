@@ -114,9 +114,9 @@ class InteractionRateLimitMiddleware:
 
     async def __call__(self, scope, receive: Callable, send: Callable) -> None:
         path = scope.get("path", "")
-        if scope["type"] != "http" or not (
-            path == "/api/interaction" or path.startswith("/api/interaction/")
-        ):
+        is_interaction_path = path == "/api/interaction" or path.startswith("/api/interaction/")
+        is_recommendation_path = path == "/api/recommendations" or path.startswith("/api/recommendations/")
+        if scope["type"] != "http" or not (is_interaction_path or is_recommendation_path):
             await self.app(scope, receive, send)
             return
 
@@ -206,7 +206,7 @@ class InteractionRateLimitMiddleware:
                 write_endpoint_decision.retry_after_seconds if write_endpoint_decision else 0,
             )
             await JSONResponse(
-                {"detail": "Too many interaction requests. Please try again later."},
+                {"detail": "Too many API requests. Please try again later."},
                 status_code=429,
                 headers={"Retry-After": str(retry_after)},
             )(scope, receive, send)

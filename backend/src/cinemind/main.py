@@ -15,6 +15,7 @@ from cinemind.config import get_settings
 from cinemind.db.connection import close_pool, connection_scope
 from cinemind.db.migrations import MigrationRunner
 from cinemind.interaction.routes import router as interaction_router
+from cinemind.recommendations.routes import router as recommendations_router
 from cinemind.middleware import (
     CSRFMiddleware,
     InteractionRateLimitMiddleware,
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
     application.include_router(interaction_router)
     application.include_router(auth_router)
     application.include_router(admin_router)
+    application.include_router(recommendations_router)
     application.add_event_handler("shutdown", close_pool)
 
     @application.get("/healthz")

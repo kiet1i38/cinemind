@@ -30,6 +30,7 @@
     "sourceUrl": "data/catalog.json",
     "manifestPath": "public/data/catalog-manifest.json",
     "manifestUrl": "data/catalog-manifest.json",
+    "requestTimeoutMs": 30000,
     "versionCheckApiBaseUrl": "/api/catalog",
     "allValue": "all",
     "types": [
