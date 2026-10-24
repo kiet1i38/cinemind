@@ -107,7 +107,7 @@ class InteractionRepositoryTests(unittest.TestCase):
             ]
         )
 
-        state = InteractionRepository(connection).interaction_state(session_id)
+        state = InteractionRepository(connection).interaction_state(session_id=session_id)
 
         self.assertEqual(state["ratings"][0]["rating"], Decimal("8.0"))
         query = connection.statements[0][0]
@@ -144,7 +144,7 @@ class InteractionRepositoryTests(unittest.TestCase):
             ]
         )
 
-        state = InteractionRepository(connection).interaction_state(session_id)
+        state = InteractionRepository(connection).interaction_state(session_id=session_id)
 
         self.assertEqual(state["ratings"][0]["rating"], Decimal("6.0"))
 

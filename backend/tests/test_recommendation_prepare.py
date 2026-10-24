@@ -296,6 +296,33 @@ def test_accepts_seed_baseline_and_extra_events_with_four_groups_of_25(week6_bun
     assert [counts[f"favorite_group_{group}"] for group in groups] == [25, 25, 25, 25]
 
 
+def test_listedin_list_and_string_forms_yield_identical_content_vectors(week6_bundle):
+    seed_dir, catalog_path, artifact_path = week6_bundle
+    string_catalog = [
+        {"id": "s1", "title": "Quiet Harbor", "description": "A quiet harbor at night.", "listedIn": "Drama"},
+        {"id": "s2", "title": "Bright City", "description": "A lively city adventure.", "listedIn": "Action"},
+        {"id": "s3", "title": "Harbor Lights", "description": "Friends solve a mystery.", "listedIn": "Drama, Mystery"},
+    ]
+    list_catalog = [
+        {"id": "s1", "title": "Quiet Harbor", "description": "A quiet harbor at night.", "listedIn": ["Drama"]},
+        {"id": "s2", "title": "Bright City", "description": "A lively city adventure.", "listedIn": ["Action"]},
+        {"id": "s3", "title": "Harbor Lights", "description": "Friends solve a mystery.", "listedIn": ["Drama", "Mystery"]},
+    ]
+
+    vectors = []
+    for variant in (string_catalog, list_catalog):
+        variant_path = tmp_variant = artifact_path.parent / f"catalog-{len(vectors)}.json"
+        tmp_variant.write_text(json.dumps(variant), encoding="utf-8")
+        prepare_recommendation_artifact(
+            input_dir=seed_dir, catalog_path=variant_path, output_path=artifact_path
+        )
+        vectors.append(RecommendationArtifactStore(artifact_path).load().artifact["content_vectors"])
+
+    assert vectors[0].keys() == vectors[1].keys()
+    for show_id in vectors[0]:
+        assert vectors[0][show_id] == vectors[1][show_id]
+
+
 def test_rejects_invalid_pseudonymous_search_key(week6_bundle):
     seed_dir, catalog_path, artifact_path = week6_bundle
     rows = list(csv.DictReader((seed_dir / "searches.csv").open(encoding="utf-8")))

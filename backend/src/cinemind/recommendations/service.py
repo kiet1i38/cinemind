@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -48,13 +49,16 @@ class RecommendationService:
 
     def recommend(self, *, user_id: UUID, algorithm: str, limit: int) -> dict[str, Any]:
         catalog = self._read_catalog()
-        history = self.interaction_repository.interaction_state(UUID(int=0), user_id)
+        history = self.interaction_repository.interaction_state(user_id=user_id)
         ratings = list(history.get("ratings", ()))
         seen_show_ids = set(self.interaction_repository.seen_show_ids(user_id))
         snapshot = self.artifact_store.load()
         artifact = snapshot.artifact
         vectors = artifact.get("content_vectors", {}) if artifact else {}
-        similarity = content_similarity_scores(ratings, vectors) if vectors else None
+        # One request, one clock: content scoring and ranking must not observe
+        # slightly different recency windows.
+        now = datetime.now(timezone.utc)
+        similarity = content_similarity_scores(ratings, vectors, now=now) if vectors else None
         result = rank_recommendations(
             catalog=catalog,
             ratings=ratings,
@@ -64,6 +68,7 @@ class RecommendationService:
             limit=limit,
             content_similarity=similarity,
             tree_features_by_show=(artifact or {}).get("tree_features_by_show"),
+            now=now,
         )
         return {
             **result,

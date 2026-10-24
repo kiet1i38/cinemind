@@ -525,9 +525,18 @@ class InteractionRepository:
 
     def interaction_state(
         self,
-        session_id: UUID,
+        *,
+        session_id: UUID | None = None,
         user_id: UUID | None = None,
     ) -> dict[str, tuple[dict, ...]]:
+        """Load the latest rating per title, scoped to one session or one account.
+
+        Exactly one of session_id/user_id must be given; account scope wins
+        when both are supplied.
+        """
+
+        if session_id is None and user_id is None:
+            raise ValueError("interaction_state requires session_id or user_id")
         session_clause = "s.user_id = %s" if user_id is not None else "s.session_id = %s"
         session_parameter = user_id if user_id is not None else session_id
         ratings = self.connection.execute(

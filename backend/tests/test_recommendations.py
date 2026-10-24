@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, Response
 
 from cinemind.auth.dependencies import require_auth_context
 from cinemind.interaction.repository import InteractionRepository
@@ -63,7 +63,7 @@ class FakeInteractionRepository:
         self.seen = frozenset(seen)
         self.requested_user = None
 
-    def interaction_state(self, session_id, user_id):
+    def interaction_state(self, *, session_id=None, user_id=None):
         self.requested_user = user_id
         return {"ratings": self.ratings}
 
@@ -90,6 +90,41 @@ class RecommendationCoreTests(unittest.TestCase):
 
         self.assertGreater(scores["close"], scores["unrelated"])
         self.assertGreater(scores["liked"], scores["unrelated"])
+
+    def test_rank_recommendations_respects_supplied_now(self):
+        catalog = [
+            title("drama-high", "Drama High", 2024, ["Drama"]),
+            title("drama-low", "Drama Low", 2023, ["Drama"]),
+            title("drama", "Drama Pick", 2025, ["Drama"]),
+            title("comedy", "Comedy Pick", 2025, ["Comedy"]),
+        ]
+        # One dated high rating and one undated low rating: exponential decay
+        # is translation-invariant, so the clock only shows through the pair.
+        ratings = [
+            {"show_id": "drama-high", "rating": 9, "event_at": "2026-10-01T00:00:00+00:00"},
+            {"show_id": "drama-low", "rating": 6, "event_at": None},
+        ]
+        shared = dict(
+            catalog=catalog,
+            ratings=ratings,
+            seen_show_ids={"drama-high", "drama-low"},
+            artifact=None,
+            algorithm="content",
+            limit=5,
+        )
+        near = rank_recommendations(now=datetime(2026, 10, 16, tzinfo=timezone.utc), **shared)
+        far = rank_recommendations(now=datetime(2027, 10, 16, tzinfo=timezone.utc), **shared)
+
+        near_by_id = {row["title"]["show_id"]: row for row in near["items"]}
+        far_by_id = {row["title"]["show_id"]: row for row in far["items"]}
+        # With the near clock the recent high rating still dominates the Drama
+        # profile; a year later only the undated low rating survives decay.
+        self.assertGreater(
+            near_by_id["drama"]["component_scores"]["content"],
+            far_by_id["drama"]["component_scores"]["content"],
+        )
+        self.assertEqual(near["items"][0]["title"]["show_id"], "drama")
+        self.assertAlmostEqual(far_by_id["drama"]["component_scores"]["content"], 0.04, places=6)
 
     def test_missing_artifact_falls_back_to_deterministic_newest_catalog_titles(self):
         result = rank_recommendations(
@@ -347,6 +382,7 @@ class RecommendationRouteTests(unittest.TestCase):
                 for parameter in endpoint_schema["parameters"]
                 if parameter["name"] == "limit"
             )
+            components = app.openapi()["components"]["schemas"]
             route = next(route for route in router.routes if getattr(route, "path", None) == "/api/recommendations")
 
         self.assertTrue(any(dependency.call is require_auth_context for dependency in route.dependant.dependencies))
@@ -354,8 +390,9 @@ class RecommendationRouteTests(unittest.TestCase):
         self.assertEqual(response.headers["vary"], "Cookie")
         self.assertEqual(payload["items"][0]["title"]["show_id"], "candidate")
         self.assertEqual(algorithm_schema["enum"], ["popularity", "content", "hybrid"])
-        self.assertEqual(limit_schema["type"], "integer")
-        self.assertEqual((limit_schema["minimum"], limit_schema["maximum"]), (5, 10))
+        self.assertEqual(limit_schema["default"], 10)
+        self.assertEqual(components["RecommendationLimit"]["type"], "integer")
+        self.assertEqual(components["RecommendationLimit"]["enum"], [5, 10])
 
     def test_recommendation_route_rejects_unsupported_page_size(self):
         user_id = UUID("22222222-2222-4222-8222-222222222222")
@@ -364,18 +401,47 @@ class RecommendationRouteTests(unittest.TestCase):
             FakeInteractionRepository(),
             RecommendationArtifactStore(Path("missing-recommendation-artifact.json")),
         )
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_recommendation_service] = lambda: service
+        app.dependency_overrides[require_auth_context] = lambda: SimpleNamespace(user_id=user_id)
 
-        with self.assertRaises(HTTPException) as raised:
-            get_recommendations(
-                response=Response(),
-                algorithm="hybrid",
-                limit=6,
-                context=SimpleNamespace(user_id=user_id),
-                service=service,
-            )
+        async def request(limit):
+            messages = []
+            request_sent = False
 
-        self.assertEqual(raised.exception.status_code, 422)
-        self.assertEqual(raised.exception.detail, "Limit must be 5 or 10")
+            async def receive():
+                nonlocal request_sent
+                if not request_sent:
+                    request_sent = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                messages.append(message)
+
+            query = f"algorithm=hybrid&limit={limit}".encode("ascii")
+            scope = {
+                "type": "http",
+                "asgi": {"version": "3.0", "spec_version": "2.3"},
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/api/recommendations",
+                "raw_path": b"/api/recommendations",
+                "query_string": query,
+                "root_path": "",
+                "headers": [(b"host", b"testserver")],
+                "client": ("127.0.0.1", 1234),
+                "server": ("testserver", 80),
+                "app": app,
+            }
+            await app(scope, receive, send)
+            start = next(message for message in messages if message["type"] == "http.response.start")
+            return start["status"]
+
+        # The enum generates the rejection now; only the status is ours to claim.
+        self.assertEqual(asyncio.run(request("6")), 422)
 
     def test_http_query_accepts_supported_numeric_limits(self):
         user_id = UUID("22222222-2222-4222-8222-222222222222")
@@ -439,7 +505,6 @@ class RecommendationRouteTests(unittest.TestCase):
 
         status, body = asyncio.run(request("6"))
         self.assertEqual(status, 422)
-        self.assertEqual(body["detail"], "Limit must be 5 or 10")
 
 
 class InteractionSeenTitleTests(unittest.TestCase):

@@ -43,7 +43,7 @@ class StubInteractionRepository:
         self.ratings = tuple(ratings)
         self.seen = frozenset(seen)
 
-    def interaction_state(self, session_id, user_id):
+    def interaction_state(self, *, session_id=None, user_id=None):
         return {"ratings": self.ratings}
 
     def seen_show_ids(self, user_id):

@@ -17,6 +17,7 @@ from preference_features import (
     ADVANCED_FEATURES,
     BASIC_FEATURES,
     COHORTS,
+    FEATURE_VERSION,
     LABELS,
     parse_time,
 )
@@ -274,7 +275,7 @@ def evaluate(rows, cohort, manifest):
     else:
         train, validation, test = splits
     report = {
-        "feature_version": "preference-v0.1",
+        "feature_version": FEATURE_VERSION,
         "cohort": cohort,
         "evaluation_status": status,
         "status_reason": reason,

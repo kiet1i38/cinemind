@@ -1,10 +1,11 @@
 """Authenticated API routes for data-mining recommendations."""
 
 from collections.abc import Iterator
+from enum import Enum
 from functools import lru_cache
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Query, Response
 
 from cinemind.auth.dependencies import AuthContext, require_auth_context
 from cinemind.catalog.repository import CatalogRepository
@@ -57,20 +58,22 @@ def get_recommendation_status(
     return service.status()
 
 
+class RecommendationLimit(int, Enum):
+    """The only page sizes the API contract supports."""
+
+    FIVE = 5
+    TEN = 10
+
+
 @router.get("", response_model=RecommendationResponse)
 def get_recommendations(
     response: Response,
     algorithm: Literal["popularity", "content", "hybrid"] = Query(default="hybrid"),
-    # Query parameters arrive as strings; FastAPI/Pydantic Literal[int] rejects
-    # "5"/"10" instead of coercing them. Parse as int, then enforce our two
-    # supported page sizes explicitly.
-    limit: int = Query(default=10, ge=5, le=10),
+    limit: RecommendationLimit = Query(default=RecommendationLimit.TEN),
     context: AuthContext = Depends(require_auth_context),
     service: RecommendationService = Depends(get_recommendation_service),
 ) -> dict:
     """Rank unseen titles using only the authenticated account's committed history."""
 
     _mark_private(response)
-    if limit not in (5, 10):
-        raise HTTPException(status_code=422, detail="Limit must be 5 or 10")
-    return service.recommend(user_id=context.user_id, algorithm=algorithm, limit=limit)
+    return service.recommend(user_id=context.user_id, algorithm=algorithm, limit=int(limit))

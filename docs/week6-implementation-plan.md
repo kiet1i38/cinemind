@@ -34,6 +34,7 @@ The startup preparation step validates the bundle and writes the artifact atomic
 - Search event text is omitted. The artifact contains no e-mail, username, account ID, raw search string, or session ID.
 - API/UI scaffolding is already present in the local tree. Cluster and `P(like)` remain explicitly disabled until the Week 5 cluster artifact and a valid chronological holdout are independently validated. Do not present disabled components as trained or evaluated.
 - Week 5 source algorithms (`mining/build_user_clusters.py`, `mining/pre_rec_tree.py`, and `mining/week5_pipeline.py`) are already on `main`; no separate collaborator branch contains mining files. The Week 6 runtime currently integrates the portable popularity/content components only. It does not load Python/joblib model pickles or claim the Week 5 clustering/tree models are integrated into runtime; safe portable serialization and real-data/holdout validation are still required before enabling them.
+- Serving uses the request's real-time clock with a 30-day exponential decay for content/genre recency — deliberately different from the mining pipeline's frozen export cutoff; this recency is intentional.
 - Compose runs catalog bootstrap, then `prepare_recommendations`, then starts the API. Missing exports should log a redacted skip code rather than take the catalog/auth API offline.
 
 ## Export contract

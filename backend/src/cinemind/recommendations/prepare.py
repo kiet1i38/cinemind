@@ -297,11 +297,22 @@ def _validated_events(
     return latest_ratings, dict(event_counts), max(event_times, default=None)
 
 
+def _document_text(record: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for field in ("title", "description", "listedIn"):
+        value = record.get(field)
+        if isinstance(value, (list, tuple)):
+            parts.extend(str(item) for item in value)
+        else:
+            parts.append(str(value or ""))
+    return " ".join(parts)
+
+
 def _content_vectors(catalog: dict[str, dict[str, Any]]) -> dict[str, dict[str, float]]:
     documents: dict[str, Counter[str]] = {}
     document_frequency: Counter[str] = Counter()
     for show_id, record in catalog.items():
-        text = " ".join(str(record.get(field) or "") for field in ("title", "description", "listedIn"))
+        text = _document_text(record)
         counts = Counter(TOKEN_PATTERN.findall(text.lower()))
         documents[show_id] = counts
         document_frequency.update(counts.keys())

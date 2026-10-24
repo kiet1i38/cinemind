@@ -215,10 +215,11 @@ def rank_recommendations(
     limit: int,
     content_similarity: dict[str, float] | None = None,
     tree_features_by_show: dict[str, list[float | None]] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Rank unseen catalog records without consulting any client-supplied identity."""
 
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     catalog_by_id = {str(item.get("show_id") or item.get("id")): item for item in catalog}
     available = [
         item for item in catalog

@@ -256,7 +256,7 @@ class FakeInteractionRepository:
             self.rating_mutations[mutation_key] = row
         return row
 
-    def interaction_state(self, session_id, _user_id=None):
+    def interaction_state(self, *, session_id=None, user_id=None):
         latest_by_device = {}
         for row in self.ratings:
             if row["session_id"] != session_id:

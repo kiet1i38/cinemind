@@ -599,7 +599,7 @@ class InteractionService:
     ) -> dict:
         self._require_session(session_id, user_id, session_token)
         snapshot_at = datetime.now(timezone.utc)
-        state = self.repository.interaction_state(session_id, user_id)
+        state = self.repository.interaction_state(session_id=session_id, user_id=user_id)
         return {
             "session_id": session_id,
             "snapshot_at": snapshot_at,
