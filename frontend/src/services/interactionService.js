@@ -288,9 +288,13 @@ export function recordSearchEvent({ query, resultCount, filters, ...metadata }, 
 export function submitSignal({ record, rating, watchMinutes, ...metadata }, context = null) {
   const interactionContext = normalizeInteractionContext(context);
   assertInteractionContext(interactionContext);
+  const ratingIsUnset = rating === null
+    || rating === undefined
+    || (typeof rating === "string" && !rating.trim());
+  const normalizedRating = ratingIsUnset ? null : Number(rating);
   const mutationId = queuePendingSignal(
     record.id,
-    { rating, watchMinutes },
+    { rating: normalizedRating, watchMinutes },
     metadata.mutationId,
     metadata.firstQueuedAt,
     interactionContext.owner,
@@ -307,7 +311,7 @@ export function submitSignal({ record, rating, watchMinutes, ...metadata }, cont
         body: JSON.stringify({
           session_id: sessionId,
           show_id: record.id,
-          rating,
+          rating: normalizedRating,
           watch_minutes: watchMinutes,
           client_occurred_at: clientOccurredAt,
           client_mutation_id: mutationId,
@@ -319,7 +323,7 @@ export function submitSignal({ record, rating, watchMinutes, ...metadata }, cont
       acknowledgePendingSignal(record.id, mutationId, interactionContext.owner, pendingEntry);
       cacheSignalReceipt(
         pendingEntry?.showId || record.id,
-        pendingEntry || { rating, watchMinutes, savedAt: clientOccurredAt },
+        pendingEntry || { rating: normalizedRating, watchMinutes, savedAt: clientOccurredAt },
         result,
         interactionContext.owner,
       );

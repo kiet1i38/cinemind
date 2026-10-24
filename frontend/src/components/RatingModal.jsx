@@ -113,7 +113,7 @@ export function RatingModal({ item, language, existingSignal, onClose, onSave })
     if (Object.keys(nextErrors).length) return;
     setIsSaving(true);
     try {
-      await onSave({ rating: Number(rating), watchMinutes: Number(watchDuration) });
+      await onSave({ rating: rating.trim() ? Number(rating) : null, watchMinutes: Number(watchDuration) });
     } catch (error) {
       setErrors({ form: error?.userMessage || "signalSaveError" });
     } finally {

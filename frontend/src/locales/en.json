@@ -94,7 +94,7 @@
   "ratingLabel": "Your rating",
   "ratingStars": "{value} out of 10",
   "ratingPlaceholder": "{min} to {max}",
-  "ratingHelper": "Choose a half-star step from {min} to {max}.",
+  "ratingHelper": "Optional. Choose a half-star step from {min} to {max}.",
   "watchDurationLabel": "Watch duration",
   "watchDurationPlaceholder": "Minutes watched",
   "watchDurationHelperMovie": "Enter the number of minutes you watched.",

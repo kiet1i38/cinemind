@@ -198,7 +198,7 @@ def create_signal(
     auth: AuthContext = Depends(require_auth_context),
     service: InteractionService = Depends(get_interaction_service),
 ) -> SignalResponse:
-    """Persist watch duration and rating in one transaction."""
+    """Persist watch duration and an optional rating in one transaction."""
 
     try:
         return SignalResponse(**service.record_signal(

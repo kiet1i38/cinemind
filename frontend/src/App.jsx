@@ -567,15 +567,22 @@ export default function App() {
     const requestOwner = getInteractionOwner();
     const interactionContext = getInteractionContext();
     const previousSignal = ratings[item.id];
-    setRatings((current) => ({ ...current, [item.id]: { ...signal, savedAt: new Date().toISOString() } }));
+    const hasRating = signal.rating !== null
+      && signal.rating !== undefined
+      && String(signal.rating).trim() !== "";
+    if (hasRating) {
+      setRatings((current) => ({ ...current, [item.id]: { ...signal, savedAt: new Date().toISOString() } }));
+    }
     const isCurrentRequest = () => requestRevision === signalRequestRevisionsRef.current.get(showId)
       && requestOwner === getInteractionOwner();
     try {
       const result = await submitSignal({ record: item, ...signal, ...interactionMetadata() }, interactionContext);
       if (!isCurrentRequest()) return;
-      const committedSignal = signalWithServerReceipt(signal, result);
-      setRatings((current) => ({ ...current, [item.id]: committedSignal }));
-      signalStore.write({ [item.id]: committedSignal });
+      const committedSignal = hasRating ? signalWithServerReceipt(signal, result) : null;
+      if (committedSignal) {
+        setRatings((current) => ({ ...current, [item.id]: committedSignal }));
+        signalStore.write({ [item.id]: committedSignal });
+      }
       setRecommendationRefreshToken((version) => version + 1);
       // The submit may have overlapped a state request that read the database
       // before the POST committed. Invalidate every older hydration and fetch
@@ -589,9 +596,10 @@ export default function App() {
           const refreshedRatings = mergeInteractionState(refreshedState, { ratings: signalStore.read() }).ratings;
           replaceOwnerScopedSignalState(refreshedRatings, { snapshotAt: refreshedState?.snapshot_at });
           const reconciledRatings = readOwnerScopedSignalState();
-          setRatings((current) => reconciledRatings[item.id]
-            ? reconciledRatings
-            : { ...reconciledRatings, [item.id]: current[item.id] || { ...signal, savedAt: new Date().toISOString() } });
+          setRatings((current) => {
+            if (reconciledRatings[item.id] || !hasRating) return reconciledRatings;
+            return { ...reconciledRatings, [item.id]: current[item.id] || { ...signal, savedAt: new Date().toISOString() } };
+          });
         }
       } catch {
         setInteractionHydrationVersion((version) => version + 1);

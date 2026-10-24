@@ -338,7 +338,7 @@ class InteractionService:
         self,
         session_id: UUID,
         show_id: str,
-        rating: Decimal,
+        rating: Decimal | None,
         watch_minutes: int,
         user_id: UUID | None = None,
         session_token: str | None = None,
@@ -351,7 +351,7 @@ class InteractionService:
         client_device_id, client_event_sequence = self._normalize_client_event_metadata(
             client_device_id, client_event_sequence
         )
-        rating_value = self._normalize_rating(rating)
+        rating_value = self._normalize_rating(rating) if rating is not None else None
         watch_session_id = uuid4()
         normalized_show_id = self._normalize_show_id(show_id)
         self._validate_watch_minutes(watch_minutes)
@@ -382,7 +382,7 @@ class InteractionService:
                             client_event_sequence=client_event_sequence,
                         )
                         rating_row = existing_rating
-                    else:
+                    elif rating_value is not None:
                         # A historical partial write can contain the watch
                         # row without its paired rating. Complete that pair
                         # using the retained title id without consulting the
@@ -406,20 +406,30 @@ class InteractionService:
                             client_device_id=client_device_id,
                             client_event_sequence=client_event_sequence,
                         )
+                    else:
+                        rating_row = None
                     self._touch_session(session_id)
                     response_show_id = existing_watch.get("show_id") or normalized_show_id
                     return {
                         "watch_session": existing_watch | {"show_id": response_show_id},
-                        "rating": rating_row | {
-                            "show_id": response_show_id,
-                            "rating": rating_value,
-                        },
+                        "rating": (
+                            rating_row | {
+                                "show_id": response_show_id,
+                                "rating": rating_value,
+                            }
+                            if rating_row is not None
+                            else None
+                        ),
                     }
                 elif existing_rating is not None:
                     # A partial historical write may contain only the rating.
                     # It still belongs to the original account and must not be
                     # used as an oracle or completed by another account.
                     self._require_existing_mutation_owner(existing_rating, session_id, user_id)
+                    if rating_value is None:
+                        raise InteractionConflictError(
+                            "client_mutation_id was already used with a different payload"
+                        )
                     if existing_rating.get("watch_session_id") is None:
                         return self._repair_rating_only_signal(
                             existing_rating,
@@ -472,40 +482,46 @@ class InteractionService:
                     client_event_sequence=client_event_sequence,
                 )
             watch_session_id = watch_session["watch_session_id"]
-            if client_mutation_id is None:
-                rating_row = self.repository.create_rating(
-                    session_id,
-                    title["title_id"],
-                    rating_value,
-                    watch_session_id,
-                    client_occurred_at=client_event_time,
-                    client_device_id=client_device_id,
-                    client_event_sequence=client_event_sequence,
-                )
-            else:
-                rating_row = self.repository.create_rating(
-                    session_id,
-                    title["title_id"],
-                    rating_value,
-                    watch_session_id,
-                    client_mutation_id,
-                    client_occurred_at=client_event_time,
-                    client_device_id=client_device_id,
-                    client_event_sequence=client_event_sequence,
-                )
-                self._require_existing_mutation_owner(rating_row, session_id, user_id)
-                self._require_idempotent_match(
-                    rating_row,
-                    title_id=title["title_id"],
-                    rating_value=rating_value,
-                    watch_session_id=watch_session_id,
-                    client_device_id=client_device_id,
-                    client_event_sequence=client_event_sequence,
-                )
+            rating_row = None
+            if rating_value is not None:
+                if client_mutation_id is None:
+                    rating_row = self.repository.create_rating(
+                        session_id,
+                        title["title_id"],
+                        rating_value,
+                        watch_session_id,
+                        client_occurred_at=client_event_time,
+                        client_device_id=client_device_id,
+                        client_event_sequence=client_event_sequence,
+                    )
+                else:
+                    rating_row = self.repository.create_rating(
+                        session_id,
+                        title["title_id"],
+                        rating_value,
+                        watch_session_id,
+                        client_mutation_id,
+                        client_occurred_at=client_event_time,
+                        client_device_id=client_device_id,
+                        client_event_sequence=client_event_sequence,
+                    )
+                    self._require_existing_mutation_owner(rating_row, session_id, user_id)
+                    self._require_idempotent_match(
+                        rating_row,
+                        title_id=title["title_id"],
+                        rating_value=rating_value,
+                        watch_session_id=watch_session_id,
+                        client_device_id=client_device_id,
+                        client_event_sequence=client_event_sequence,
+                    )
             self._touch_session(session_id)
         return {
             "watch_session": watch_session | {"show_id": title["show_id"]},
-            "rating": rating_row | {"show_id": title["show_id"], "rating": rating_value},
+            "rating": (
+                rating_row | {"show_id": title["show_id"], "rating": rating_value}
+                if rating_row is not None
+                else None
+            ),
         }
 
     def _repair_rating_only_signal(

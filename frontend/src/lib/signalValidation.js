@@ -18,8 +18,7 @@ export function validateSignalInput({ rating, watchMinutes }) {
   const ratingValue = String(rating ?? "");
   const durationValue = String(watchMinutes ?? "");
 
-  if (!ratingValue.trim()) errors.rating = "requiredField";
-  else if (!isValidNumber(ratingValue, signalConfig.rating, { max: true })) errors.rating = "ratingError";
+  if (ratingValue.trim() && !isValidNumber(ratingValue, signalConfig.rating, { max: true })) errors.rating = "ratingError";
 
   if (!durationValue.trim()) errors.watchMinutes = "requiredField";
   else if (!isValidNumber(durationValue, signalConfig.watchMinutes, { max: true })) errors.watchMinutes = "durationError";

@@ -149,11 +149,11 @@ class RatingResponse(BaseModel):
 
 
 class SignalCreateRequest(BaseModel):
-    """Atomic rating plus watch duration submission."""
+    """Watch duration submission with an optional rating."""
 
     session_id: UUID
     show_id: str = Field(..., min_length=1, max_length=32)
-    rating: Decimal = Field(...)
+    rating: Decimal | None = None
     watch_minutes: StrictInt = Field(..., ge=0, le=MAX_WATCH_MINUTES)
     client_occurred_at: datetime | None = None
     client_mutation_id: UUID | None = None
@@ -166,15 +166,17 @@ class SignalCreateRequest(BaseModel):
 
     @field_validator("rating")
     @classmethod
-    def validate_rating(cls, value: Decimal) -> Decimal:
+    def validate_rating(cls, value: Decimal | None) -> Decimal | None:
+        if value is None:
+            return None
         return _validate_rating(value)
 
 
 class SignalResponse(BaseModel):
-    """Atomic signal result."""
+    """Stored watch event and its optional rating event."""
 
     watch_session: WatchSessionResponse
-    rating: RatingResponse
+    rating: RatingResponse | None = None
 
 
 class RatingStateResponse(BaseModel):

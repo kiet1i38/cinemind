@@ -914,10 +914,14 @@ function normalizePendingSignal(key, entry, now, ttlMs) {
     ? String(entry.mutationId).toLowerCase()
     : (isUuid(key) ? String(key).toLowerCase() : createMutationId());
   const showId = String(entry.showId || (isUuid(key) ? "" : key)).trim();
-  const rating = Number(entry.rating);
+  const ratingIsUnset = entry.rating === null
+    || entry.rating === undefined
+    || (typeof entry.rating === "string" && !entry.rating.trim())
+    || Number(entry.rating) === 0;
+  const rating = ratingIsUnset ? null : Number(entry.rating);
   const watchMinutes = Number(entry.watchMinutes);
   const firstQueuedAt = retainedTimestamp(entry.firstQueuedAt || entry.queuedAt, now, ttlMs);
-  if (!mutationId || !showId || showId.length > 32 || !isValidRating(rating) || !Number.isInteger(watchMinutes) || watchMinutes < 0 || watchMinutes > interactionConfig.maxWatchMinutes || !firstQueuedAt) return null;
+  if (!mutationId || !showId || showId.length > 32 || (rating !== null && !isValidRating(rating)) || !Number.isInteger(watchMinutes) || watchMinutes < 0 || watchMinutes > interactionConfig.maxWatchMinutes || !firstQueuedAt) return null;
   const lastAttemptAt = normalizeTimestamp(entry.lastAttemptAt || entry.queuedAt, firstQueuedAt);
   return [mutationId, {
     showId,
@@ -2746,8 +2750,11 @@ export function restoreOwnerScopedSignal(showId, value) {
 export function signalWithServerReceipt(signal, result) {
   const base = signalValue(signal) ? { ...signal } : {};
   const ratingRow = signalValue(result?.rating) || {};
-  const ratingValue = Number(ratingRow.rating ?? ratingRow.rating_value ?? base.rating);
-  if (Number.isFinite(ratingValue)) base.rating = ratingValue;
+  const rawRating = ratingRow.rating ?? ratingRow.rating_value ?? base.rating;
+  if (rawRating === null || rawRating === undefined || (typeof rawRating === "string" && !rawRating.trim())) return null;
+  const ratingValue = Number(rawRating);
+  if (!isValidRating(ratingValue)) return null;
+  base.rating = ratingValue;
   const watchMinutes = Number(base.watchMinutes);
   if (Number.isInteger(watchMinutes) && watchMinutes >= 0) base.watchMinutes = watchMinutes;
   const serverSavedAt = ratingRow.rated_at || result?.rated_at || null;
@@ -2773,6 +2780,7 @@ export function cacheSignalReceipt(showId, signal, result, ownerId = getInteract
   const normalizedShowId = String(showId || "").trim();
   if (!normalizedShowId) return null;
   const receipt = signalWithServerReceipt(signal, result);
+  if (!receipt) return null;
   writeSignalSnapshotForOwner(String(ownerId || "anonymous"), { [normalizedShowId]: receipt });
   return receipt;
 }
@@ -2909,9 +2917,12 @@ export function consumePendingInteractionLossNotice() {
 
 export function queuePendingSignal(showId, { rating, watchMinutes }, mutationId = createMutationId(), requestedFirstQueuedAt = null, ownerId = getInteractionOwner(), sourceSessionId = null) {
   const normalizedShowId = String(showId || "").trim();
-  const normalizedRating = Number(rating);
+  const ratingIsUnset = rating === null
+    || rating === undefined
+    || (typeof rating === "string" && !rating.trim());
+  const normalizedRating = ratingIsUnset ? null : Number(rating);
   const normalizedWatchMinutes = Number(watchMinutes);
-  if (!normalizedShowId || normalizedShowId.length > 32 || !isUuid(mutationId) || !isValidRating(normalizedRating) || !Number.isInteger(normalizedWatchMinutes) || normalizedWatchMinutes < 0 || normalizedWatchMinutes > interactionConfig.maxWatchMinutes) {
+  if (!normalizedShowId || normalizedShowId.length > 32 || !isUuid(mutationId) || (normalizedRating !== null && !isValidRating(normalizedRating)) || !Number.isInteger(normalizedWatchMinutes) || normalizedWatchMinutes < 0 || normalizedWatchMinutes > interactionConfig.maxWatchMinutes) {
     throw new Error("Invalid signal payload");
   }
   const normalizedMutationId = String(mutationId).toLowerCase();
