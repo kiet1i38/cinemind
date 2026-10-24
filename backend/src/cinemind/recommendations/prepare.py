@@ -152,6 +152,16 @@ def _load_catalog(path: Path) -> tuple[dict[str, dict[str, Any]], str]:
     return catalog, _sha256(path)
 
 
+def _load_tree_fragment(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise PrepareError("tree_fragment_invalid") from error
+    if not isinstance(payload, dict):
+        raise PrepareError("tree_fragment_invalid")
+    return payload
+
+
 def _read_context(input_dir: Path) -> tuple[datetime, dict[str, str]]:
     rows = _read_csv(input_dir / "week6_export_context.csv", EXPECTED_HEADERS["week6_export_context.csv"])
     if len(rows) != 1 or rows[0]["cohort"] != "unknown":
@@ -327,7 +337,8 @@ def _build_popularity(
 
 
 def prepare_recommendation_artifact(
-    *, input_dir: str | Path, catalog_path: str | Path, output_path: str | Path
+    *, input_dir: str | Path, catalog_path: str | Path, output_path: str | Path,
+    tree_fragment_path: str | Path | None = None,
 ) -> PrepareResult:
     """Build a deterministic artifact, replacing the old one only after validation."""
 
@@ -343,6 +354,16 @@ def prepare_recommendation_artifact(
         input_hashes["catalog"] = catalog_hash
         for filename in ("ratings.csv", "watches_for_mining.csv", "searches.csv", "week6_cohort_map.csv"):
             input_hashes[filename.removesuffix(".csv")] = _sha256(seed_dir / filename)
+
+        tree_fragment = _load_tree_fragment(Path(tree_fragment_path)) if tree_fragment_path is not None else None
+        if tree_fragment is not None:
+            input_hashes["tree_fragment"] = _sha256(Path(tree_fragment_path))
+        disabled_components = {
+            "cluster": "not_enabled_without_validated_week5_cluster_artifact",
+            "p_like": "not_enabled_without_chronological_holdout",
+        }
+        if tree_fragment is not None:
+            disabled_components.pop("p_like")
 
         reference_cutoff = min(
             (latest_event_time or export_cutoff - timedelta(microseconds=1)) + timedelta(microseconds=1),
@@ -361,12 +382,9 @@ def prepare_recommendation_artifact(
             "popularity": _build_popularity(set(catalog), latest_ratings, cohort_map),
             "content_vectors": _content_vectors(catalog),
             "cluster_model": None,
-            "tree_model": None,
-            "tree_features_by_show": {},
-            "disabled_components": {
-                "cluster": "not_enabled_without_validated_week5_cluster_artifact",
-                "p_like": "not_enabled_without_chronological_holdout",
-            },
+            "tree_model": None if tree_fragment is None else tree_fragment.get("tree_model"),
+            "tree_features_by_show": {} if tree_fragment is None else tree_fragment.get("tree_features_by_show"),
+            "disabled_components": disabled_components,
         }
         invalid_reason = _validate_artifact(artifact)
         if invalid_reason:

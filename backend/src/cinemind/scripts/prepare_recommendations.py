@@ -15,11 +15,13 @@ def main() -> int:
         "CINEMIND_RECOMMENDATION_ARTIFACT_PATH",
         "/app/data/week6/artifacts/recommendation_artifact.json",
     )
+    tree_fragment_path = os.environ.get("CINEMIND_WEEK6_TREE_FRAGMENT") or None
     try:
         result = prepare_recommendation_artifact(
             input_dir=input_dir,
             catalog_path=settings.catalog_seed_path,
             output_path=output_path,
+            tree_fragment_path=tree_fragment_path,
         )
     except PrepareError as error:
         # Validation failures must not take the catalog/auth API offline or

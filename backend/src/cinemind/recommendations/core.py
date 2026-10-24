@@ -25,15 +25,23 @@ def _finite(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
-def normalize_component(values: dict[str, float]) -> dict[str, float]:
-    finite = {key: number for key, value in values.items() if (number := _finite(value)) is not None}
-    if not finite:
-        return {}
-    low = min(finite.values())
-    high = max(finite.values())
-    if high <= low:
-        return {key: 1.0 if high > 0 else 0.0 for key in finite}
-    return {key: (value - low) / (high - low) for key, value in finite.items()}
+def _clamped_component(values: dict[str, float]) -> dict[str, float]:
+    """Keep each component on its absolute [0, 1] scale; clamp, never rescale.
+
+    Every source is already absolute (popularity is log1p-normalized at build
+    time, content is a cosine blend, p_like is a probability, cluster item
+    scores follow the same build-time normalization), and the reason
+    thresholds in rank_recommendations are stated on that scale. A
+    pool-relative min-max would score an all-equal pool as 1.0 and detach the
+    reason text from its stated meaning.
+    """
+
+    clamped: dict[str, float] = {}
+    for key, value in values.items():
+        number = _finite(value)
+        if number is not None:
+            clamped[key] = max(0.0, min(1.0, number))
+    return clamped
 
 
 def content_similarity_scores(
@@ -115,7 +123,10 @@ def _user_genre_profile(
         rating = _finite(event.get("rating"))
         show_id = str(event.get("show_id") or "")
         title = catalog_by_id.get(show_id)
-        if rating is None or title is None:
+        # Legacy clients persisted the UI's "No rating" choice as 0; the
+        # prepare stage already drops those rows, so serving must not read
+        # them as the strongest possible dislike either.
+        if rating is None or rating <= 0.0 or title is None:
             continue
         event_time = _parse_event_time(event.get("event_at") or event.get("rated_at"))
         age_days = max(0.0, (now - event_time).total_seconds() / 86400) if event_time else 0.0
@@ -160,12 +171,18 @@ def _tree_probability(features: list[float | None], model: dict[str, Any] | None
     classes = model.get("classes")
     if not all(isinstance(value, list) for value in (feature_names, medians, nodes, classes)):
         return None
-    if len(features) != len(feature_names) or len(medians) != len(features) or not nodes:
+    indicator_count = model.get("missing_indicator_count", 0)
+    if not isinstance(indicator_count, int) or isinstance(indicator_count, bool) or indicator_count < 0:
+        indicator_count = 0
+    if len(features) + indicator_count != len(feature_names) or len(medians) != len(feature_names) or not nodes:
         return None
     safe_values = [
         float(value) if _finite(value) is not None else float(medians[index])
         for index, value in enumerate(features)
     ]
+    # Week 5's matrix() appends one missing indicator per raw feature, read
+    # from the pre-imputation value with the exact imputation predicate.
+    safe_values.extend(1.0 if _finite(value) is None else 0.0 for value in features)
     node_index = 0
     for _ in range(len(nodes) + 1):
         node = nodes[node_index]
@@ -224,7 +241,7 @@ def rank_recommendations(
             value = _finite(popularity_source.get(show_id))
             if value is not None:
                 popularity_raw[show_id] = value
-    popularity = normalize_component(popularity_raw) if popularity_raw else {}
+    popularity = _clamped_component(popularity_raw) if popularity_raw else {}
 
     profile = _user_genre_profile(ratings, catalog_by_id, now=now)
     liked = [event for event in ratings if (_finite(event.get("rating")) or 0.0) >= 7.0]
@@ -237,16 +254,23 @@ def rank_recommendations(
         if candidate_genres:
             genre_score /= len(candidate_genres)
         content_raw[show_id] = 0.8 * max(0.0, float(similarity.get(show_id, 0.0))) + 0.2 * genre_score
-    content = normalize_component(content_raw) if liked else {}
+    content = _clamped_component(content_raw) if liked else {}
 
     model = (artifact or {}).get("cluster_model")
     cluster_id = _cluster_for_profile(profile, model)
-    cluster_source = (model or {}).get("item_scores", {}) if cluster_id is not None else {}
-    cluster_raw = {
-        str(item.get("show_id") or item.get("id")): float(cluster_source.get(str(cluster_id), {}).get(str(item.get("show_id") or item.get("id")), 0.0))
-        for item in available
-    }
-    cluster = normalize_component(cluster_raw) if cluster_id is not None else {}
+    cluster: dict[str, float] = {}
+    if cluster_id is not None:
+        item_scores = (model or {}).get("item_scores", {})
+        per_cluster = item_scores.get(str(cluster_id), {}) if isinstance(item_scores, Mapping) else {}
+        if isinstance(per_cluster, Mapping):
+            # Only shows the cluster model actually scored; an absent entry
+            # must stay absent so per-item renormalization can tell it apart
+            # from a genuine score of zero.
+            cluster = _clamped_component({
+                show_id: per_cluster[show_id]
+                for item in available
+                if (show_id := str(item.get("show_id") or item.get("id"))) in per_cluster
+            })
 
     tree_model = (artifact or {}).get("tree_model")
     tree_features_by_show = tree_features_by_show or {}
@@ -255,7 +279,7 @@ def rank_recommendations(
         for show_id, values in tree_features_by_show.items()
         if (probability := _tree_probability(values, tree_model)) is not None
     }
-    p_like = normalize_component(p_like_raw) if liked else {}
+    p_like = _clamped_component(p_like_raw) if liked else {}
 
     component_maps = {
         "popularity": popularity,
@@ -283,7 +307,15 @@ def rank_recommendations(
             name: component_maps[name].get(show_id)
             for name in COMPONENT_WEIGHTS
         }
-        score = sum(active_weights[name] * float(scores[name] or 0.0) for name in active_weights)
+        values = {name: scores[name] for name in active if scores[name] is not None}
+        chosen_weight = sum(active[name] for name in values)
+        # A component this item lacks must not read as a score of zero:
+        # re-normalize the configured weights over the signals it has.
+        score = (
+            sum(active[name] * values[name] for name in values) / chosen_weight
+            if chosen_weight > 0.0
+            else 0.0
+        )
         reasons = []
         if scores["content"] is not None and scores["content"] >= 0.65:
             reasons.append("Similar to titles you rated highly")
@@ -293,6 +325,8 @@ def rank_recommendations(
             reasons.append("Popular across the demo cohort")
         if scores["p_like"] is not None:
             reasons.append("Estimated likely match from the validated demo model")
+        if 0.0 < chosen_weight < total_weight:
+            reasons.append("Limited signals for this title")
         if not reasons:
             reasons.append("A catalog pick based on the available demo signals")
         ranked.append({
@@ -311,7 +345,9 @@ def rank_recommendations(
         str(row["title"].get("show_id") or row["title"].get("id") or ""),
     ))
 
-    rated_count = len(ratings)
+    # Only rows carrying a real rating are preference evidence; legacy
+    # "No rating" rows must not flip a cold account into "personalized".
+    rated_count = sum(1 for event in ratings if (_finite(event.get("rating")) or 0.0) > 0.0)
     mode = "cold_start" if rated_count == 0 else "personalized"
     if not (artifact or {}).get("seed_status") == "ready":
         mode = "degraded_catalog_fallback" if rated_count == 0 else "degraded_personalized"

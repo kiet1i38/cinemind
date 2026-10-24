@@ -134,6 +134,126 @@ class RecommendationCoreTests(unittest.TestCase):
         self.assertEqual(catalog.calls, [(1000, 0)])
 
 
+class RecommendationRatingZeroTests(unittest.TestCase):
+    """Legacy "No rating" rows (persisted as 0) carry no preference signal."""
+
+    def test_zero_rating_never_pulls_genre_profile_negative(self):
+        result = rank_recommendations(
+            catalog=[
+                title("rated-high", "Rated High", 2024, ["Drama"]),
+                title("rated-none", "Rated None", 2023, ["Drama"]),
+                title("other", "Other", 2022, ["Comedy"]),
+            ],
+            ratings=[
+                {"show_id": "rated-high", "rating": 9, "event_at": "2026-10-16T00:00:00+00:00"},
+                {"show_id": "rated-none", "rating": 0, "event_at": "2026-10-16T00:00:00+00:00"},
+            ],
+            seen_show_ids=set(),
+            artifact=None,
+            algorithm="hybrid",
+            limit=5,
+        )
+
+        # Profile Drama stays positive (0.8 from the single real rating), so
+        # each Drama candidate keeps a positive absolute content blend
+        # (0.2 * genre_score) instead of being pushed to zero by the 0 row.
+        by_id = {row["title"]["show_id"]: row for row in result["items"]}
+        self.assertGreater(by_id["rated-high"]["component_scores"]["content"], 0.0)
+        self.assertAlmostEqual(
+            by_id["rated-high"]["component_scores"]["content"], 0.16, places=6
+        )
+        self.assertEqual(by_id["other"]["component_scores"]["content"], 0.0)
+
+    def test_account_with_only_zero_ratings_stays_cold(self):
+        result = rank_recommendations(
+            catalog=[title("candidate", "Candidate", 2025, ["Drama"])],
+            ratings=[{"show_id": "candidate", "rating": 0, "event_at": "2026-10-16T00:00:00+00:00"}],
+            seen_show_ids=set(),
+            artifact=None,
+            algorithm="hybrid",
+            limit=5,
+        )
+
+        self.assertEqual(result["mode"], "degraded_catalog_fallback")
+
+
+class RecommendationAbsoluteScaleTests(unittest.TestCase):
+    """Components keep their absolute [0, 1] scale; reason thresholds match their text."""
+
+    def _cluster_artifact(self, item_scores):
+        return {
+            "schema_version": 1,
+            "seed_status": "ready",
+            "model_version": "week6-test",
+            "popularity": {},
+            "content_vectors": {},
+            "tree_features_by_show": {},
+            "cluster_model": {
+                "status": "ready",
+                "features": ["Drama"],
+                "centroids": [[0.8]],
+                "item_scores": item_scores,
+            },
+            "tree_model": None,
+        }
+
+    def test_popularity_scores_are_not_rescaled_against_the_pool(self):
+        artifact = {
+            "schema_version": 1,
+            "seed_status": "ready",
+            "model_version": "week6-test",
+            "popularity": {"strong": 1.0, "modest": 0.3},
+            "content_vectors": {},
+            "tree_features_by_show": {},
+            "cluster_model": None,
+            "tree_model": None,
+        }
+        result = rank_recommendations(
+            catalog=[title("strong", "Strong", 2025, ["Drama"]), title("modest", "Modest", 2024, ["Drama"])],
+            ratings=[],
+            seen_show_ids=set(),
+            artifact=artifact,
+            algorithm="popularity",
+            limit=5,
+        )
+
+        by_id = {row["title"]["show_id"]: row for row in result["items"]}
+        self.assertEqual(by_id["strong"]["component_scores"]["popularity"], 1.0)
+        # Min-max would have rewritten 0.3 to 0.0; the absolute value must survive.
+        self.assertEqual(by_id["modest"]["component_scores"]["popularity"], 0.3)
+
+    def test_all_equal_cluster_scores_stay_below_the_reason_threshold(self):
+        artifact = self._cluster_artifact({"0": {"member-a": 0.5, "member-b": 0.5}})
+        result = rank_recommendations(
+            catalog=[title("member-a", "Member A", 2025, ["Drama"]), title("member-b", "Member B", 2024, ["Drama"])],
+            ratings=[{"show_id": "member-a", "rating": 9, "event_at": "2026-10-16T00:00:00+00:00"}],
+            seen_show_ids=set(),
+            artifact=artifact,
+            algorithm="hybrid",
+            limit=5,
+        )
+
+        for row in result["items"]:
+            self.assertEqual(row["component_scores"]["cluster"], 0.5)
+            # An all-equal pool must not masquerade as a perfect cluster match.
+            self.assertNotIn("Popular in a similar preference group", row["reasons"])
+
+    def test_cluster_reason_fires_only_above_the_absolute_threshold(self):
+        artifact = self._cluster_artifact({"0": {"high-match": 0.9, "low-match": 0.2}})
+        result = rank_recommendations(
+            catalog=[title("high-match", "High Match", 2025, ["Drama"]), title("low-match", "Low Match", 2024, ["Drama"])],
+            ratings=[{"show_id": "high-match", "rating": 9, "event_at": "2026-10-16T00:00:00+00:00"}],
+            seen_show_ids=set(),
+            artifact=artifact,
+            algorithm="hybrid",
+            limit=5,
+        )
+
+        by_id = {row["title"]["show_id"]: row for row in result["items"]}
+        self.assertIn("Popular in a similar preference group", by_id["high-match"]["reasons"])
+        self.assertNotIn("Popular in a similar preference group", by_id["low-match"]["reasons"])
+
+
 class RecommendationArtifactTests(unittest.TestCase):
     def test_loads_a_valid_checksummed_artifact(self):
         artifact = {
