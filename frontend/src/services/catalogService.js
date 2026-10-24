@@ -23,13 +23,14 @@ const OPTIONAL_TEXT_FIELDS = ["description", "dateAdded", "rating", "posterProvi
 const LIST_FIELDS = ["cast", "country", "listedIn"];
 const MAX_SHOW_ID_LENGTH = 32;
 const catalogSourceTextByRecords = new WeakMap();
+const CATALOG_REQUEST_TIMEOUT_MS = catalogConfig.requestTimeoutMs ?? appConfig.runtime?.requestTimeoutMs;
 
 export const localCatalogProvider = {
   async getAll(signal) {
     const response = await fetchWithTimeout(
       catalogConfig.sourceUrl,
       { signal },
-      appConfig.runtime?.requestTimeoutMs
+      CATALOG_REQUEST_TIMEOUT_MS
     );
     if (!response.ok) throw new Error(`Catalog request failed with ${response.status}`);
     const sourceText = await response.text();
@@ -154,7 +155,7 @@ async function readCatalogManifest(signal) {
     const response = await fetchWithTimeout(
       catalogConfig.manifestUrl,
       { signal },
-      appConfig.runtime?.requestTimeoutMs
+      CATALOG_REQUEST_TIMEOUT_MS
     );
     if (!response.ok) return null;
     const payload = await response.json();
@@ -172,7 +173,7 @@ async function readCatalogSummary(signal) {
     const response = await fetchWithTimeout(
       `${apiBaseUrl.replace(/\/+$/u, "")}/summary`,
       { signal },
-      appConfig.runtime?.requestTimeoutMs
+      CATALOG_REQUEST_TIMEOUT_MS
     );
     if (!response.ok) return null;
     const payload = await response.json();

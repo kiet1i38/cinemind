@@ -582,6 +582,11 @@ class InteractionRateLimitMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.request("/api/interaction/state", "GET"), 201)
         self.assertEqual(await self.request("/api/interaction/state", "GET"), 429)
 
+    async def test_recommendation_reads_share_the_protected_read_quotas(self):
+        self.assertEqual(await self.request("/api/recommendations", "GET"), 201)
+        self.assertEqual(await self.request("/api/recommendations", "GET"), 201)
+        self.assertEqual(await self.request("/api/recommendations", "GET"), 429)
+
     async def test_successful_writes_are_bounded_before_route_execution(self):
         self.assertEqual(await self.request("/api/interaction/search-events"), 201)
         self.assertEqual(await self.request("/api/interaction/search-events"), 201)

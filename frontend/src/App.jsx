@@ -12,6 +12,7 @@ import { Hero } from "./components/Hero";
 import { LoadingState } from "./components/LoadingState";
 import { RatingModal } from "./components/RatingModal";
 import { AuthRequiredModal } from "./components/AuthRequiredModal";
+import { PersonalizedRecommendations } from "./components/PersonalizedRecommendations";
 import { TitleRail } from "./components/TitleRail";
 import { closeTitleRoute, filterCatalog, getGenres, getRouteTitleId, openTitleRoute } from "./lib/catalog";
 import { syncDocumentLanguage, translate } from "./lib/i18n";
@@ -50,6 +51,7 @@ export default function App() {
   const [authPrompt, setAuthPrompt] = useState(null);
   const [toast, setToast] = useState("");
   const [interactionHydrationVersion, setInteractionHydrationVersion] = useState(0);
+  const [recommendationRefreshToken, setRecommendationRefreshToken] = useState(0);
   const [activeNavigationTarget, setActiveNavigationTarget] = useState(navigationTargets.home);
   const searchEventSignature = useRef("");
   const languageRef = useRef(language);
@@ -302,7 +304,10 @@ export default function App() {
           // The pre-sync state response cannot contain events that have not
           // committed yet. Refresh once after a successful signal batch so
           // recommendation recency uses the server receipt timestamp.
-          return getInteractionState(interactionMetadata()).then(applyRemoteState);
+          return getInteractionState(interactionMetadata()).then((state) => {
+            applyRemoteState(state);
+            if (!cancelled) setRecommendationRefreshToken((version) => version + 1);
+          });
         }
         const hasDefinitiveFailure = Array.isArray(results)
           && results.some((result) => result.status === "rejected"
@@ -344,6 +349,7 @@ export default function App() {
                 const merged = mergeInteractionState(state, { ratings: signalStore.read() });
                 replaceOwnerScopedSignalState(merged.ratings, { snapshotAt: state?.snapshot_at });
                 setRatings(readOwnerScopedSignalState());
+                setRecommendationRefreshToken((version) => version + 1);
               }
             });
           }
@@ -570,6 +576,7 @@ export default function App() {
       const committedSignal = signalWithServerReceipt(signal, result);
       setRatings((current) => ({ ...current, [item.id]: committedSignal }));
       signalStore.write({ [item.id]: committedSignal });
+      setRecommendationRefreshToken((version) => version + 1);
       // The submit may have overlapped a state request that read the database
       // before the POST committed. Invalidate every older hydration and fetch
       // a post-commit projection before allowing it to replace the optimistic
@@ -666,6 +673,17 @@ export default function App() {
               </section>
             ) : (
               <>
+                {authUser?.user_id ? (
+                  <PersonalizedRecommendations
+                    key={String(authUser.user_id)}
+                    userId={String(authUser.user_id)}
+                    catalog={catalog}
+                    language={language}
+                    onSelect={openModal}
+                    onSignIn={() => { window.location.href = getAuthPageUrl("login"); }}
+                    refreshToken={recommendationRefreshToken}
+                  />
+                ) : null}
                 <TitleRail id="trending" title={translate(language, "trending")} items={trending} language={language} onSelect={openModal} />
                 <TitleRail id="recent" title={translate(language, "newest")} items={recent} language={language} onSelect={openModal} />
                 <TitleRail id="movies" title={translate(language, "moviesForYou")} items={movies} language={language} onSelect={openModal} />

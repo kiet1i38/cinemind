@@ -2391,13 +2391,15 @@ test("a durable cross-tab outbox write wins over a stale quota fallback", { conc
     // failure. Tab A must not let browserStore retry its stale memory copy
     // over this value on the next read.
     blockOutboxWrites = false;
+    const firstQueuedAt = new Date(Date.now() - 1000).toISOString();
+    const lastAttemptAt = new Date().toISOString();
     values.set(entryKey, JSON.stringify({
       query: "new-durable-write",
       resultCount: 2,
       filters: {},
-      firstQueuedAt: "2026-09-16T12:00:00.000Z",
-      lastAttemptAt: "2026-09-16T12:00:01.000Z",
-      queuedAt: "2026-09-16T12:00:00.000Z",
+      firstQueuedAt,
+      lastAttemptAt,
+      queuedAt: firstQueuedAt,
       mutationId,
       outboxWriteNonce: "external-writer"
     }));
@@ -2422,6 +2424,8 @@ test("an outbox read cannot overwrite a newer cross-tab write during fallback re
   let blockOutboxWrites = true;
   let armRecovery = false;
   let injected = false;
+  const firstQueuedAt = new Date(Date.now() - 1000).toISOString();
+  const lastAttemptAt = new Date().toISOString();
   const baseStorage = mapStorage(values);
   const storage = {
     get length() { return baseStorage.length; },
@@ -2435,9 +2439,9 @@ test("an outbox read cannot overwrite a newer cross-tab write during fallback re
           query: "newer-tab-write-during-read",
           resultCount: 3,
           filters: {},
-          firstQueuedAt: "2026-09-16T12:01:00.000Z",
-          lastAttemptAt: "2026-09-16T12:01:01.000Z",
-          queuedAt: "2026-09-16T12:01:00.000Z",
+          firstQueuedAt,
+          lastAttemptAt,
+          queuedAt: firstQueuedAt,
           mutationId,
           outboxWriteNonce: "newer-tab"
         }));

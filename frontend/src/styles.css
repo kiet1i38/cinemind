@@ -671,6 +671,84 @@ img {
   line-height: 1.5;
 }
 
+.section-heading-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.recommendation-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recommendation-control {
+  display: grid;
+  gap: 4px;
+  color: #858585;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.recommendation-control select {
+  min-width: 112px;
+  min-height: 36px;
+  padding: 0 28px 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  color: #e5e5e5;
+  background: #171717;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.recommendation-count-control select {
+  min-width: 74px;
+}
+
+.title-rail-empty {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  padding: 12px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.recommendation-empty {
+  margin: 0;
+  color: #909090;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.recommendation-error {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.recommendation-retry {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  color: #e5e5e5;
+  background: #171717;
+}
+
 .rail-controls {
   display: flex;
   flex-shrink: 0;
@@ -1697,6 +1775,31 @@ img {
 
   .section-heading {
     align-items: center;
+  }
+
+  .personalized-section .section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .personalized-section .section-heading-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .recommendation-controls {
+    flex: 1;
+  }
+
+  .recommendation-control {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .recommendation-control select {
+    width: 100%;
+    min-width: 0;
   }
 
   .section-heading h2 {

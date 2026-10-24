@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { translate } from "../lib/i18n";
 import { CatalogCard } from "./CatalogCard";
 
-export function TitleRail({ id, title, description, items, language, onSelect }) {
+export function TitleRail({ id, title, description, items, language, onSelect, headerActions = null, emptyContent = null }) {
   const railRef = useRef(null);
   const [scrollState, setScrollState] = useState({ canScrollPrev: false, canScrollNext: false });
 
@@ -41,27 +41,34 @@ export function TitleRail({ id, title, description, items, language, onSelect })
     rail.scrollTo({ left: nextScrollLeft, behavior: "smooth" });
   };
 
-  if (!items.length) return null;
+  if (!items.length && !emptyContent) return null;
 
   return (
-    <section className="title-section" id={`section-${id}`} aria-labelledby={`${id}-heading`}>
+    <section className={`title-section${id === "personalized" ? " personalized-section" : ""}`} id={`section-${id}`} aria-labelledby={`${id}-heading`}>
       <div className="section-heading">
         <div>
           <h2 id={`${id}-heading`}>{title}</h2>
           {description ? <p>{description}</p> : null}
         </div>
-        <div className="rail-controls" aria-label={`${title} controls`}>
-          <button type="button" onClick={() => scrollRail(-1)} aria-label={translate(language, "previousTitles")} aria-controls={`rail-${id}`} disabled={!scrollState.canScrollPrev}>
-            <CaretLeft size={18} weight="bold" aria-hidden="true" />
-          </button>
-          <button type="button" onClick={() => scrollRail(1)} aria-label={translate(language, "nextTitles")} aria-controls={`rail-${id}`} disabled={!scrollState.canScrollNext}>
-            <CaretRight size={18} weight="bold" aria-hidden="true" />
-          </button>
+        <div className="section-heading-actions">
+          {headerActions}
+          {items.length ? (
+            <div className="rail-controls" aria-label={`${title} controls`}>
+              <button type="button" onClick={() => scrollRail(-1)} aria-label={translate(language, "previousTitles")} aria-controls={`rail-${id}`} disabled={!scrollState.canScrollPrev}>
+                <CaretLeft size={18} weight="bold" aria-hidden="true" />
+              </button>
+              <button type="button" onClick={() => scrollRail(1)} aria-label={translate(language, "nextTitles")} aria-controls={`rail-${id}`} disabled={!scrollState.canScrollNext}>
+                <CaretRight size={18} weight="bold" aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
-      <div ref={railRef} className="title-rail" id={`rail-${id}`} data-rail={id} data-testid={`rail-${id}`}>
-        {items.map((record) => <CatalogCard key={record.id} record={record} language={language} onSelect={onSelect} />)}
-      </div>
+      {items.length ? (
+        <div ref={railRef} className="title-rail" id={`rail-${id}`} data-rail={id} data-testid={`rail-${id}`}>
+          {items.map((record) => <CatalogCard key={record.id} record={record} language={language} onSelect={onSelect} />)}
+        </div>
+      ) : <div className="title-rail-empty">{emptyContent}</div>}
     </section>
   );
 }
