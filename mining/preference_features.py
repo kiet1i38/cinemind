@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import math
 
+from sklearn.preprocessing import normalize
+
 from build_baseline import build_baseline_rows, fit_tfidf
 
 COHORTS = {"team_test", "public_user", "synthetic", "unknown"}
@@ -28,7 +30,7 @@ FEATURE_DESCRIPTIONS = {
     "genre_avg_completion": "Mean prior Movie completion_rate for watched titles sharing a target genre.",
     "recent_activity_7d": "Count of prior canonical watch rows in [t-7d, t); zero when none.",
     "recency_weighted_genre_affinity": "Prior-liked genre affinity with a 30-day half-life.",
-    "content_profile_similarity": "Cosine similarity to a TF-IDF profile of unique prior-liked titles.",
+    "content_profile_similarity": "True cosine of the L2-normalized mean TF-IDF vector of unique prior-liked titles to the target title.",
 }
 FEATURE_VERSION = "preference-v0.1"
 GENRE_HALF_LIFE_DAYS = 30
@@ -217,6 +219,9 @@ def genre_features(target, target_genres, prior_ratings, prior_watches, catalog,
         positive_ids = {r["show_id"] for r in likes if r["show_id"] in title_ids}
         if positive_ids and target["show_id"] in title_ids:
             profile = sum((title_matrix[title_ids[sid]] for sid in sorted(positive_ids)), start=title_matrix[0] * 0) / len(positive_ids)
+            # Rows are L2-normalized, but their mean is not; normalize before the dot
+            # product so this is a cosine, not the mean of pairwise cosines.
+            profile = normalize(profile)
             feature["content_profile_similarity"] = float((profile @ title_matrix[title_ids[target["show_id"]]].T).toarray()[0, 0])
     completions = [
         w["completion_rate"] for w in prior_watches
@@ -286,6 +291,21 @@ def self_check():
     assert target["completion_ratio"] is None and target["play_count"] is None, "future/equal-time watch leaked"
     assert target["genre_affinity"] == 1 and target["content_profile_similarity"] is not None
     assert "rating_value" not in ALL_FEATURES and "label" not in ALL_FEATURES
+    multi_likes = [
+        {"target_key": "m1", "user_key": "u2", "cohort": "synthetic", "show_id": "b", "event_time": t0, "rating_value": "9", "label": "liked"},
+        {"target_key": "m2", "user_key": "u2", "cohort": "synthetic", "show_id": "c", "event_time": t0 + timedelta(days=1), "rating_value": "8", "label": "liked"},
+        {"target_key": "m3", "user_key": "u2", "cohort": "synthetic", "show_id": "a", "event_time": t0 + timedelta(days=2), "rating_value": "7", "label": "liked"},
+    ]
+    multi = next(row for row in build_rows(multi_likes, [], [], catalog) if row["target_key"] == "m3")
+    baseline_rows = build_baseline_rows(catalog)
+    _, matrix = fit_tfidf(baseline_rows)
+    positions = {row["show_id"]: index for index, row in enumerate(baseline_rows)}
+    profile = (matrix[positions["b"]] + matrix[positions["c"]]) / 2
+    toward_target = matrix[positions["a"]].T
+    expected = float((normalize(profile) @ toward_target).toarray()[0, 0])
+    mean_dot = float((profile @ toward_target).toarray()[0, 0])
+    assert abs(multi["content_profile_similarity"] - expected) < 1e-12, "profile similarity is not cosine-normalized"
+    assert abs(mean_dot - expected) > 1e-6, "fixture cannot separate cosine from an unnormalized mean dot"
     assert label_for("0", "fixture") == "disliked" and label_for("10", "fixture") == "liked"
     for gap in ("3.5", "6.5"):
         try:
