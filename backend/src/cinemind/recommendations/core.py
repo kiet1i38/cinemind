@@ -15,6 +15,8 @@ COMPONENT_WEIGHTS = {
     "cluster": 0.25,
     "p_like": 0.10,
 }
+_ASSIGNED_CLUSTER_UNSET = object()
+_EVIDENCE_STATUSES = {"demo_only", "baseline_not_holdout"}
 
 
 def _finite(value: Any) -> float | None:
@@ -216,6 +218,7 @@ def rank_recommendations(
     content_similarity: dict[str, float] | None = None,
     tree_features_by_show: dict[str, list[float | None]] | None = None,
     now: datetime | None = None,
+    assigned_cluster: Any = _ASSIGNED_CLUSTER_UNSET,
 ) -> dict[str, Any]:
     """Rank unseen catalog records without consulting any client-supplied identity."""
 
@@ -258,7 +261,7 @@ def rank_recommendations(
     content = _clamped_component(content_raw) if liked else {}
 
     model = (artifact or {}).get("cluster_model")
-    cluster_id = _cluster_for_profile(profile, model)
+    cluster_id = _cluster_for_profile(profile, model) if assigned_cluster is _ASSIGNED_CLUSTER_UNSET else assigned_cluster
     cluster: dict[str, float] = {}
     if cluster_id is not None:
         item_scores = (model or {}).get("item_scores", {})
@@ -291,6 +294,8 @@ def rank_recommendations(
     configured = {
         "popularity": {"popularity": 1.0},
         "content": {"content": 1.0},
+        "cluster": {"cluster": 1.0},
+        "p_like": {"p_like": 1.0},
         "hybrid": COMPONENT_WEIGHTS,
     }.get(algorithm, COMPONENT_WEIGHTS)
     active = {
@@ -352,10 +357,11 @@ def rank_recommendations(
     mode = "cold_start" if rated_count == 0 else "personalized"
     if not (artifact or {}).get("seed_status") == "ready":
         mode = "degraded_catalog_fallback" if rated_count == 0 else "degraded_personalized"
+    evidence_status = (artifact or {}).get("evidence_status")
     return {
         "items": ranked[:limit],
         "mode": mode,
-        "evidence_status": "demo_only",
+        "evidence_status": evidence_status if evidence_status in _EVIDENCE_STATUSES else "demo_only",
         "model_version": (artifact or {}).get("model_version"),
         "active_weights": active_weights,
     }

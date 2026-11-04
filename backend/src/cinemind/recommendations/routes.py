@@ -68,7 +68,7 @@ class RecommendationLimit(int, Enum):
 @router.get("", response_model=RecommendationResponse)
 def get_recommendations(
     response: Response,
-    algorithm: Literal["popularity", "content", "hybrid"] = Query(default="hybrid"),
+    algorithm: Literal["popularity", "content", "cluster", "p_like", "hybrid"] = Query(default="hybrid"),
     limit: RecommendationLimit = Query(default=RecommendationLimit.TEN),
     context: AuthContext = Depends(require_auth_context),
     service: RecommendationService = Depends(get_recommendation_service),

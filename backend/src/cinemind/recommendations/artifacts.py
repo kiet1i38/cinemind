@@ -72,6 +72,41 @@ def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _validate_cluster_model(cluster_model: Any) -> str | None:
+    if cluster_model is None:
+        return None
+    if not isinstance(cluster_model, dict):
+        return "cluster_model must be an object or null"
+    if cluster_model.get("space") != "scaled_genre_share_v1" or cluster_model.get("status") != "ready":
+        return None
+    features = cluster_model.get("features")
+    means, scales = cluster_model.get("means"), cluster_model.get("scales")
+    centroids = cluster_model.get("centroids")
+    if not isinstance(features, list) or not features or any(not isinstance(name, str) for name in features):
+        return "cluster_model features must be a non-empty list of strings"
+    width = len(features)
+    if (
+        not isinstance(means, list)
+        or not isinstance(scales, list)
+        or len(means) != width
+        or len(scales) != width
+        or any(not _is_finite_number(value) for value in (*means, *scales))
+    ):
+        return "cluster_model means and scales must be finite and aligned with features"
+    if not isinstance(centroids, list) or not centroids:
+        return "cluster_model centroids must be a non-empty list"
+    for centroid in centroids:
+        if not isinstance(centroid, list) or len(centroid) != width or any(not _is_finite_number(value) for value in centroid):
+            return "cluster_model centroids must be finite vectors aligned with features"
+    item_scores = cluster_model.get("item_scores", {})
+    if not isinstance(item_scores, dict):
+        return "cluster_model item_scores must be an object"
+    for scores in item_scores.values():
+        if not isinstance(scores, dict) or any(not _is_finite_number(value) for value in scores.values()):
+            return "cluster_model item_scores must contain finite numbers"
+    return None
+
+
 def _validate_tree_model(tree_model: Any) -> str | None:
     if tree_model is None:
         return None
@@ -189,9 +224,9 @@ def _validate_artifact(artifact: Any) -> str | None:
             return "content vectors must map title IDs to sparse objects"
         if any(not isinstance(token, str) or not _is_finite_number(weight) for token, weight in vector.items()):
             return "content vectors must contain finite numeric weights"
-    cluster_model = artifact.get("cluster_model")
-    if cluster_model is not None and not isinstance(cluster_model, dict):
-        return "cluster_model must be an object or null"
+    cluster_error = _validate_cluster_model(artifact.get("cluster_model"))
+    if cluster_error:
+        return cluster_error
     tree_error = _validate_tree_model(artifact.get("tree_model"))
     if tree_error:
         return tree_error

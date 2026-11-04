@@ -1,7 +1,7 @@
 import { appConfig, resolveApiBaseUrl } from "../config/appConfig";
 import { fetchWithTimeout } from "./fetchWithTimeout";
 
-const SUPPORTED_ALGORITHMS = new Set(["popularity", "content", "hybrid"]);
+const SUPPORTED_ALGORITHMS = new Set(["popularity", "content", "cluster", "p_like", "hybrid"]);
 const SUPPORTED_LIMITS = new Set([5, 10]);
 
 function toCatalogRecord(item, catalogById) {

@@ -389,7 +389,7 @@ class RecommendationRouteTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "private, no-store")
         self.assertEqual(response.headers["vary"], "Cookie")
         self.assertEqual(payload["items"][0]["title"]["show_id"], "candidate")
-        self.assertEqual(algorithm_schema["enum"], ["popularity", "content", "hybrid"])
+        self.assertEqual(algorithm_schema["enum"], ["popularity", "content", "cluster", "p_like", "hybrid"])
         self.assertEqual(limit_schema["default"], 10)
         self.assertEqual(components["RecommendationLimit"]["type"], "integer")
         self.assertEqual(components["RecommendationLimit"]["enum"], [5, 10])

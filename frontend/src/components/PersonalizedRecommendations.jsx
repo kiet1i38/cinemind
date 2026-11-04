@@ -47,8 +47,11 @@ export function PersonalizedRecommendations({ userId, catalog, language, onSelec
 
   const results = request.result?.items || [];
   const modeKey = MODE_LABELS[request.result?.mode] || "recommendationModeCatalogFallback";
+  const evidenceKey = request.result?.evidence_status === "baseline_not_holdout"
+    ? "recommendationBaselineNotHoldout"
+    : "recommendationDemoOnly";
   const description = request.result
-    ? `${translate(language, modeKey)} ${translate(language, "recommendationDemoOnly")}`
+    ? `${translate(language, modeKey)} ${translate(language, evidenceKey)}`
     : translate(language, "recommendationsDescription");
   let emptyContent = null;
   if (request.status === "loading") {
@@ -79,8 +82,10 @@ export function PersonalizedRecommendations({ userId, catalog, language, onSelec
         <span>{translate(language, "recommendationAlgorithm")}</span>
         <select value={algorithm} onChange={(event) => setAlgorithm(event.target.value)}>
           <option value="hybrid">{translate(language, "recommendationHybrid")}</option>
-          <option value="popularity">{translate(language, "recommendationPopularity")}</option>
           <option value="content">{translate(language, "recommendationContent")}</option>
+          <option value="cluster">{translate(language, "recommendationCluster")}</option>
+          <option value="p_like">{translate(language, "recommendationPreference")}</option>
+          <option value="popularity">{translate(language, "recommendationPopularity")}</option>
         </select>
       </label>
       <label className="recommendation-control recommendation-count-control">
