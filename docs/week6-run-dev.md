@@ -4,7 +4,8 @@
 
 - Docker Desktop/Engine running and Docker Compose v2 available.
 - Catalog present at `frontend/public/data/catalog.json`.
-- After the Helio export handoff, all five CSV files placed in `tmp/week6/seed/`. This path is ignored by Git and is mounted read-only in the backend.
+- After the Helio export handoff, all five CSV files placed in `tmp/week6/seed/`. This path is ignored by Git and is mounted read-only in the backend. Event rows must use `cohort=unknown` and MD5 keys. The curated files in `mining/data/week6` use aliases and `cohort=synthetic`, so they need that rewrite before they can build the artifact.
+- The fitted baseline fragments, when present, are read from `tmp/week6/baseline/tree_fragment.json` and `cluster_fragment.json`. A missing fragment file leaves that component disabled. It does not replace an existing artifact by itself.
 
 Until the CSV bundle is present, the preparation step reports a redacted skip and the existing API remains available in degraded/cold-start mode. Do not treat fallback titles as a trained recommendation result.
 

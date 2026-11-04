@@ -42,7 +42,67 @@ The UI includes the TMDB attribution required for this prototype. Poster image r
 
 ## Run with Docker
 
-Run `docker compose up --build -d` and open `http://127.0.0.1:5173`. The frontend image builds its production bundle in a dedicated stage. The same Compose project starts PostgreSQL and the backend on port `8000`; the backend applies migrations and seeds `catalog.json` automatically.
+From the repository root:
+
+```bash
+docker compose up --build -d
+```
+
+Open `http://127.0.0.1:5173`. The frontend image builds its production bundle in a dedicated stage. The same Compose project starts PostgreSQL and the backend on port `8000`; the backend applies migrations and seeds `catalog.json` automatically.
+
+Without the Week 6 seed, recommendation preparation logs `RECOMMENDATION_PREP status=skipped` and the app stays available with catalog fallback. That fallback is not a trained model.
+
+### Recommendation baseline
+
+The demo serves five ranking modes: `popularity`, `content`, `cluster`, `p_like`, and `hybrid`. Content is TF-IDF cosine. `cluster` is K-means. `p_like` is the decision tree. Hybrid mixes those three with popularity. The fitted fragments are not committed. Build them, then place an API-valid seed where Compose already mounts it.
+
+1. Fit the two models from the curated dataset. This uses the mining virtualenv that already has scikit-learn:
+
+```bash
+mining/.venv/bin/python mining/week6_baseline_export.py \
+  --seed-dir mining/data/week6 \
+  --catalog frontend/public/data/catalog.json \
+  --output-dir tmp/week6/baseline
+```
+
+2. Rewrite the five CSVs into `tmp/week6/seed/`. The curated files use aliases such as `synthetic_user_001` and mark event rows `cohort=synthetic`. The API accepts only 32-character MD5 keys, and event rows must be `cohort=unknown`. The cohort map stays `synthetic`.
+
+```bash
+mkdir -p tmp/week6/seed
+python3 - <<'PY'
+import csv, hashlib
+from pathlib import Path
+src, dst = Path("mining/data/week6"), Path("tmp/week6/seed")
+def md5(value):
+    return hashlib.md5(value.encode()).hexdigest()
+for name in ("week6_export_context.csv","week6_cohort_map.csv","ratings.csv","watches_for_mining.csv","searches.csv"):
+    rows = list(csv.DictReader((src/name).open(encoding="utf-8")))
+    for row in rows:
+        for key in ("user_key","target_key","watch_key","search_key"):
+            if row.get(key):
+                row[key] = md5(row[key])
+        if name != "week6_cohort_map.csv" and "cohort" in row:
+            row["cohort"] = "unknown"
+    with (dst/name).open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+PY
+```
+
+3. Start, or restart the backend if Compose is already running. The backend command rebuilds the recommendation artifact from `tmp/week6/seed/` and the two files in `tmp/week6/baseline/`.
+
+```bash
+docker compose up --build -d
+docker compose restart backend
+docker compose logs --tail 30 backend
+```
+
+Preparation succeeded when the log contains `RECOMMENDATION_PREP status=ready`. A line with `status=skipped code=pseudonymous_key_invalid` means the seed was copied without the rewrite above.
+
+4. Open `http://127.0.0.1:5173`, create a local account, and rate one title 7 or higher. Then switch Ranking among Hybrid, Content, Clusters, Preference, and Popularity. A profile with no rating of 7 or higher has no cluster assignment, so Hybrid for that profile uses popularity and content only.
+
+`tmp/week6/` is gitignored. Re-run step 3 after replacing the seed. Do not use `docker compose down -v` unless the local database and the built artifact should be deleted. More checks are in `docs/week6-run-dev.md`.
 
 Interactive API documentation is available at `http://127.0.0.1:8000/docs`. Account access is available at `http://127.0.0.1:5173/auth.html`, and the signed-in profile is available at `http://127.0.0.1:5173/profile.html`. The separate reset console is available at `http://127.0.0.1:5173/reset.html`; configure `ADMIN_RESET_USERNAME` and `ADMIN_RESET_PASSWORD` in a local ignored environment file before using it. The reset API is excluded from the public OpenAPI schema and requires Basic Auth plus an exact confirmation phrase.
 

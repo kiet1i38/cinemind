@@ -27,6 +27,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-cinemind}@database:5432/${POSTGRES_DB:-cinemind}}
       CATALOG_SEED_PATH: /app/data/catalog.json
       CINEMIND_WEEK6_SEED_DIR: /app/data/week6/seed
+      CINEMIND_WEEK6_TREE_FRAGMENT: /app/data/week6/baseline/tree_fragment.json
+      CINEMIND_WEEK6_CLUSTER_FRAGMENT: /app/data/week6/baseline/cluster_fragment.json
       CINEMIND_RECOMMENDATION_ARTIFACT_PATH: /app/data/week6/artifacts/recommendation_artifact.json
       MIGRATIONS_PATH: /app/migrations
       MAX_WATCH_MINUTES: ${MAX_WATCH_MINUTES:-10080}
@@ -66,6 +68,7 @@ services:
     volumes:
       - ./frontend/public/data/catalog.json:/app/data/catalog.json:ro
       - ./tmp/week6/seed:/app/data/week6/seed:ro
+      - ./tmp/week6/baseline:/app/data/week6/baseline:ro
       - cinemind-week6-artifacts:/app/data/week6/artifacts
     depends_on:
       database:
