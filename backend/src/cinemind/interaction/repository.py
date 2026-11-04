@@ -525,9 +525,18 @@ class InteractionRepository:
 
     def interaction_state(
         self,
-        session_id: UUID,
+        *,
+        session_id: UUID | None = None,
         user_id: UUID | None = None,
     ) -> dict[str, tuple[dict, ...]]:
+        """Load the latest rating per title, scoped to one session or one account.
+
+        Exactly one of session_id/user_id must be given; account scope wins
+        when both are supplied.
+        """
+
+        if session_id is None and user_id is None:
+            raise ValueError("interaction_state requires session_id or user_id")
         session_clause = "s.user_id = %s" if user_id is not None else "s.session_id = %s"
         session_parameter = user_id if user_id is not None else session_id
         ratings = self.connection.execute(
@@ -594,3 +603,32 @@ class InteractionRepository:
             (user_id,),
         ).fetchall()
         return frozenset(str(row["show_id"]) for row in rows)
+
+    def watch_events(self, user_id: UUID) -> tuple[dict, ...]:
+        """Owned watch rows. Client time wins when the browser recorded one."""
+
+        rows = self.connection.execute(
+            """
+            SELECT t.show_id, COALESCE(ws.client_occurred_at, ws.recorded_at) AS event_at
+            FROM interaction.watch_sessions ws
+            JOIN interaction.sessions s ON s.session_id = ws.session_id
+            JOIN catalog.titles t ON t.title_id = ws.title_id AND t.is_active = TRUE
+            WHERE s.user_id = %s
+            """,
+            (user_id,),
+        ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def search_events(self, user_id: UUID) -> tuple[dict, ...]:
+        """Owned search times only. Query text stays out of the feature row."""
+
+        rows = self.connection.execute(
+            """
+            SELECT COALESCE(se.client_occurred_at, se.occurred_at) AS event_at
+            FROM interaction.search_events se
+            JOIN interaction.sessions s ON s.session_id = se.session_id
+            WHERE s.user_id = %s
+            """,
+            (user_id,),
+        ).fetchall()
+        return tuple(dict(row) for row in rows)

@@ -22,9 +22,9 @@ from cinemind.recommendations.artifacts import (
     _validate_artifact,
     seal_artifact,
 )
+from cinemind.recommendations.baseline_features import CLUSTER_SPACE, baseline_readiness
 
 
-BUILDER_VERSION = "week6-tfidf-popularity-v2"
 MAX_INPUT_FILE_BYTES = 64 * 1024 * 1024
 MAX_ROWS_PER_FILE = 250_000
 HASH_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -150,6 +150,34 @@ def _load_catalog(path: Path) -> tuple[dict[str, dict[str, Any]], str]:
             raise PrepareError("catalog_show_id_duplicate")
         catalog[show_id] = record
     return catalog, _sha256(path)
+
+
+def _load_fragment(path: str | Path | None, code: str) -> dict[str, Any] | None:
+    """Load one JSON fragment. A missing path is absent; a bad file fails closed."""
+
+    if path is None:
+        return None
+    file_path = Path(path)
+    if not file_path.exists():
+        return None
+    try:
+        payload = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise PrepareError(code) from error
+    if not isinstance(payload, dict):
+        raise PrepareError(code)
+    return payload
+
+
+def _ready_model(fragment: dict[str, Any] | None, key: str, *, space: str | None = None) -> dict[str, Any] | None:
+    if fragment is None:
+        return None
+    model = fragment.get(key)
+    if not isinstance(model, dict) or model.get("status") != "ready":
+        return None
+    if space is not None and model.get("space") != space:
+        return None
+    return model
 
 
 def _read_context(input_dir: Path) -> tuple[datetime, dict[str, str]]:
@@ -287,11 +315,22 @@ def _validated_events(
     return latest_ratings, dict(event_counts), max(event_times, default=None)
 
 
+def _document_text(record: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for field in ("title", "description", "listedIn"):
+        value = record.get(field)
+        if isinstance(value, (list, tuple)):
+            parts.extend(str(item) for item in value)
+        else:
+            parts.append(str(value or ""))
+    return " ".join(parts)
+
+
 def _content_vectors(catalog: dict[str, dict[str, Any]]) -> dict[str, dict[str, float]]:
     documents: dict[str, Counter[str]] = {}
     document_frequency: Counter[str] = Counter()
     for show_id, record in catalog.items():
-        text = " ".join(str(record.get(field) or "") for field in ("title", "description", "listedIn"))
+        text = _document_text(record)
         counts = Counter(TOKEN_PATTERN.findall(text.lower()))
         documents[show_id] = counts
         document_frequency.update(counts.keys())
@@ -327,7 +366,9 @@ def _build_popularity(
 
 
 def prepare_recommendation_artifact(
-    *, input_dir: str | Path, catalog_path: str | Path, output_path: str | Path
+    *, input_dir: str | Path, catalog_path: str | Path, output_path: str | Path,
+    tree_fragment_path: str | Path | None = None,
+    cluster_fragment_path: str | Path | None = None,
 ) -> PrepareResult:
     """Build a deterministic artifact, replacing the old one only after validation."""
 
@@ -344,15 +385,33 @@ def prepare_recommendation_artifact(
         for filename in ("ratings.csv", "watches_for_mining.csv", "searches.csv", "week6_cohort_map.csv"):
             input_hashes[filename.removesuffix(".csv")] = _sha256(seed_dir / filename)
 
+        tree_fragment = _load_fragment(tree_fragment_path, "tree_fragment_invalid")
+        cluster_fragment = _load_fragment(cluster_fragment_path, "cluster_fragment_invalid")
+        if tree_fragment is not None and tree_fragment_path is not None:
+            input_hashes["tree_fragment"] = _sha256(Path(tree_fragment_path))
+        if cluster_fragment is not None and cluster_fragment_path is not None:
+            input_hashes["cluster_fragment"] = _sha256(Path(cluster_fragment_path))
+        tree_model = _ready_model(tree_fragment, "tree_model")
+        cluster_model = _ready_model(cluster_fragment, "cluster_model", space=CLUSTER_SPACE)
+        models_ready = tree_model is not None and cluster_model is not None
+        disabled_components = {}
+        if cluster_model is None:
+            disabled_components["cluster"] = "not_enabled_without_validated_week5_cluster_artifact"
+        if tree_model is None:
+            disabled_components["p_like"] = "not_enabled_without_chronological_holdout"
+        seed_status, evidence_status, model_version = baseline_readiness(
+            bool(dataset_counts["synthetic_roster_complete"]), models_ready
+        )
+
         reference_cutoff = min(
             (latest_event_time or export_cutoff - timedelta(microseconds=1)) + timedelta(microseconds=1),
             export_cutoff,
         )
         artifact = {
             "schema_version": ARTIFACT_SCHEMA_VERSION,
-            "model_version": BUILDER_VERSION,
-            "seed_status": "ready" if dataset_counts["synthetic_roster_complete"] else "degraded",
-            "evidence_status": "demo_only",
+            "model_version": model_version,
+            "seed_status": seed_status,
+            "evidence_status": evidence_status,
             "export_cutoff": export_cutoff.isoformat(),
             "seed_reference_cutoff": reference_cutoff.isoformat(),
             "builder_runtime": "python-standard-library",
@@ -360,13 +419,10 @@ def prepare_recommendation_artifact(
             "dataset_counts": dataset_counts,
             "popularity": _build_popularity(set(catalog), latest_ratings, cohort_map),
             "content_vectors": _content_vectors(catalog),
-            "cluster_model": None,
-            "tree_model": None,
-            "tree_features_by_show": {},
-            "disabled_components": {
-                "cluster": "not_enabled_without_validated_week5_cluster_artifact",
-                "p_like": "not_enabled_without_chronological_holdout",
-            },
+            "cluster_model": cluster_model,
+            "tree_model": tree_model,
+            "tree_features_by_show": {} if tree_fragment is None else tree_fragment.get("tree_features_by_show") or {},
+            "disabled_components": disabled_components,
         }
         invalid_reason = _validate_artifact(artifact)
         if invalid_reason:

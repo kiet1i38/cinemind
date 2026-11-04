@@ -37,5 +37,6 @@ For the current snapshot, 9 legacy `rating_value=0` rows mean “No rating” fr
 
 - The Viewer executes each query separately. A shared cutoff bounds event time, but does not create a single cross-query database snapshot; concurrent writes can make the exports differ slightly.
 - Client occurrence time is included only after the SQL query also bounds server receive/record time by the cutoff. Unexpected invalid timestamps/values or stale `show_id` references fail validation, not silently repaired; the documented legacy no-rating zero and nullable completion cases are handled explicitly above.
+- Exported event timestamps prefer `client_occurred_at` over server receipt time (the `COALESCE` in files `01`–`03`), so they can differ from the Week 4 manifest's server-time-only `event_time_policy` by client clock skew. The cutoff filter bounds both bases. This affects which duplicate rating/watch counts as "latest" downstream, not event inclusion.
 - Cohort group labels are descriptive metadata and are excluded from the feature model.
 - Exporting a snapshot does not automatically include later Helio interactions. Repeat all exports with a new cutoff to refresh the snapshot.

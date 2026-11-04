@@ -287,13 +287,52 @@ def test_accepts_seed_baseline_and_extra_events_with_four_groups_of_25(week6_bun
 
     result = prepare_recommendation_artifact(input_dir=seed_dir, catalog_path=catalog_path, output_path=artifact_path)
 
+    assert result.status == "degraded"
+    assert RecommendationArtifactStore(artifact_path).load().artifact["evidence_status"] == "demo_only"
+    tree_path, cluster_path = _baseline_fragments(artifact_path.parent)
+    result = prepare_recommendation_artifact(
+        input_dir=seed_dir,
+        catalog_path=catalog_path,
+        output_path=artifact_path,
+        tree_fragment_path=tree_path,
+        cluster_fragment_path=cluster_path,
+    )
+
     assert result.status == "ready"
+    assert RecommendationArtifactStore(artifact_path).load().artifact["evidence_status"] == "baseline_not_holdout"
     counts = result.dataset_counts
     assert counts["synthetic_roster_complete"] == 1
     assert counts["users_synthetic"] == 100
     assert counts["ratings_synthetic"] == 2001
     assert counts["searches_synthetic"] == 501
     assert [counts[f"favorite_group_{group}"] for group in groups] == [25, 25, 25, 25]
+
+
+def test_listedin_list_and_string_forms_yield_identical_content_vectors(week6_bundle):
+    seed_dir, catalog_path, artifact_path = week6_bundle
+    string_catalog = [
+        {"id": "s1", "title": "Quiet Harbor", "description": "A quiet harbor at night.", "listedIn": "Drama"},
+        {"id": "s2", "title": "Bright City", "description": "A lively city adventure.", "listedIn": "Action"},
+        {"id": "s3", "title": "Harbor Lights", "description": "Friends solve a mystery.", "listedIn": "Drama, Mystery"},
+    ]
+    list_catalog = [
+        {"id": "s1", "title": "Quiet Harbor", "description": "A quiet harbor at night.", "listedIn": ["Drama"]},
+        {"id": "s2", "title": "Bright City", "description": "A lively city adventure.", "listedIn": ["Action"]},
+        {"id": "s3", "title": "Harbor Lights", "description": "Friends solve a mystery.", "listedIn": ["Drama", "Mystery"]},
+    ]
+
+    vectors = []
+    for variant in (string_catalog, list_catalog):
+        variant_path = tmp_variant = artifact_path.parent / f"catalog-{len(vectors)}.json"
+        tmp_variant.write_text(json.dumps(variant), encoding="utf-8")
+        prepare_recommendation_artifact(
+            input_dir=seed_dir, catalog_path=variant_path, output_path=artifact_path
+        )
+        vectors.append(RecommendationArtifactStore(artifact_path).load().artifact["content_vectors"])
+
+    assert vectors[0].keys() == vectors[1].keys()
+    for show_id in vectors[0]:
+        assert vectors[0][show_id] == vectors[1][show_id]
 
 
 def test_rejects_invalid_pseudonymous_search_key(week6_bundle):
@@ -304,3 +343,61 @@ def test_rejects_invalid_pseudonymous_search_key(week6_bundle):
 
     with pytest.raises(PrepareError, match="pseudonymous_key_invalid"):
         prepare_recommendation_artifact(input_dir=seed_dir, catalog_path=catalog_path, output_path=artifact_path)
+
+
+def _baseline_fragments(directory: Path) -> tuple[Path, Path]:
+    tree_path = directory / "tree_fragment.json"
+    cluster_path = directory / "cluster_fragment.json"
+    tree_path.write_text(json.dumps({
+        "tree_model": {
+            "status": "ready",
+            "features": [
+                "content_profile_similarity", "genre_affinity", "watch_event_rows_7d",
+                "unique_watched_titles_30d", "liked_titles_30d", "days_since_last_interaction",
+                "content_profile_similarity__missing", "genre_affinity__missing",
+                "watch_event_rows_7d__missing", "unique_watched_titles_30d__missing",
+                "liked_titles_30d__missing", "days_since_last_interaction__missing",
+            ],
+            "medians": [0.0] * 12,
+            "missing_indicator_count": 6,
+            "classes": ["liked", "disliked"],
+            "nodes": [{"feature": -1, "values": [1, 0]}],
+        },
+        "tree_features_by_show": {},
+    }), encoding="utf-8")
+    cluster_path.write_text(json.dumps({
+        "cluster_model": {
+            "status": "ready",
+            "space": "scaled_genre_share_v1",
+            "features": ["genre_share__Drama", "log1p_unique_watched_titles_30d", "log1p_watch_event_rows_7d"],
+            "means": [0.0, 0.0, 0.0],
+            "scales": [1.0, 1.0, 1.0],
+            "centroids": [[1.0, 0.0, 0.0]],
+            "item_scores": {"0": {"s1": 0.25}},
+            "history_days": 30,
+            "recent_days": 7,
+        }
+    }), encoding="utf-8")
+    return tree_path, cluster_path
+
+
+def test_both_fragments_mark_the_baseline_without_calling_the_roster_ready(week6_bundle):
+    seed_dir, catalog_path, artifact_path = week6_bundle
+    tree_path, cluster_path = _baseline_fragments(artifact_path.parent)
+
+    result = prepare_recommendation_artifact(
+        input_dir=seed_dir,
+        catalog_path=catalog_path,
+        output_path=artifact_path,
+        tree_fragment_path=tree_path,
+        cluster_fragment_path=cluster_path,
+    )
+
+    snapshot = RecommendationArtifactStore(artifact_path).load()
+    assert result.status == "degraded"
+    assert snapshot.artifact["model_version"] == "week6-baseline-v1"
+    assert snapshot.artifact["evidence_status"] == "baseline_not_holdout"
+    assert snapshot.artifact["tree_model"]["status"] == "ready"
+    assert snapshot.artifact["cluster_model"]["space"] == "scaled_genre_share_v1"
+    assert snapshot.artifact["disabled_components"] == {}
+    assert "user_key" not in artifact_path.read_text(encoding="utf-8")

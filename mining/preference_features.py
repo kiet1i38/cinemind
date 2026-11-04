@@ -32,7 +32,7 @@ FEATURE_DESCRIPTIONS = {
     "recency_weighted_genre_affinity": "Prior-liked genre affinity with a 30-day half-life.",
     "content_profile_similarity": "True cosine of the L2-normalized mean TF-IDF vector of unique prior-liked titles to the target title.",
 }
-FEATURE_VERSION = "preference-v0.1"
+FEATURE_VERSION = "preference-v0.2"
 GENRE_HALF_LIFE_DAYS = 30
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, Response
 
 from cinemind.auth.dependencies import require_auth_context
 from cinemind.interaction.repository import InteractionRepository
@@ -63,7 +63,7 @@ class FakeInteractionRepository:
         self.seen = frozenset(seen)
         self.requested_user = None
 
-    def interaction_state(self, session_id, user_id):
+    def interaction_state(self, *, session_id=None, user_id=None):
         self.requested_user = user_id
         return {"ratings": self.ratings}
 
@@ -90,6 +90,41 @@ class RecommendationCoreTests(unittest.TestCase):
 
         self.assertGreater(scores["close"], scores["unrelated"])
         self.assertGreater(scores["liked"], scores["unrelated"])
+
+    def test_rank_recommendations_respects_supplied_now(self):
+        catalog = [
+            title("drama-high", "Drama High", 2024, ["Drama"]),
+            title("drama-low", "Drama Low", 2023, ["Drama"]),
+            title("drama", "Drama Pick", 2025, ["Drama"]),
+            title("comedy", "Comedy Pick", 2025, ["Comedy"]),
+        ]
+        # One dated high rating and one undated low rating: exponential decay
+        # is translation-invariant, so the clock only shows through the pair.
+        ratings = [
+            {"show_id": "drama-high", "rating": 9, "event_at": "2026-10-01T00:00:00+00:00"},
+            {"show_id": "drama-low", "rating": 6, "event_at": None},
+        ]
+        shared = dict(
+            catalog=catalog,
+            ratings=ratings,
+            seen_show_ids={"drama-high", "drama-low"},
+            artifact=None,
+            algorithm="content",
+            limit=5,
+        )
+        near = rank_recommendations(now=datetime(2026, 10, 16, tzinfo=timezone.utc), **shared)
+        far = rank_recommendations(now=datetime(2027, 10, 16, tzinfo=timezone.utc), **shared)
+
+        near_by_id = {row["title"]["show_id"]: row for row in near["items"]}
+        far_by_id = {row["title"]["show_id"]: row for row in far["items"]}
+        # With the near clock the recent high rating still dominates the Drama
+        # profile; a year later only the undated low rating survives decay.
+        self.assertGreater(
+            near_by_id["drama"]["component_scores"]["content"],
+            far_by_id["drama"]["component_scores"]["content"],
+        )
+        self.assertEqual(near["items"][0]["title"]["show_id"], "drama")
+        self.assertAlmostEqual(far_by_id["drama"]["component_scores"]["content"], 0.04, places=6)
 
     def test_missing_artifact_falls_back_to_deterministic_newest_catalog_titles(self):
         result = rank_recommendations(
@@ -132,6 +167,126 @@ class RecommendationCoreTests(unittest.TestCase):
         self.assertEqual([row["title"]["show_id"] for row in result["items"]], ["unseen"])
         self.assertEqual(result["artifact_status"], "missing")
         self.assertEqual(catalog.calls, [(1000, 0)])
+
+
+class RecommendationRatingZeroTests(unittest.TestCase):
+    """Legacy "No rating" rows (persisted as 0) carry no preference signal."""
+
+    def test_zero_rating_never_pulls_genre_profile_negative(self):
+        result = rank_recommendations(
+            catalog=[
+                title("rated-high", "Rated High", 2024, ["Drama"]),
+                title("rated-none", "Rated None", 2023, ["Drama"]),
+                title("other", "Other", 2022, ["Comedy"]),
+            ],
+            ratings=[
+                {"show_id": "rated-high", "rating": 9, "event_at": "2026-10-16T00:00:00+00:00"},
+                {"show_id": "rated-none", "rating": 0, "event_at": "2026-10-16T00:00:00+00:00"},
+            ],
+            seen_show_ids=set(),
+            artifact=None,
+            algorithm="hybrid",
+            limit=5,
+        )
+
+        # Profile Drama stays positive (0.8 from the single real rating), so
+        # each Drama candidate keeps a positive absolute content blend
+        # (0.2 * genre_score) instead of being pushed to zero by the 0 row.
+        by_id = {row["title"]["show_id"]: row for row in result["items"]}
+        self.assertGreater(by_id["rated-high"]["component_scores"]["content"], 0.0)
+        self.assertAlmostEqual(
+            by_id["rated-high"]["component_scores"]["content"], 0.16, places=6
+        )
+        self.assertEqual(by_id["other"]["component_scores"]["content"], 0.0)
+
+    def test_account_with_only_zero_ratings_stays_cold(self):
+        result = rank_recommendations(
+            catalog=[title("candidate", "Candidate", 2025, ["Drama"])],
+            ratings=[{"show_id": "candidate", "rating": 0, "event_at": "2026-10-16T00:00:00+00:00"}],
+            seen_show_ids=set(),
+            artifact=None,
+            algorithm="hybrid",
+            limit=5,
+        )
+
+        self.assertEqual(result["mode"], "degraded_catalog_fallback")
+
+
+class RecommendationAbsoluteScaleTests(unittest.TestCase):
+    """Components keep their absolute [0, 1] scale; reason thresholds match their text."""
+
+    def _cluster_artifact(self, item_scores):
+        return {
+            "schema_version": 1,
+            "seed_status": "ready",
+            "model_version": "week6-test",
+            "popularity": {},
+            "content_vectors": {},
+            "tree_features_by_show": {},
+            "cluster_model": {
+                "status": "ready",
+                "features": ["Drama"],
+                "centroids": [[0.8]],
+                "item_scores": item_scores,
+            },
+            "tree_model": None,
+        }
+
+    def test_popularity_scores_are_not_rescaled_against_the_pool(self):
+        artifact = {
+            "schema_version": 1,
+            "seed_status": "ready",
+            "model_version": "week6-test",
+            "popularity": {"strong": 1.0, "modest": 0.3},
+            "content_vectors": {},
+            "tree_features_by_show": {},
+            "cluster_model": None,
+            "tree_model": None,
+        }
+        result = rank_recommendations(
+            catalog=[title("strong", "Strong", 2025, ["Drama"]), title("modest", "Modest", 2024, ["Drama"])],
+            ratings=[],
+            seen_show_ids=set(),
+            artifact=artifact,
+            algorithm="popularity",
+            limit=5,
+        )
+
+        by_id = {row["title"]["show_id"]: row for row in result["items"]}
+        self.assertEqual(by_id["strong"]["component_scores"]["popularity"], 1.0)
+        # Min-max would have rewritten 0.3 to 0.0; the absolute value must survive.
+        self.assertEqual(by_id["modest"]["component_scores"]["popularity"], 0.3)
+
+    def test_all_equal_cluster_scores_stay_below_the_reason_threshold(self):
+        artifact = self._cluster_artifact({"0": {"member-a": 0.5, "member-b": 0.5}})
+        result = rank_recommendations(
+            catalog=[title("member-a", "Member A", 2025, ["Drama"]), title("member-b", "Member B", 2024, ["Drama"])],
+            ratings=[{"show_id": "member-a", "rating": 9, "event_at": "2026-10-16T00:00:00+00:00"}],
+            seen_show_ids=set(),
+            artifact=artifact,
+            algorithm="hybrid",
+            limit=5,
+        )
+
+        for row in result["items"]:
+            self.assertEqual(row["component_scores"]["cluster"], 0.5)
+            # An all-equal pool must not masquerade as a perfect cluster match.
+            self.assertNotIn("Popular in a similar preference group", row["reasons"])
+
+    def test_cluster_reason_fires_only_above_the_absolute_threshold(self):
+        artifact = self._cluster_artifact({"0": {"high-match": 0.9, "low-match": 0.2}})
+        result = rank_recommendations(
+            catalog=[title("high-match", "High Match", 2025, ["Drama"]), title("low-match", "Low Match", 2024, ["Drama"])],
+            ratings=[{"show_id": "high-match", "rating": 9, "event_at": "2026-10-16T00:00:00+00:00"}],
+            seen_show_ids=set(),
+            artifact=artifact,
+            algorithm="hybrid",
+            limit=5,
+        )
+
+        by_id = {row["title"]["show_id"]: row for row in result["items"]}
+        self.assertIn("Popular in a similar preference group", by_id["high-match"]["reasons"])
+        self.assertNotIn("Popular in a similar preference group", by_id["low-match"]["reasons"])
 
 
 class RecommendationArtifactTests(unittest.TestCase):
@@ -227,15 +382,17 @@ class RecommendationRouteTests(unittest.TestCase):
                 for parameter in endpoint_schema["parameters"]
                 if parameter["name"] == "limit"
             )
+            components = app.openapi()["components"]["schemas"]
             route = next(route for route in router.routes if getattr(route, "path", None) == "/api/recommendations")
 
         self.assertTrue(any(dependency.call is require_auth_context for dependency in route.dependant.dependencies))
         self.assertEqual(response.headers["cache-control"], "private, no-store")
         self.assertEqual(response.headers["vary"], "Cookie")
         self.assertEqual(payload["items"][0]["title"]["show_id"], "candidate")
-        self.assertEqual(algorithm_schema["enum"], ["popularity", "content", "hybrid"])
-        self.assertEqual(limit_schema["type"], "integer")
-        self.assertEqual((limit_schema["minimum"], limit_schema["maximum"]), (5, 10))
+        self.assertEqual(algorithm_schema["enum"], ["popularity", "content", "cluster", "p_like", "hybrid"])
+        self.assertEqual(limit_schema["default"], 10)
+        self.assertEqual(components["RecommendationLimit"]["type"], "integer")
+        self.assertEqual(components["RecommendationLimit"]["enum"], [5, 10])
 
     def test_recommendation_route_rejects_unsupported_page_size(self):
         user_id = UUID("22222222-2222-4222-8222-222222222222")
@@ -244,18 +401,47 @@ class RecommendationRouteTests(unittest.TestCase):
             FakeInteractionRepository(),
             RecommendationArtifactStore(Path("missing-recommendation-artifact.json")),
         )
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_recommendation_service] = lambda: service
+        app.dependency_overrides[require_auth_context] = lambda: SimpleNamespace(user_id=user_id)
 
-        with self.assertRaises(HTTPException) as raised:
-            get_recommendations(
-                response=Response(),
-                algorithm="hybrid",
-                limit=6,
-                context=SimpleNamespace(user_id=user_id),
-                service=service,
-            )
+        async def request(limit):
+            messages = []
+            request_sent = False
 
-        self.assertEqual(raised.exception.status_code, 422)
-        self.assertEqual(raised.exception.detail, "Limit must be 5 or 10")
+            async def receive():
+                nonlocal request_sent
+                if not request_sent:
+                    request_sent = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                messages.append(message)
+
+            query = f"algorithm=hybrid&limit={limit}".encode("ascii")
+            scope = {
+                "type": "http",
+                "asgi": {"version": "3.0", "spec_version": "2.3"},
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/api/recommendations",
+                "raw_path": b"/api/recommendations",
+                "query_string": query,
+                "root_path": "",
+                "headers": [(b"host", b"testserver")],
+                "client": ("127.0.0.1", 1234),
+                "server": ("testserver", 80),
+                "app": app,
+            }
+            await app(scope, receive, send)
+            start = next(message for message in messages if message["type"] == "http.response.start")
+            return start["status"]
+
+        # The enum generates the rejection now; only the status is ours to claim.
+        self.assertEqual(asyncio.run(request("6")), 422)
 
     def test_http_query_accepts_supported_numeric_limits(self):
         user_id = UUID("22222222-2222-4222-8222-222222222222")
@@ -319,7 +505,6 @@ class RecommendationRouteTests(unittest.TestCase):
 
         status, body = asyncio.run(request("6"))
         self.assertEqual(status, 422)
-        self.assertEqual(body["detail"], "Limit must be 5 or 10")
 
 
 class InteractionSeenTitleTests(unittest.TestCase):
