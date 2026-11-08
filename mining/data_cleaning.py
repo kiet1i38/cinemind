@@ -48,17 +48,22 @@ SEASON_RE = re.compile(r"(\d+)\s*seasons?", re.IGNORECASE)
 RATING_AS_MIN_RE = re.compile(r"\d+\s*min", re.IGNORECASE)
 
 
+# Previously: mining/clean_catalog.py
 def normalize(value):
     """Trim and collapse whitespace; never invent content."""
     return " ".join((value or "").split())
 
 
+# Previously: mining/clean_catalog.py
+# Split listed_in, drop blanks, and keep the first spelling of each genre.
 def clean_genres(listed_in):
     parts = [g for g in (normalize(p) for p in (listed_in or "").split(",")) if g]
     genres = list(dict.fromkeys(parts))  # deduplicate, preserving order
     return ", ".join(genres), not genres
 
 
+# Previously: mining/clean_catalog.py
+# One raw catalog row becomes a cleaned row plus valid, warning, or quarantine.
 def clean_row(row, duplicate_ids=frozenset()):
     issues = []
     show_id = normalize(row.get("show_id"))
@@ -129,6 +134,8 @@ def clean_row(row, duplicate_ids=frozenset()):
     }
 
 
+# Previously: mining/clean_catalog.py
+# Clean every row. Duplicate show_id values are marked before each row is judged.
 def clean_rows(rows):
     # Ceiling: v0.1 covers only the approved cases; new anomaly classes need a rules version bump.
     duplicate_ids = {sid for sid, count in Counter(normalize(r.get("show_id")) for r in rows).items() if count > 1}
@@ -136,11 +143,13 @@ def clean_rows(rows):
     return cleaned, Counter(record["cleaning_status"] for record in cleaned)
 
 
+# Previously: mining/clean_catalog.py
 def read_rows(path):
     with open(path, newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
 
 
+# Previously: mining/clean_catalog.py
 def sha256_file(path):
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -149,6 +158,7 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+# Previously: mining/clean_catalog.py
 def run(input_path, output_path, manifest_path):
     rows = read_rows(input_path)
     if len(rows) != EXPECTED_INPUT_ROWS:
@@ -180,6 +190,7 @@ def run(input_path, output_path, manifest_path):
     return manifest
 
 
+# Previously: mining/clean_catalog.py
 def self_check(input_path):
     """Assert the six approved cases; the missing-description row stays in memory."""
     by_id = {normalize(row.get("show_id")): clean_row(row) for row in read_rows(input_path)}
@@ -232,6 +243,7 @@ def self_check(input_path):
     print("self-check ok: s1, s32, s8, s5542, s5795, synthetic fixtures (missing description, quarantine)")
 
 
+# Previously: mining/clean_catalog.py
 def main():
     parser = argparse.ArgumentParser(description="Clean the raw Netflix catalog CSV into mining artifacts.")
     parser.add_argument("--input", type=Path, default=ROOT / "frontend/public/data/raw/netflix_titles.csv")

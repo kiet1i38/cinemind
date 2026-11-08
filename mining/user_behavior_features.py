@@ -14,7 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from build_preference_dataset import read_csv, sha256_file
-from build_baseline import build_baseline_rows
+from tfidf import build_baseline_rows
 from preference_features import label_for, parse_time, prepare_events, split_genres, validate_cohort
 
 ROOT = Path(__file__).resolve().parents[1]

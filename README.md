@@ -40,6 +40,62 @@ TMDB credentials are used only by the local catalog preparation script; they are
 
 The UI includes the TMDB attribution required for this prototype. Poster image references and use of the TMDB service remain subject to TMDB's terms.
 
+## Data mining pipeline (KDD)
+
+The mining path is separate from poster enrichment. Catalog cleaning and the offline models live under `mining/`. The API in `backend/src/cinemind/recommendations/` loads their outputs and scores the signed-in user at request time. Popularity is a ranking baseline, not a fourth mining algorithm.
+
+| KDD step | What it does | Where it lives |
+| --- | --- | --- |
+| Selection | Catalog titles stay separate from behavior events. The served cohort is the curated Week 6 export. | `frontend/public/data/catalog.json`, `mining/data/week6/` |
+| Preprocessing | Deterministic catalog cleaning and a manifest. | `mining/data_cleaning.py`: `clean_row`, `clean_rows`, `run` |
+| Transformation | Builds the mining document and the preference label. | `mining/tfidf.py`: `build_baseline_rows`; `mining/preference_features.py`: `label_for` |
+| Mining | TF-IDF, cosine, a decision tree, and K-means. | Sections below |
+| Interpretation | Hybrid ranking and the live Top-K list. | `mining/hybrid_ranking.py`: `rank_candidates`; `backend/src/cinemind/recommendations/core.py`: `rank_recommendations` |
+
+### Data cleaning (preprocessing)
+
+`mining/data_cleaning.py` reads the Kaggle CSV and writes a cleaned CSV plus a manifest. `clean_row` applies the frozen text, genre, duration, and duplicate rules. `run` is the command entry. The app then serves the normalized catalog at `frontend/public/data/catalog.json`, which the backend loads in `backend/src/cinemind/recommendations/prepare.py` through `_load_catalog`.
+
+### TF-IDF
+
+Offline training uses scikit-learn. `mining/tfidf.py` defines `VECTOR_CONFIG` (`lowercase`, no stop words, unigrams) and `fit_tfidf` turns `title_clean + description_clean + genres_clean` into the document-term matrix.
+
+The API does not import scikit-learn. `prepare.py` rebuilds L2-normalized vectors in `_document_text` and `_content_vectors` with smoothed IDF `log((1+N)/(1+df))+1`. `mining/week6_baseline_export.py` calls that same function from `_content_vectors` so the served tree sees the API vectors.
+
+### Cosine similarity
+
+Three callers use cosine, and they do not share one formula.
+
+| Use | Function | Formula |
+| --- | --- | --- |
+| Offline content score | `mining/cosine_similarity.py`: `content_scores` | Cosine between a title and the equal-weight mean of unique liked-title vectors |
+| Tree feature `content_profile_similarity` | `backend/src/cinemind/recommendations/baseline_features.py`: `equal_weight_similarity` | Same equal-weight mean, computed per request |
+| Content mode on the API | `backend/src/cinemind/recommendations/core.py`: `content_similarity_scores`, then the blend inside `rank_recommendations` | Recency-weighted cosine, decay 30 days and rating intensity, then `0.8 * cosine + 0.2 * genre score` |
+
+Content mode and P(like) are empty until the user has at least one rating of 7 or higher.
+
+### Decision Tree and classification evaluation
+
+Labels are frozen in `mining/preference_features.py`: `label_for` maps 0–3 to `disliked`, 4–6 to `neutral`, and 7–10 to `liked`. Ratings 3.5 and 6.5 have no label.
+
+The six pre-rating features are `TREE_FEATURES` in `mining/week5_artifacts.py`. `mining/decision_tree.py`: `fit_preference_model` fits an entropy tree, prunes with CCP, and keeps the candidate with the best validation macro-F1. `predict_liked` returns P(like).
+
+The same file is the offline evaluator. `chronological_split` cuts train, validation, and test by time. `classification_metrics` writes macro-F1, accuracy, per-class precision, recall, F1, and the confusion matrix. `majority_result` is the majority-class baseline.
+
+`mining/week6_baseline_export.py`: `_fit_tree` and `_training_rows` fit that tree on the Week 6 cohort and write `tree_fragment.json`. At request time, `baseline_features.py`: `live_tree_features` builds the six features for the signed-in user, and `core.py`: `_tree_probability` walks the tree.
+
+### K-means
+
+`mining/user_behavior_features.py`: `genre_shares` and `build_user_matrix` build the user vector from genre shares of unique liked titles plus the two `log1p` watch counts. `mining/kmeans.py`: `fit_clusters` scales on the ready users only, tries K in {2, 3, 4}, and selects with silhouette and pairwise ARI. `assign_clusters` assigns a saved model.
+
+`mining/week6_baseline_export.py`: `_cluster_fragment` writes centroids, the frozen scaler, and per-cluster popularity to `cluster_fragment.json`. Serving uses `baseline_features.py`: `cluster_vector`, `assign_scaled_cluster`, and `live_cluster_id`. A user with no liked title is not assigned.
+
+### Hybrid ranking
+
+Offline ranking is `mining/hybrid_ranking.py`: `popularity_scores` and `rank_candidates`. The components are content `C`, popularity `P`, P(like) `T`, and cluster `K`. `resolve_weights` and `run` write the ranked lists and the Top-K files. `ranking_metrics` computes Precision, Recall, and NDCG.
+
+The API ranking is `core.py`: `rank_recommendations`. Declared hybrid weights are popularity 0.50, content 0.15, cluster 0.25, and P(like) 0.10. A missing component is dropped and the remaining weights are renormalized. Single modes are `popularity`, `content`, `cluster`, and `p_like`. `routes.py`: `get_recommendations` accepts those modes and limits 5 and 10. `service.py`: `RecommendationService.recommend` builds the live features and calls the ranker. The selector is `frontend/src/components/PersonalizedRecommendations.jsx`.
+
 ## Run with Docker
 
 From the repository root:

@@ -7,7 +7,7 @@ import math
 
 from sklearn.preprocessing import normalize
 
-from build_baseline import build_baseline_rows, fit_tfidf
+from tfidf import build_baseline_rows, fit_tfidf
 
 COHORTS = {"team_test", "public_user", "synthetic", "unknown"}
 LABELS = ("disliked", "neutral", "liked")

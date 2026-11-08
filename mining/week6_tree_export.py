@@ -14,9 +14,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from pre_rec_tree import fit_preference_model, predict_liked
+from decision_tree import fit_preference_model, predict_liked
 from preference_features import LABELS
-from ranking_scores import build_content_context, candidate_pool, content_scores
+from cosine_similarity import build_content_context, content_scores
+from hybrid_ranking import candidate_pool
 from user_behavior_features import (
     ROOT,
     build_candidate_features,

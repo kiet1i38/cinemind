@@ -41,17 +41,21 @@ VECTOR_CONFIG = {
 SAMPLE_QUERY_IDS = ("s1", "s8", "s32", "s5542")
 
 
+# Previously: mining/build_baseline.py
 def read_csv(path):
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
 
 
+# Previously: mining/build_baseline.py
 def read_json(path):
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# Previously: mining/build_baseline.py
+# One document per title: title, description, and genres. Quarantine rows are skipped.
 def build_baseline_rows(rows):
     result = []
     seen_ids = set()
@@ -82,18 +86,23 @@ def build_baseline_rows(rows):
     return result
 
 
+# Previously: mining/build_baseline.py
+# Fit unigram TF-IDF with no stop-word list. Returns the vectorizer and the matrix.
 def fit_tfidf(rows):
     vectorizer = TfidfVectorizer(**VECTOR_CONFIG)
     matrix = vectorizer.fit_transform(row["baseline_text"] for row in rows)
     return vectorizer, matrix
 
 
+# Previously: mining/build_baseline.py
 def choose_query_ids(rows):
     available = {row["show_id"] for row in rows}
     selected = [show_id for show_id in SAMPLE_QUERY_IDS if show_id in available]
     return selected or [row["show_id"] for row in rows[:4]]
 
 
+# Previously: mining/build_baseline.py
+# Cosine of each sample query against the other titles, kept to top_k.
 def similarity_rows(rows, matrix, query_ids, top_k):
     by_id = {row["show_id"]: index for index, row in enumerate(rows)}
     output = []
@@ -122,6 +131,7 @@ def similarity_rows(rows, matrix, query_ids, top_k):
     return output
 
 
+# Previously: mining/build_baseline.py
 def write_csv(path, fields, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -130,11 +140,13 @@ def write_csv(path, fields, rows):
         writer.writerows(rows)
 
 
+# Previously: mining/build_baseline.py
 def write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+# Previously: mining/build_baseline.py
 def run(input_path, clean_manifest_path, baseline_path, similarity_path, manifest_path, top_k):
     source_rows = read_csv(input_path)
     baseline_rows = build_baseline_rows(source_rows)
@@ -164,6 +176,7 @@ def run(input_path, clean_manifest_path, baseline_path, similarity_path, manifes
     print(f"wrote {baseline_path}, {similarity_path}, and {manifest_path}")
 
 
+# Previously: mining/build_baseline.py
 def self_check():
     rows = build_baseline_rows(
         [
@@ -200,6 +213,7 @@ def self_check():
     print("self-check ok: baseline_text, TF-IDF shape, self-similarity, Top-K")
 
 
+# Previously: mining/build_baseline.py
 def main():
     parser = argparse.ArgumentParser(description="Build the CineMind TF-IDF content baseline.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)

@@ -5,8 +5,9 @@ import argparse
 from collections import Counter
 from pathlib import Path
 
-from pre_rec_tree import fit_preference_model, predict_liked
-from ranking_scores import build_content_context, ranking_metrics
+from decision_tree import fit_preference_model, predict_liked
+from cosine_similarity import build_content_context
+from hybrid_ranking import ranking_metrics
 from user_behavior_features import load_source, build_snapshot, build_future_targets
 from week5_artifacts import output_dir, provenance, write_csv, write_json, save_bundle, load_bundle, TREE_FEATURES
 from week5_evaluation import window_contract, weight_grid, select_weights
@@ -43,7 +44,7 @@ def prepare_splits(source, cohort, times, ends, context):
     splits = []
     for name, cutoff, end in zip(("train", "validation", "test"), times, ends):
         snapshot = build_snapshot(source, cohort, cutoff)
-        from ranking_scores import candidate_pool
+        from hybrid_ranking import candidate_pool
         pools = {user: candidate_pool(snapshot, user) for user in snapshot["users"]}
         targets = build_future_targets(source, cutoff, end, pools)
         splits.append((name, snapshot, targets, target_features(snapshot, targets, context)))
@@ -111,15 +112,15 @@ def evaluation_run(args):
     summary = averages(metrics)
     write_csv(directory / "benchmark_queries.csv", metrics)
     write_csv(directory / "benchmark.csv", summary)
-    from evaluate_preference_tree import classification_metrics
+    from decision_tree import classification_metrics
     classification = classification_metrics([row["label"] for row in splits[2][3]],
-                                            tree["tree"].predict(__import__("pre_rec_tree").feature_matrix(tree, splits[2][3])))
+                                            tree["tree"].predict(__import__("decision_tree").feature_matrix(tree, splits[2][3])))
     report = {**base, **guard, "status": "synthetic_demo", "weights": selected["weights"],
               "metrics": summary, "test_preference": classification,
               "query_coverage": {"owned": len(test_snapshot["users"]), "with_positives": len({r["user_key"] for r in test_targets if r["label"] == "liked"})},
               "split_support": {name: dict(Counter(row["label"] for row in targets)) for name, _, targets, _ in splits},
               "fixed_train_cluster_run": str(Path(args.cluster_run).resolve()), "tree": tree_report}
-    from build_hybrid_ranking import _coverage, _usage
+    from hybrid_ranking import _coverage, _usage
     report.update(_coverage(test_snapshot, test_components, rankings))
     report.update(_usage(test_snapshot, test_components, rankings, selected["weights"]))
     write_json(directory / "ranking_report.json", report)

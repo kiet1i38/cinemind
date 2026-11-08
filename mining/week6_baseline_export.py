@@ -15,11 +15,10 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from build_user_clusters import assign_clusters, fit_clusters
-from evaluate_preference_tree import chronological_split, classification_metrics
-from pre_rec_tree import fit_preference_model, predict_liked
+from kmeans import assign_clusters, fit_clusters
+from decision_tree import chronological_split, classification_metrics, fit_preference_model, predict_liked
 from preference_features import label_for
-from ranking_scores import popularity_scores
+from hybrid_ranking import popularity_scores
 from user_behavior_features import ROOT, build_snapshot, group_by_user
 from week5_artifacts import TREE_FEATURES
 from week6_tree_export import build_tree_model
@@ -164,7 +163,7 @@ def _fit_tree(rows: list[dict]):
     bundle, report = fit_preference_model(train, validation)
     metrics = None
     if test:
-        from evaluate_preference_tree import matrix
+        from decision_tree import matrix
         import numpy
 
         _, encoded = matrix(test, TREE_FEATURES, bundle["medians"])

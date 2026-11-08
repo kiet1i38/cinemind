@@ -24,31 +24,39 @@ DEFAULT_CUTOFFS = {"team_test": "2026-09-17T00:00:00Z", "synthetic": "2026-08-01
 STATUS_INSUFFICIENT_DATA = "insufficient_data"
 
 
+# Previously: mining/build_user_clusters.py
+# Scale the ready users, then fit K-means for this K and seed.
 def _fit_kmeans(rows, k, seed):
     model = KMeans(n_clusters=k, init="k-means++", n_init=N_INIT, random_state=seed)
     with threadpool_limits(limits=1):
         return model, model.fit_predict(rows)
 
 
+# Previously: mining/build_user_clusters.py
+# Silhouette on the scaled user vectors. Higher means tighter, better-separated clusters.
 def _silhouette(rows, labels):
     distinct = len(set(labels))
     return None if distinct < 2 or distinct >= len(rows) else float(silhouette_score(rows, labels))
 
 
+# Previously: mining/build_user_clusters.py
 def _median(values):
     return float(median(values)) if values else None
 
 
+# Previously: mining/build_user_clusters.py
 def _pairwise_aris(partitions):
     return {(SEEDS[left], SEEDS[right]): float(adjusted_rand_score(partitions[left], partitions[right]))
             for left in range(len(partitions)) for right in range(left + 1, len(partitions))}
 
 
+# Previously: mining/build_user_clusters.py
 def _seed_medians(pairwise):
     return {str(seed): _median([score for (left, right), score in pairwise.items() if seed in (left, right)])
             for seed in SEEDS}
 
 
+# Previously: mining/build_user_clusters.py
 def _profiles(rows, labels, feature_names):
     counts = [0] * len(set(labels))
     sums = [[0.0] * len(feature_names) for _ in counts]
@@ -60,6 +68,7 @@ def _profiles(rows, labels, feature_names):
                     for c in range(len(counts))}
 
 
+# Previously: mining/build_user_clusters.py
 def _dominant_genre(profiles):
     output = {}
     for cluster, values in profiles.items():
@@ -68,6 +77,7 @@ def _dominant_genre(profiles):
     return output
 
 
+# Previously: mining/build_user_clusters.py
 def _zero_variance(rows, feature_names):
     if not rows:
         return list(feature_names)
@@ -76,6 +86,7 @@ def _zero_variance(rows, feature_names):
             if float(array[:, index].max() - array[:, index].min()) == 0.0]
 
 
+# Previously: mining/build_user_clusters.py
 def _style_gate(user_keys, labels, profiles, expected_styles):
     lookup = set(user_keys)
     expected = {user: style for user, style in (expected_styles or {}).items() if user in lookup}
@@ -96,10 +107,12 @@ def _style_gate(user_keys, labels, profiles, expected_styles):
     return {"available": True, "partition_match": bool(partition_match), "profile_match": bool(profile_match)}
 
 
+# Previously: mining/build_user_clusters.py
 def _seed_partitions(scaled, k, primary):
     return [primary if seed == PRIMARY_SEED else _fit_kmeans(scaled, k, seed)[1] for seed in SEEDS]
 
 
+# Previously: mining/build_user_clusters.py
 def _candidate(k, rows, scaled, feature_names, distinct):
     entry = {"k": k, "feasible": False, "reason": None, "actual_clusters": None, "inertia": None,
              "silhouette": None, "cluster_counts": None, "singleton_count": None, "raw_profiles": None,
@@ -125,6 +138,8 @@ def _candidate(k, rows, scaled, feature_names, distinct):
     return entry, model, labels
 
 
+# Previously: mining/build_user_clusters.py
+# Pick K from {2, 3, 4} by silhouette, then by how stable the partition is across seeds.
 def _select(feasible, cohort):
     if cohort == "synthetic":
         return max(feasible, key=lambda item: (item["silhouette"] if item["silhouette"] is not None else -1.0,
@@ -132,6 +147,7 @@ def _select(feasible, cohort):
     return min(feasible, key=lambda item: item["k"])
 
 
+# Previously: mining/build_user_clusters.py
 def _gate(selected, user_keys, labels, expected_styles):
     gate = {"no_singleton": selected["singleton_count"] == 0,
             "positive_silhouette": selected["silhouette"] is not None and selected["silhouette"] > 0.0,
@@ -144,6 +160,7 @@ def _gate(selected, user_keys, labels, expected_styles):
     return gate
 
 
+# Previously: mining/build_user_clusters.py
 def _empty_report(snapshot, feature_names, ready):
     return {"feature_version": FEATURE_VERSION, "cohort": snapshot.get("cohort"), "cutoff": snapshot.get("cutoff"),
             "status": STATUS_INSUFFICIENT_DATA, "users_total": len(snapshot.get("user_keys", [])),
@@ -153,6 +170,7 @@ def _empty_report(snapshot, feature_names, ready):
             "selection_metric": "smallest_feasible_k" if snapshot.get("cohort") == "team_test" else "highest_defined_silhouette_ties_smaller_k"}
 
 
+# Previously: mining/build_user_clusters.py
 def _make_bundle(snapshot, scaler, model, k, feature_names, selected, report):
     return {"kind": "user_clusters", "status": report["status"], "cohort": snapshot.get("cohort"),
             "cutoff": snapshot.get("cutoff"), "k": int(k), "scaler": scaler, "model": model,
@@ -163,6 +181,7 @@ def _make_bundle(snapshot, scaler, model, k, feature_names, selected, report):
                         "seed_median_ari": selected["seed_median_ari"]}}
 
 
+# Previously: mining/build_user_clusters.py
 def fit_clusters(snapshot, expected_styles=None):
     """Fit scaler plus k-means on ready users; return (bundle_or_None, report)."""
     matrix = build_user_matrix(snapshot)
@@ -200,6 +219,7 @@ def fit_clusters(snapshot, expected_styles=None):
     return _make_bundle(snapshot, scaler, models[k], k, feature_names, selected, report), report
 
 
+# Previously: mining/build_user_clusters.py
 def _user_vector(user, feature_order):
     values = []
     for name in feature_order:
@@ -214,6 +234,7 @@ def _user_vector(user, feature_order):
     return values
 
 
+# Previously: mining/build_user_clusters.py
 def assign_clusters(snapshot, bundle):
     """Transform and predict only; never fits. Returns one row per roster user."""
     assignments = []
@@ -232,6 +253,7 @@ def assign_clusters(snapshot, bundle):
     return assignments
 
 
+# Previously: mining/build_user_clusters.py
 def _snapshot_manifest(snapshot, matrix, report):
     ready, keys = set(matrix["user_keys"]), snapshot.get("user_keys", [])
     return {"snapshot_version": snapshot.get("snapshot_version"), "cohort": snapshot.get("cohort"),
@@ -244,6 +266,7 @@ def _snapshot_manifest(snapshot, matrix, report):
             "signal_eligible": report["signal_eligible"]}
 
 
+# Previously: mining/build_user_clusters.py
 def _bundle_metadata(source, snapshot, matrix, report):
     cutoff = snapshot["cutoff"]
     return {**provenance(source, snapshot["cohort"]), "feature_version": FEATURE_VERSION,
@@ -253,29 +276,37 @@ def _bundle_metadata(source, snapshot, matrix, report):
             "signal_eligible": report["signal_eligible"], "status": report["status"]}
 
 
+# Previously: mining/build_user_clusters.py
 def _fixture_user(user_key, shares, status=READY):
     return {"user_key": user_key, "cohort": "synthetic", "status": status, "liked_ids": [], "genre_shares": shares,
             "seen": [], "unique_watched_titles_30d": 0, "watch_event_rows_7d": 0, "liked_titles_30d": 0,
             "days_since_last_interaction": None}
 
 
+# Previously: mining/build_user_clusters.py
 def _fixture_snapshot(users):
     universe = sorted({genre for user in users.values() for genre, value in user["genre_shares"].items() if value > 0})
     return {"snapshot_version": "fixture", "cohort": "synthetic", "cutoff": "2026-08-01T00:00:00+00:00",
             "genre_universe": universe, "catalog_genres": {}, "users": users,
             "user_keys": sorted(users), "counts": {}, "coverage": {}}
 
+# Previously: mining/build_user_clusters.py
 class _NoFit:
+# Previously: mining/build_user_clusters.py
     def __init__(self, wrapped):
         self._wrapped = wrapped
+# Previously: mining/build_user_clusters.py
     def transform(self, values):
         return self._wrapped.transform(values)
+# Previously: mining/build_user_clusters.py
     def predict(self, values):
         return self._wrapped.predict(values)
+# Previously: mining/build_user_clusters.py
     def fit(self, *args, **kwargs):
         raise AssertionError("assign must not fit")
 
 
+# Previously: mining/build_user_clusters.py
 def _check_degenerate():
     same = {genre: 1.0 / 3.0 for genre in ("Action", "Comedy", "Drama")}
     snapshot = _fixture_snapshot({f"u{index}": _fixture_user(f"u{index}", same) for index in range(4)})
@@ -285,6 +316,7 @@ def _check_degenerate():
                for row in assign_clusters(snapshot, bundle))
 
 
+# Previously: mining/build_user_clusters.py
 def _check_onehot_and_assign():
     universe = ["Action", "Comedy", "Drama"]
     users, expected = {}, {}
@@ -315,6 +347,7 @@ def _check_onehot_and_assign():
     assert rows["cold"]["cluster_id"] is None and rows["cold"]["status"] == INSUFFICIENT
 
 
+# Previously: mining/build_user_clusters.py
 def self_check():
     _check_degenerate()
     _check_onehot_and_assign()
@@ -325,6 +358,7 @@ def self_check():
     print("self-check ok: degenerate K, constant/zero-var, train-only roundtrip, ARI permutation")
 
 
+# Previously: mining/build_user_clusters.py
 def _fit(args, source, snapshot, matrix):
     directory = output_dir(args.output_dir)
     expected = source["manifest"].get("expected_style_by_user") if args.cohort == "synthetic" else None
@@ -351,6 +385,7 @@ def _fit(args, source, snapshot, matrix):
           f"signal_eligible={report['signal_eligible']}; output={directory}")
 
 
+# Previously: mining/build_user_clusters.py
 def _assign(args, source, snapshot):
     model_dir = args.model or args.cluster_run
     if model_dir is None:
@@ -368,6 +403,7 @@ def _assign(args, source, snapshot):
     print(f"mode=assign; users={len(assignments)}; output={directory}")
 
 
+# Previously: mining/build_user_clusters.py
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-manifest", type=Path)

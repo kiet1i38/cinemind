@@ -4,9 +4,10 @@ from user_behavior_features import build_candidate_features
 
 
 def query_components(snapshot, content_context, cluster_bundle=None, tree_bundle=None):
-    from build_user_clusters import assign_clusters
-    from pre_rec_tree import predict_liked
-    from ranking_scores import candidate_pool, content_scores, popularity_scores
+    from kmeans import assign_clusters
+    from decision_tree import predict_liked
+    from cosine_similarity import content_scores
+    from hybrid_ranking import candidate_pool, popularity_scores
     assignments = assign_clusters(snapshot, cluster_bundle) if cluster_bundle else []
     clusters = {row["user_key"]: row["cluster_id"] for row in assignments if row["cluster_id"] is not None}
     popularity = popularity_scores(snapshot)
@@ -28,7 +29,7 @@ def query_components(snapshot, content_context, cluster_bundle=None, tree_bundle
 
 
 def rank_queries(snapshot, components, weights, algorithm="hybrid"):
-    from ranking_scores import rank_candidates
+    from hybrid_ranking import rank_candidates
     chosen = weights if algorithm == "hybrid" else {"C": float(algorithm == "content"),
               "P": float(algorithm == "popularity"), "T": 0., "K": 0.}
     return {user: rank_candidates(values["candidate_ids"], values, chosen,
@@ -36,7 +37,7 @@ def rank_queries(snapshot, components, weights, algorithm="hybrid"):
 
 
 def target_features(snapshot, targets, content_context):
-    from ranking_scores import content_scores
+    from cosine_similarity import content_scores
     by_user = {}
     for row in targets:
         by_user.setdefault(row["user_key"], []).append(row)
